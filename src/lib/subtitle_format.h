@@ -25,7 +25,8 @@
 
 enum class SubtitleFormat {
 	XML,
-	MXF
+	MXF,
+	SRT
 };
 
 

@@ -26,9 +26,12 @@
 #include <dcp/filesystem.h>
 #include <dcp/interop_text_asset.h>
 #include <dcp/smpte_text_asset.h>
+#include <sub/collect.h>
+#include <sub/subrip_writer.h>
 #include <fmt/format.h>
-#include <boost/filesystem.hpp>
 #include <boost/bind/bind.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/variant.hpp>
 
 #include "i18n.h"
 
@@ -67,8 +70,6 @@ SubtitleFilmEncoder::SubtitleFilmEncoder(
 	_player.set_ignore_audio();
 	_player.Text.connect(boost::bind(&SubtitleFilmEncoder::text, this, _1, _2, _3, _4));
 
-	string const extension = format == SubtitleFormat::XML ? ".xml" : ".mxf";
-
 	int const files = split_reels ? film->reels().size() : 1;
 	for (int i = 0; i < files; ++i) {
 
@@ -83,7 +84,7 @@ SubtitleFilmEncoder::SubtitleFilmEncoder(
 			}
 		}
 
-		_outputs.push_back(Output(format, dcp::filesystem::change_extension(filename, extension)));
+		_outputs.push_back(Output(format, filename));
 	}
 
 	for (auto i: film->reels()) {
@@ -161,16 +162,25 @@ SubtitleFilmEncoder::frames_done() const
 
 SubtitleFilmEncoder::Output::Output(SubtitleFormat format, boost::filesystem::path const& path)
 	: _format(format)
-	, _path(path)
 {
-
+	switch (_format) {
+	case SubtitleFormat::XML:
+		_path = dcp::filesystem::change_extension(path, ".xml");
+		break;
+	case SubtitleFormat::MXF:
+		_path = dcp::filesystem::change_extension(path, ".mxf");
+		break;
+	case SubtitleFormat::SRT:
+		_path = dcp::filesystem::change_extension(path, ".srt");
+		break;
+	}
 }
 
 
 void
 SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index, optional<DCPTextTrack> track)
 {
-	if (_asset) {
+	if (_output.which() == 1 || boost::get<shared_ptr<dcp::TextAsset>>(_output)) {
 		return;
 	}
 
@@ -180,7 +190,7 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index
 	case SubtitleFormat::XML:
 	{
 		auto interop_asset = make_shared<dcp::InteropTextAsset>();
-		_asset = interop_asset;
+		_output = interop_asset;
 		interop_asset->set_movie_title(film->name());
 		if (lang.first) {
 			interop_asset->set_language(lang.first->as_string());
@@ -191,7 +201,7 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index
 	case SubtitleFormat::MXF:
 	{
 		auto smpte_asset = make_shared<dcp::SMPTETextAsset>();
-		_asset = smpte_asset;
+		_output = smpte_asset;
 		smpte_asset->set_content_title_text(film->name());
 		if (lang.first) {
 			smpte_asset->set_language(*lang.first);
@@ -207,6 +217,9 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index
 		}
 		break;
 	}
+	case SubtitleFormat::SRT:
+		_output = std::vector<sub::RawSubtitle>();
+		break;
 	}
 }
 
@@ -214,19 +227,64 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index
 void
 SubtitleFilmEncoder::Output::write() const
 {
-	DCPOMATIC_ASSERT(_asset);
-	_asset->write(_path);
+	switch (_output.which()) {
+	case 0:
+	{
+		auto asset = boost::get<shared_ptr<dcp::TextAsset>>(_output);
+		DCPOMATIC_ASSERT(asset);
+		asset->write(_path);
+		break;
+	}
+	case 1:
+	{
+		auto subs = sub::collect<std::vector<sub::Subtitle>>(boost::get<std::vector<sub::RawSubtitle>>(_output));
+		sub::write_subrip(subs, _path);
+		break;
+	}
+	}
 }
 
 
 void
 SubtitleFilmEncoder::Output::add(StringText sub, bool include_font)
 {
-	DCPOMATIC_ASSERT(_asset);
-	if (_format == SubtitleFormat::XML && !include_font) {
-		sub.unset_font();
+	switch (_output.which()) {
+	case 0:
+	{
+		auto asset = boost::get<shared_ptr<dcp::TextAsset>>(_output);
+		DCPOMATIC_ASSERT(asset);
+		if (_format == SubtitleFormat::XML && !include_font) {
+			sub.unset_font();
+		}
+		asset->add(make_shared<dcp::TextString>(sub));
+		break;
 	}
-	_asset->add(make_shared<dcp::TextString>(sub));
+	case 1:
+	{
+		auto& raw_subs = boost::get<vector<sub::RawSubtitle>>(_output);
+		sub::RawSubtitle raw_sub;
+		raw_sub.text = sub.text();
+		raw_sub.from = sub::Time::from_hmsf(0, 0, std::floor(sub.in().as_seconds()), sub.in().e, sub::Rational{ sub.in().tcr, 1 });
+		raw_sub.to = sub::Time::from_hmsf(0, 0, std::floor(sub.out().as_seconds()), sub.out().e, sub::Rational{ sub.out().tcr, 1});
+		raw_sub.bold = sub.bold();
+		raw_sub.italic = sub.italic();
+		raw_sub.underline = sub.underline();
+		raw_sub.vertical_position.proportional = sub.v_position();
+		switch (sub.v_align()) {
+		case dcp::VAlign::TOP:
+			raw_sub.vertical_position.reference = sub::VerticalReference::TOP_OF_SCREEN;
+			break;
+		case dcp::VAlign::CENTER:
+			raw_sub.vertical_position.reference = sub::VerticalReference::VERTICAL_CENTRE_OF_SCREEN;
+			break;
+		case dcp::VAlign::BOTTOM:
+			raw_sub.vertical_position.reference = sub::VerticalReference::BOTTOM_OF_SCREEN;
+			break;
+		}
+		raw_subs.push_back(raw_sub);
+		break;
+	}
+	}
 }
 
 
@@ -234,8 +292,10 @@ void
 SubtitleFilmEncoder::Output::add_fonts(vector<shared_ptr<dcpomatic::Font>> const& fonts, dcp::ArrayData default_font)
 {
 	if (_format == SubtitleFormat::MXF) {
+		auto asset = boost::get<shared_ptr<dcp::TextAsset>>(_output);
+		DCPOMATIC_ASSERT(asset);
 		for (auto font: fonts) {
-			_asset->add_font(font->id(), font->data().get_value_or(default_font));
+			asset->add_font(font->id(), font->data().get_value_or(default_font));
 		}
 	}
 }

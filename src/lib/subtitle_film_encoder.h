@@ -24,6 +24,7 @@
 #include "film_encoder.h"
 #include "player_text.h"
 #include "subtitle_format.h"
+#include <sub/raw_subtitle.h>
 
 
 namespace dcp {
@@ -79,7 +80,7 @@ private:
 
 	private:
 		SubtitleFormat _format;
-		std::shared_ptr<dcp::TextAsset> _asset;
+		boost::variant<std::shared_ptr<dcp::TextAsset>, std::vector<sub::RawSubtitle>> _output;
 		boost::filesystem::path _path;
 	};
 

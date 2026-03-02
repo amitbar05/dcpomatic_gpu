@@ -46,6 +46,7 @@ ExportSubtitlesDialog::ExportSubtitlesDialog(wxWindow* parent, int reels, bool i
 	_format = new Choice(this);
 	_format->add_entry(_("XML (Interop)"));
 	_format->add_entry(_("MXF (SMPTE)"));
+	_format->add_entry(_("SubRip (SRT)"));
 	_format->set(interop ? 0 : 1);
 	sizer->Add(_format, wxGBPosition(r, 1));
 	++r;
@@ -101,7 +102,17 @@ ExportSubtitlesDialog::format_changed()
 void
 ExportSubtitlesDialog::setup_wildcard()
 {
-	_file->set_wildcard(format() == SubtitleFormat::XML ? _("Subtitle files (.xml)|*.xml") : _("Subtitle files (.mxf)|*.mxf"));
+	switch (format()) {
+	case SubtitleFormat::XML:
+		_file->set_wildcard(_("Subtitle files (.xml)|*.xml"));
+		break;
+	case SubtitleFormat::MXF:
+		_file->set_wildcard(_("Subtitle files (.mxf)|*.mxf"));
+		break;
+	case SubtitleFormat::SRT:
+		_file->set_wildcard(_("Subtitle files (.srt)|*.srt"));
+		break;
+	}
 }
 
 
@@ -113,6 +124,8 @@ ExportSubtitlesDialog::format() const
 		return SubtitleFormat::XML;
 	case 1:
 		return SubtitleFormat::MXF;
+	case 2:
+		return SubtitleFormat::SRT;
 	}
 
 	DCPOMATIC_ASSERT(false);
@@ -145,7 +158,17 @@ ExportSubtitlesDialog::path() const
 	if (_file->IsEnabled()) {
 		if (auto path = _file->path()) {
 			wxFileName fn(std_to_wx(path->string()));
-			fn.SetExt(char_to_wx(format() == SubtitleFormat::XML ? "xml" : "mxf"));
+			switch (format()) {
+			case SubtitleFormat::XML:
+				fn.SetExt(char_to_wx("xml"));
+				break;
+			case SubtitleFormat::MXF:
+				fn.SetExt(char_to_wx("mxf"));
+				break;
+			case SubtitleFormat::SRT:
+				fn.SetExt(char_to_wx("srt"));
+				break;
+			}
 			return wx_to_std(fn.GetFullPath());
 		}
 	}
