@@ -80,8 +80,7 @@ ExportSubtitlesDialog::ExportSubtitlesDialog(wxWindow* parent, int reels, bool i
 	auto overall_sizer = new wxBoxSizer(wxVERTICAL);
 	overall_sizer->Add(sizer, 1, wxALL, DCPOMATIC_DIALOG_BORDER);
 
-	auto buttons = CreateSeparatedButtonSizer(wxOK | wxCANCEL);
-	if (buttons) {
+	if (auto buttons = CreateSeparatedButtonSizer(wxOK | wxCANCEL)) {
 		overall_sizer->Add(buttons, wxSizerFlags().Expand().DoubleBorder());
 	}
 
