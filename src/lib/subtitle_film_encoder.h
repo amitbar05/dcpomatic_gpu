@@ -23,6 +23,7 @@
 #include "dcpomatic_time.h"
 #include "film_encoder.h"
 #include "player_text.h"
+#include "subtitle_format.h"
 
 
 namespace dcp {
@@ -46,7 +47,7 @@ public:
 		std::string initial_name,
 		bool split_reels,
 		bool include_font,
-		dcp::Standard standard
+		SubtitleFormat format
 	);
 
 	void go() override;
@@ -68,6 +69,6 @@ private:
 	int _reel_index;
 	boost::optional<dcpomatic::DCPTime> _last;
 	dcpomatic::DCPTime _length;
-	dcp::Standard _standard;
+	SubtitleFormat _format;
 	dcp::ArrayData _default_font;
 };

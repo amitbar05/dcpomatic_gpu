@@ -20,6 +20,7 @@
 
 
 #include "dir_picker_ctrl.h"
+#include "lib/subtitle_format.h"
 #include <dcp/types.h>
 #include <dcp/warnings.h>
 LIBDCP_DISABLE_WARNINGS
@@ -42,7 +43,7 @@ public:
 	boost::filesystem::path path() const;
 	bool split_reels() const;
 	bool include_font() const;
-	dcp::Standard standard() const;
+	SubtitleFormat format() const;
 
 private:
 	void format_changed();

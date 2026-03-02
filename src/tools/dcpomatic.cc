@@ -1077,7 +1077,7 @@ private:
 				_film->isdcf_name(true),
 				dialog.split_reels(),
 				dialog.include_font(),
-				dialog.standard()
+				dialog.format()
 			)
 		);
 		JobManager::instance()->add(job);

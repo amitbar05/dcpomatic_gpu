@@ -101,30 +101,30 @@ ExportSubtitlesDialog::format_changed()
 void
 ExportSubtitlesDialog::setup_wildcard()
 {
-	_file->set_wildcard(standard() == dcp::Standard::INTEROP ? _("Subtitle files (.xml)|*.xml") : _("Subtitle files (.mxf)|*.mxf"));
+	_file->set_wildcard(format() == SubtitleFormat::XML ? _("Subtitle files (.xml)|*.xml") : _("Subtitle files (.mxf)|*.mxf"));
 }
 
 
-dcp::Standard
-ExportSubtitlesDialog::standard() const
+SubtitleFormat
+ExportSubtitlesDialog::format() const
 {
 	switch (_format->get().get_value_or(0)) {
 	case 0:
-		return dcp::Standard::INTEROP;
+		return SubtitleFormat::XML;
 	case 1:
-		return dcp::Standard::SMPTE;
+		return SubtitleFormat::MXF;
 	}
 
 	DCPOMATIC_ASSERT(false);
-	return dcp::Standard::SMPTE;
+	return SubtitleFormat::MXF;
 }
 
 
 void
 ExportSubtitlesDialog::setup_sensitivity()
 {
-	bool const multi = split_reels() || (standard() == dcp::Standard::INTEROP && _include_font->GetValue());
-	_include_font->Enable(standard() == dcp::Standard::INTEROP);
+	bool const multi = split_reels() || (format() == SubtitleFormat::XML && _include_font->GetValue());
+	_include_font->Enable(format() == SubtitleFormat::XML);
 	_file_label->Enable(!multi);
 	_file->Enable(!multi);
 	_dir_label->Enable(multi);
@@ -145,7 +145,7 @@ ExportSubtitlesDialog::path() const
 	if (_file->IsEnabled()) {
 		if (auto path = _file->path()) {
 			wxFileName fn(std_to_wx(path->string()));
-			fn.SetExt(char_to_wx(standard() == dcp::Standard::INTEROP ? "xml" : "mxf"));
+			fn.SetExt(char_to_wx(format() == SubtitleFormat::XML ? "xml" : "mxf"));
 			return wx_to_std(fn.GetFullPath());
 		}
 	}
@@ -164,6 +164,6 @@ ExportSubtitlesDialog::split_reels() const
 bool
 ExportSubtitlesDialog::include_font() const
 {
-	return standard() == dcp::Standard::SMPTE || _include_font->GetValue();
+	return format() == SubtitleFormat::MXF || _include_font->GetValue();
 }
 

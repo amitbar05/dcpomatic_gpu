@@ -56,21 +56,21 @@ SubtitleFilmEncoder::SubtitleFilmEncoder(
 	string initial_name,
 	bool split_reels,
 	bool include_font,
-	dcp::Standard standard
+	SubtitleFormat format
 	)
 	: FilmEncoder(film, job)
 	, _split_reels(split_reels)
 	, _include_font(include_font)
 	, _reel_index(0)
 	, _length(film->length())
-	, _standard(standard)
+	, _format(format)
 {
 	_player.set_play_referenced();
 	_player.set_ignore_video();
 	_player.set_ignore_audio();
 	_player.Text.connect(boost::bind(&SubtitleFilmEncoder::text, this, _1, _2, _3, _4));
 
-	string const extension = standard == dcp::Standard::INTEROP ? ".xml" : ".mxf";
+	string const extension = format == SubtitleFormat::XML ? ".xml" : ".mxf";
 
 	int const files = split_reels ? film->reels().size() : 1;
 	for (int i = 0; i < files; ++i) {
@@ -114,8 +114,8 @@ SubtitleFilmEncoder::go()
 	for (auto& i: _assets) {
 		if (!i.first) {
 			/* No subtitles arrived for this asset; make an empty one so we write something to the output */
-			switch (_standard) {
-			case dcp::Standard::INTEROP:
+			switch (_format) {
+			case SubtitleFormat::XML:
 			{
 				auto s = make_shared<dcp::InteropTextAsset>();
 				s->set_movie_title(_film->name());
@@ -123,7 +123,7 @@ SubtitleFilmEncoder::go()
 				i.first = s;
 				break;
 			}
-			case dcp::Standard::SMPTE:
+			case SubtitleFormat::MXF:
 			{
 				auto s = make_shared<dcp::SMPTETextAsset>();
 				s->set_content_title_text(_film->name());
@@ -134,7 +134,7 @@ SubtitleFilmEncoder::go()
 			}
 		}
 
-		if (_standard == dcp::Standard::SMPTE || _include_font) {
+		if (_format == SubtitleFormat::MXF || _include_font) {
 			for (auto j: _player.get_subtitle_fonts()) {
 				i.first->add_font(j->id(), j->data().get_value_or(_default_font));
 			}
@@ -156,8 +156,8 @@ SubtitleFilmEncoder::text(PlayerText subs, TextType type, optional<DCPTextTrack>
 	if (!_assets[_reel_index].first) {
 		shared_ptr<dcp::TextAsset> asset;
 		auto const lang = _film->open_text_languages();
-		switch (_standard) {
-		case dcp::Standard::INTEROP:
+		switch (_format) {
+		case SubtitleFormat::XML:
 		{
 			auto s = make_shared<dcp::InteropTextAsset>();
 			s->set_movie_title(_film->name());
@@ -168,7 +168,7 @@ SubtitleFilmEncoder::text(PlayerText subs, TextType type, optional<DCPTextTrack>
 			_assets[_reel_index].first = s;
 			break;
 		}
-		case dcp::Standard::SMPTE:
+		case SubtitleFormat::MXF:
 		{
 			auto s = make_shared<dcp::SMPTETextAsset>();
 			s->set_content_title_text(_film->name());
@@ -194,7 +194,7 @@ SubtitleFilmEncoder::text(PlayerText subs, TextType type, optional<DCPTextTrack>
 		/* XXX: couldn't / shouldn't we use period here rather than getting time from the subtitle? */
 		i.set_in (i.in());
 		i.set_out(i.out());
-		if (_standard == dcp::Standard::INTEROP && !_include_font) {
+		if (_format == SubtitleFormat::XML && !_include_font) {
 			i.unset_font();
 		}
 		_assets[_reel_index].first->add(make_shared<dcp::TextString>(i));
