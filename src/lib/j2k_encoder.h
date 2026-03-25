@@ -35,6 +35,9 @@
 #include "j2k_encoder_thread.h"
 #include "writer.h"
 #include "video_encoder.h"
+#ifdef DCPOMATIC_NVJPEG
+#include "nvjpeg_encoder.h"
+#endif
 #include <boost/optional.hpp>
 #include <boost/signals2.hpp>
 #include <boost/thread.hpp>
@@ -69,7 +72,7 @@ struct frames_not_lost_when_threads_disappear;
 class J2KEncoder : public VideoEncoder, public ExceptionStore
 {
 public:
-	J2KEncoder(std::shared_ptr<const Film> film, Writer& writer);
+	J2KEncoder(std::shared_ptr<const Film> film, Writer& writer, bool use_nvjpeg_gpu = false);
 	~J2KEncoder();
 
 	J2KEncoder(J2KEncoder const&) = delete;
@@ -121,6 +124,11 @@ private:
 	grk_plugin::DcpomaticContext* _dcpomatic_context = nullptr;
 	grk_plugin::GrokContext *_context = nullptr;
 	std::atomic<bool> _give_up;
+#endif
+
+#ifdef DCPOMATIC_NVJPEG
+	bool _use_nvjpeg_gpu = false;
+	std::shared_ptr<NvjpegEncoder> _nvjpeg_encoder;
 #endif
 
 	bool _ending = false;

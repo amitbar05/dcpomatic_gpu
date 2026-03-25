@@ -25,5 +25,5 @@
 class Film;
 
 
-std::shared_ptr<TranscodeJob> make_dcp(std::shared_ptr<Film> film, TranscodeJob::ChangedBehaviour behaviour);
+std::shared_ptr<TranscodeJob> make_dcp(std::shared_ptr<Film> film, TranscodeJob::ChangedBehaviour behaviour, bool use_gpu = false);
 

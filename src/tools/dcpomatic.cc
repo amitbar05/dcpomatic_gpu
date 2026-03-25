@@ -234,6 +234,7 @@ enum {
 	ID_edit_paste,
 	ID_edit_select_all,
 	ID_jobs_make_dcp,
+	ID_jobs_make_dcp_gpu,
 	ID_jobs_make_dcp_batch,
 	ID_jobs_make_kdms,
 	ID_jobs_make_dkdms,
@@ -346,6 +347,7 @@ public:
 		Bind (wxEVT_MENU, boost::bind (&DOMFrame::edit_select_all, this),         ID_edit_select_all);
 		Bind (wxEVT_MENU, boost::bind (&DOMFrame::edit_preferences, this),        wxID_PREFERENCES);
 		Bind (wxEVT_MENU, boost::bind (&DOMFrame::jobs_make_dcp, this),           ID_jobs_make_dcp);
+		Bind (wxEVT_MENU, boost::bind (&DOMFrame::jobs_make_dcp_gpu, this),       ID_jobs_make_dcp_gpu);
 		Bind (wxEVT_MENU, boost::bind (&DOMFrame::jobs_make_kdms, this),          ID_jobs_make_kdms);
 		Bind (wxEVT_MENU, boost::bind (&DOMFrame::jobs_make_dkdms, this),         ID_jobs_make_dkdms);
 		Bind (wxEVT_MENU, boost::bind (&DOMFrame::jobs_make_dcp_batch, this),     ID_jobs_make_dcp_batch);
@@ -881,6 +883,39 @@ private:
 		}
 	}
 
+	void jobs_make_dcp_gpu ()
+	{
+		double required;
+		double available;
+
+		if (!_film->should_be_enough_disk_space(required, available)) {
+			auto const message = wxString::Format(_("The DCP for this film will take up about %.1f GB, and the disk that you are using only has %.1f GB available.  Do you want to continue anyway?"), required, available);
+			if (!confirm_dialog (this, message)) {
+				return;
+			}
+		}
+
+		/* Remove any existing DCP if the user agrees */
+		auto const dcp_dir = _film->dir (_film->dcp_name(), false);
+		if (dcp::filesystem::exists(dcp_dir)) {
+			if (!confirm_dialog (this, wxString::Format (_("Do you want to overwrite the existing DCP %s?"), std_to_wx(dcp_dir.string()).data()))) {
+				return;
+			}
+
+			preserve_assets(dcp_dir, _film->assets_path());
+			dcp::filesystem::remove_all(dcp_dir);
+		}
+
+		try {
+			_film->write_metadata ();
+			make_dcp (_film, TranscodeJob::ChangedBehaviour::EXAMINE_THEN_STOP, true);
+		} catch (BadSettingError& e) {
+			error_dialog (this, wxString::Format (_("Bad setting for %s."), std_to_wx(e.setting()).data()), std_to_wx(e.what()));
+		} catch (std::exception& e) {
+			error_dialog (this, wxString::Format (_("Could not make DCP with GPU.")), std_to_wx(e.what()));
+		}
+	}
+
 	void jobs_make_kdms ()
 	{
 		if (!_film) {
@@ -1404,6 +1439,8 @@ private:
 		auto jobs_menu = new wxMenu;
 		/* [Shortcut] Ctrl+M:Make DCP */
 		add_item (jobs_menu, _("&Make DCP\tCtrl-M"), ID_jobs_make_dcp, NEEDS_FILM | NOT_DURING_DCP_CREATION);
+		/* [Shortcut] Ctrl+G:Make DCP with GPU */
+		add_item (jobs_menu, _("Make DCP with &GPU\tCtrl-G"), ID_jobs_make_dcp_gpu, NEEDS_FILM | NOT_DURING_DCP_CREATION);
 		/* [Shortcut] Ctrl+B:Make DCP in the batch converter*/
 		add_item (jobs_menu, _("Make DCP in &batch converter\tCtrl-B"), ID_jobs_make_dcp_batch, NEEDS_FILM | NOT_DURING_DCP_CREATION);
 		jobs_menu->AppendSeparator ();

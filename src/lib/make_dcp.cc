@@ -42,7 +42,7 @@ using std::string;
 
 /** Add suitable Job to the JobManager to create a DCP for a Film */
 shared_ptr<TranscodeJob>
-make_dcp(shared_ptr<Film> film, TranscodeJob::ChangedBehaviour behaviour)
+make_dcp(shared_ptr<Film> film, TranscodeJob::ChangedBehaviour behaviour, bool use_gpu)
 {
 	if (film->dcp_name().find("/") != string::npos) {
 		throw BadSettingError(_("name"), _("Cannot contain slashes"));
@@ -90,7 +90,7 @@ make_dcp(shared_ptr<Film> film, TranscodeJob::ChangedBehaviour behaviour)
 	LOG_GENERAL("Video bit rate {}", film->video_bit_rate(film->video_encoding()));
 
 	auto tj = make_shared<DCPTranscodeJob>(film, behaviour);
-	tj->set_encoder(make_shared<DCPFilmEncoder>(film, tj));
+	tj->set_encoder(make_shared<DCPFilmEncoder>(film, tj, use_gpu));
 	JobManager::instance()->add(tj);
 
 	return tj;

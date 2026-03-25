@@ -64,10 +64,11 @@ using namespace dcpomatic;
  *  @param film Film that we are encoding.
  *  @param job Job that this encoder is being used in.
  */
-DCPFilmEncoder::DCPFilmEncoder(shared_ptr<const Film> film, weak_ptr<Job> job)
+DCPFilmEncoder::DCPFilmEncoder(shared_ptr<const Film> film, weak_ptr<Job> job, bool use_gpu)
 	: FilmEncoder(film, job)
 	, _finishing(false)
 	, _non_burnt_subtitles(false)
+	, _use_gpu(use_gpu)
 {
 	_player_video_connection = _player.Video.connect(bind(&DCPFilmEncoder::video, this, _1, _2));
 	_player_audio_connection = _player.Audio.connect(bind(&DCPFilmEncoder::audio, this, _1, _2));
@@ -99,7 +100,7 @@ DCPFilmEncoder::go()
 
 	switch (_film->video_encoding()) {
 	case VideoEncoding::JPEG2000:
-		_encoder.reset(new J2KEncoder(_film, *_writer));
+		_encoder.reset(new J2KEncoder(_film, *_writer, _use_gpu));
 		break;
 	case VideoEncoding::MPEG2:
 		_encoder.reset(new MPEG2Encoder(_film, *_writer));

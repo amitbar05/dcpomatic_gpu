@@ -42,7 +42,7 @@ struct frames_not_lost_when_threads_disappear;
 class DCPFilmEncoder : public FilmEncoder
 {
 public:
-	DCPFilmEncoder(std::shared_ptr<const Film> film, std::weak_ptr<Job> job);
+	DCPFilmEncoder(std::shared_ptr<const Film> film, std::weak_ptr<Job> job, bool use_gpu = false);
 	~DCPFilmEncoder();
 
 	void go() override;
@@ -71,6 +71,7 @@ private:
 	std::unique_ptr<VideoEncoder> _encoder;
 	bool _finishing;
 	bool _non_burnt_subtitles;
+	bool _use_gpu;
 
 	boost::signals2::scoped_connection _player_video_connection;
 	boost::signals2::scoped_connection _player_audio_connection;

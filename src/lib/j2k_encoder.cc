@@ -36,6 +36,10 @@
 #include "grok/context.h"
 #include "grok_j2k_encoder_thread.h"
 #endif
+#ifdef DCPOMATIC_NVJPEG
+#include "nvjpeg_j2k_encoder_thread.h"
+#include "nvjpeg_encoder.h"
+#endif
 #include "remote_j2k_encoder_thread.h"
 #include "j2k_encoder.h"
 #include "log.h"
@@ -90,7 +94,7 @@ grk_plugin::IMessengerLogger* getMessengerLogger(void)
 /** @param film Film that we are encoding.
  *  @param writer Writer that we are using.
  */
-J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer)
+J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer, bool use_nvjpeg_gpu)
 	: VideoEncoder(film, writer)
 	, _waker(Waker::Reason::ENCODING)
 #ifdef DCPOMATIC_GROK
@@ -103,6 +107,18 @@ J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer)
 	if (grok.enable) {
 		_context = new grk_plugin::GrokContext(_dcpomatic_context);
 	}
+#endif
+#ifdef DCPOMATIC_NVJPEG
+	_use_nvjpeg_gpu = use_nvjpeg_gpu;
+	if (_use_nvjpeg_gpu) {
+		_nvjpeg_encoder = nvjpeg_encoder_instance();
+		if (!_nvjpeg_encoder->is_initialized()) {
+			LOG_ERROR_NC("nvJPEG encoder failed to initialize, falling back to CPU");
+			_use_nvjpeg_gpu = false;
+		}
+	}
+#else
+	(void) use_nvjpeg_gpu;
 #endif
 }
 
@@ -140,10 +156,17 @@ J2KEncoder::servers_list_changed()
 	auto const grok_enable = false;
 #endif
 
-	auto const cpu = (grok_enable || config->only_servers_encode()) ? 0 : config->master_encoding_threads();
-	auto const gpu = grok_enable ? config->master_encoding_threads() : 0;
+#ifdef DCPOMATIC_NVJPEG
+	auto const nvjpeg_enable = _use_nvjpeg_gpu;
+#else
+	auto const nvjpeg_enable = false;
+#endif
 
-	LOG_GENERAL("Thread counts from: grok={}, only_servers={}, master={}", grok_enable ? "yes" : "no", config->only_servers_encode() ? "yes" : "no", config->master_encoding_threads());
+	auto const any_gpu = grok_enable || nvjpeg_enable;
+	auto const cpu = (any_gpu || config->only_servers_encode()) ? 0 : config->master_encoding_threads();
+	auto const gpu = any_gpu ? config->master_encoding_threads() : 0;
+
+	LOG_GENERAL("Thread counts from: grok={}, nvjpeg={}, only_servers={}, master={}", grok_enable ? "yes" : "no", nvjpeg_enable ? "yes" : "no", config->only_servers_encode() ? "yes" : "no", config->master_encoding_threads());
 	remake_threads(cpu, gpu, EncodeServerFinder::instance()->servers());
 }
 
@@ -405,21 +428,48 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 	remove_threads(cpu, current_cpu_threads, is_cpu_thread);
 
 #ifdef DCPOMATIC_GROK
-	/* GPU */
+	/* GPU (Grok) */
+	{
+		bool skip_grok = false;
+#ifdef DCPOMATIC_NVJPEG
+		skip_grok = _use_nvjpeg_gpu;
+#endif
+		if (!skip_grok) {
+			auto const is_grok_thread = [](shared_ptr<J2KEncoderThread> thread) {
+				return static_cast<bool>(dynamic_pointer_cast<GrokJ2KEncoderThread>(thread));
+			};
 
-	auto const is_grok_thread = [](shared_ptr<J2KEncoderThread> thread) {
-		return static_cast<bool>(dynamic_pointer_cast<GrokJ2KEncoderThread>(thread));
-	};
+			auto const current_gpu_threads = std::count_if(_threads.begin(), _threads.end(), is_grok_thread);
 
-	auto const current_gpu_threads = std::count_if(_threads.begin(), _threads.end(), is_grok_thread);
+			for (auto i = current_gpu_threads; i < gpu; ++i) {
+				auto thread = make_shared<GrokJ2KEncoderThread>(*this, _context);
+				thread->start();
+				_threads.push_back(thread);
+			}
 
-	for (auto i = current_gpu_threads; i < gpu; ++i) {
-		auto thread = make_shared<GrokJ2KEncoderThread>(*this, _context);
-		thread->start();
-		_threads.push_back(thread);
+			remove_threads(gpu, current_gpu_threads, is_grok_thread);
+		}
 	}
+#endif
 
-	remove_threads(gpu, current_gpu_threads, is_grok_thread);
+#ifdef DCPOMATIC_NVJPEG
+	/* GPU (nvJPEG) */
+
+	if (_use_nvjpeg_gpu) {
+		auto const is_nvjpeg_thread = [](shared_ptr<J2KEncoderThread> thread) {
+			return static_cast<bool>(dynamic_pointer_cast<NvjpegJ2KEncoderThread>(thread));
+		};
+
+		auto const current_nvjpeg_threads = std::count_if(_threads.begin(), _threads.end(), is_nvjpeg_thread);
+
+		for (auto i = current_nvjpeg_threads; i < gpu; ++i) {
+			auto thread = make_shared<NvjpegJ2KEncoderThread>(*this, _nvjpeg_encoder);
+			thread->start();
+			_threads.push_back(thread);
+		}
+
+		remove_threads(gpu, current_nvjpeg_threads, is_nvjpeg_thread);
+	}
 #endif
 
 	/* Remote */

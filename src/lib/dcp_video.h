@@ -64,6 +64,10 @@ public:
 
 	Eyes eyes() const;
 
+	std::shared_ptr<const PlayerVideo> frame() const {
+		return _frame;
+	}
+
 	bool same(std::shared_ptr<const DCPVideo> other) const;
 
 	static std::shared_ptr<dcp::OpenJPEGImage> convert_to_xyz(std::shared_ptr<const PlayerVideo> frame);

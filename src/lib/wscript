@@ -274,6 +274,10 @@ def build(bld):
     if bld.env.ENABLE_GROK:
         obj.source += ' grok_j2k_encoder_thread.cc grok/util.cc'
 
+    if bld.env.ENABLE_NVJPEG:
+        obj.source += ' nvjpeg_encoder.cc nvjpeg_j2k_encoder_thread.cc'
+        obj.uselib += ' NVJPEG CUDART'
+
     if bld.env.TARGET_WINDOWS_64 or bld.env.TARGET_WINDOWS_32:
         obj.uselib += ' WINSOCK2 DBGHELP SHLWAPI MSWSOCK BOOST_LOCALE SETUPAPI OLE32 UUID'
         obj.source += ' cross_windows.cc i18n_setup_windows.cc'
