@@ -277,6 +277,9 @@ def build(bld):
     if bld.env.ENABLE_NVJPEG:
         obj.source += ' nvjpeg_encoder.cc nvjpeg_j2k_encoder_thread.cc'
         obj.uselib += ' NVJPEG CUDART'
+        # CUDA J2K encoder is compiled separately with nvcc
+        # Build with: nvcc -c -o cuda_j2k_encoder.o cuda_j2k_encoder.cu
+        # Then link the .o file
 
     if bld.env.TARGET_WINDOWS_64 or bld.env.TARGET_WINDOWS_32:
         obj.uselib += ' WINSOCK2 DBGHELP SHLWAPI MSWSOCK BOOST_LOCALE SETUPAPI OLE32 UUID'

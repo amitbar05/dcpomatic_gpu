@@ -23,7 +23,7 @@
 
 
 #include "j2k_sync_encoder_thread.h"
-#include "nvjpeg_encoder.h"
+#include "cuda_j2k_encoder.h"
 #include <dcp/data.h>
 #include <memory>
 
@@ -32,18 +32,21 @@ class DCPVideo;
 
 
 /** @class NvjpegJ2KEncoderThread
- *  @brief Encoder thread that uses nvJPEG (GPU) for image compression.
+ *  @brief Encoder thread that uses CUDA GPU for JPEG2000 compression.
+ *
+ *  Uses CudaJ2KEncoder to perform DWT and quantization on the GPU,
+ *  producing valid J2K codestreams for DCP MXF picture assets.
  */
 class NvjpegJ2KEncoderThread : public J2KSyncEncoderThread
 {
 public:
-	NvjpegJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<NvjpegEncoder> nvjpeg);
+	NvjpegJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<CudaJ2KEncoder> cuda_j2k);
 
 	void log_thread_start() const override;
 	std::shared_ptr<dcp::ArrayData> encode(DCPVideo const& frame) override;
 
 private:
-	std::shared_ptr<NvjpegEncoder> _nvjpeg;
+	std::shared_ptr<CudaJ2KEncoder> _cuda_j2k;
 };
 
 

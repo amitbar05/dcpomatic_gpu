@@ -200,6 +200,10 @@ def build(bld):
                  zipper_test.cc
                  """
 
+    if bld.env.ENABLE_NVJPEG:
+        obj.source += " gpu_dcp_verify_test.cc"
+        obj.uselib += "NVJPEG CUDART "
+
     if bld.env.TARGET_LINUX and bld.env.ENABLE_DISK:
         obj.source += " disk_writer_test.cc"
         obj.uselib += "LWEXT4 NANOMSG "

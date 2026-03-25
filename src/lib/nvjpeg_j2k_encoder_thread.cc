@@ -26,6 +26,7 @@
 #include "player_video.h"
 #include "image.h"
 #include "util.h"
+#include <dcp/openjpeg_image.h>
 
 #include "i18n.h"
 
@@ -34,9 +35,9 @@ using std::make_shared;
 using std::shared_ptr;
 
 
-NvjpegJ2KEncoderThread::NvjpegJ2KEncoderThread(J2KEncoder& encoder, shared_ptr<NvjpegEncoder> nvjpeg)
+NvjpegJ2KEncoderThread::NvjpegJ2KEncoderThread(J2KEncoder& encoder, shared_ptr<CudaJ2KEncoder> cuda_j2k)
 	: J2KSyncEncoderThread(encoder)
-	, _nvjpeg(nvjpeg)
+	, _cuda_j2k(cuda_j2k)
 {
 
 }
@@ -45,8 +46,8 @@ NvjpegJ2KEncoderThread::NvjpegJ2KEncoderThread(J2KEncoder& encoder, shared_ptr<N
 void
 NvjpegJ2KEncoderThread::log_thread_start() const
 {
-	start_of_thread("NvjpegJ2KEncoder");
-	LOG_TIMING("start-encoder-thread thread={} server=gpu-nvjpeg", thread_id());
+	start_of_thread("CudaJ2KEncoder");
+	LOG_TIMING("start-encoder-thread thread={} server=gpu-cuda-j2k", thread_id());
 }
 
 
@@ -54,34 +55,38 @@ shared_ptr<dcp::ArrayData>
 NvjpegJ2KEncoderThread::encode(DCPVideo const& frame)
 {
 	try {
-		/* Get the frame as XYZ via OpenJPEGImage */
-		auto image = DCPVideo::convert_to_xyz(frame.frame());
-		auto size = image->size();
+		/* Convert frame to XYZ color space (same as CPU path) */
+		auto xyz = DCPVideo::convert_to_xyz(frame.frame());
+		auto size = xyz->size();
 
-		/* Extract XYZ planar data into interleaved 8-bit RGB for nvJPEG.
-		 * We take the upper 4 bits of the 12-bit XYZ data (values 0-4095)
-		 * and scale to 8-bit range.
-		 */
-		int const width = size.width;
-		int const height = size.height;
-		int const stride = width * 3;
-		std::vector<uint8_t> rgb8(static_cast<size_t>(height) * stride);
+		/* Pass XYZ planar data to GPU J2K encoder */
+		const int32_t* planes[3] = {
+			xyz->data(0),
+			xyz->data(1),
+			xyz->data(2)
+		};
 
-		for (int y = 0; y < height; ++y) {
-			for (int x = 0; x < width; ++x) {
-				int const pixel_idx = y * width + x;
-				int const dst_idx = y * stride + x * 3;
-				/* OpenJPEGImage stores 12-bit values (0-4095) in int32_t planes */
-				rgb8[dst_idx + 0] = static_cast<uint8_t>(std::min(255, image->data(0)[pixel_idx] >> 4));
-				rgb8[dst_idx + 1] = static_cast<uint8_t>(std::min(255, image->data(1)[pixel_idx] >> 4));
-				rgb8[dst_idx + 2] = static_cast<uint8_t>(std::min(255, image->data(2)[pixel_idx] >> 4));
-			}
+		auto encoded = _cuda_j2k->encode(
+			planes,
+			size.width,
+			size.height,
+			100000000,  /* 100 Mbit/s default */
+			24,
+			frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
+			false       /* not 4K for now */
+		);
+
+		if (encoded.empty()) {
+			LOG_ERROR(N_("CUDA J2K encode returned empty data for frame {}"), frame.index());
+			return {};
 		}
 
-		auto encoded = _nvjpeg->encode(rgb8.data(), width, height, stride, 95);
-		return make_shared<dcp::ArrayData>(std::move(encoded));
+		/* Wrap in ArrayData for the writer */
+		auto result = make_shared<dcp::ArrayData>(encoded.size());
+		memcpy(result->data(), encoded.data(), encoded.size());
+		return result;
 	} catch (std::exception& e) {
-		LOG_ERROR(N_("nvJPEG GPU encode failed ({})"), e.what());
+		LOG_ERROR(N_("CUDA J2K GPU encode failed ({})"), e.what());
 	}
 
 	return {};

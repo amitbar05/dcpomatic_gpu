@@ -36,7 +36,7 @@
 #include "writer.h"
 #include "video_encoder.h"
 #ifdef DCPOMATIC_NVJPEG
-#include "nvjpeg_encoder.h"
+#include "cuda_j2k_encoder.h"
 #endif
 #include <boost/optional.hpp>
 #include <boost/signals2.hpp>
@@ -128,7 +128,7 @@ private:
 
 #ifdef DCPOMATIC_NVJPEG
 	bool _use_nvjpeg_gpu = false;
-	std::shared_ptr<NvjpegEncoder> _nvjpeg_encoder;
+	std::shared_ptr<CudaJ2KEncoder> _cuda_j2k_encoder;
 #endif
 
 	bool _ending = false;

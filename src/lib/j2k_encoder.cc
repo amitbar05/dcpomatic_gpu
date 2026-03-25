@@ -38,7 +38,7 @@
 #endif
 #ifdef DCPOMATIC_NVJPEG
 #include "nvjpeg_j2k_encoder_thread.h"
-#include "nvjpeg_encoder.h"
+#include "cuda_j2k_encoder.h"
 #endif
 #include "remote_j2k_encoder_thread.h"
 #include "j2k_encoder.h"
@@ -111,9 +111,9 @@ J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer, bool use_nvj
 #ifdef DCPOMATIC_NVJPEG
 	_use_nvjpeg_gpu = use_nvjpeg_gpu;
 	if (_use_nvjpeg_gpu) {
-		_nvjpeg_encoder = nvjpeg_encoder_instance();
-		if (!_nvjpeg_encoder->is_initialized()) {
-			LOG_ERROR_NC("nvJPEG encoder failed to initialize, falling back to CPU");
+		_cuda_j2k_encoder = cuda_j2k_encoder_instance();
+		if (!_cuda_j2k_encoder->is_initialized()) {
+			LOG_ERROR_NC("CUDA J2K encoder failed to initialize, falling back to CPU");
 			_use_nvjpeg_gpu = false;
 		}
 	}
@@ -463,7 +463,7 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 		auto const current_nvjpeg_threads = std::count_if(_threads.begin(), _threads.end(), is_nvjpeg_thread);
 
 		for (auto i = current_nvjpeg_threads; i < gpu; ++i) {
-			auto thread = make_shared<NvjpegJ2KEncoderThread>(*this, _nvjpeg_encoder);
+			auto thread = make_shared<NvjpegJ2KEncoderThread>(*this, _cuda_j2k_encoder);
 			thread->start();
 			_threads.push_back(thread);
 		}
