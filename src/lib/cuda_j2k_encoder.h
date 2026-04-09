@@ -41,9 +41,21 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <array>
 
 
 struct CudaJ2KEncoderImpl;
+
+
+/** GPU color conversion parameters extracted from libdcp ColourConversion.
+ *  Cached and uploaded to GPU once per film (or when conversion changes). */
+struct GpuColourParams
+{
+    float    lut_in[4096];  /**< Input gamma: 12-bit index → linear float [0,1] */
+    int32_t  lut_out[4096]; /**< Output gamma: 12-bit index → DCP int32 value */
+    float    matrix[9];     /**< Combined RGB→XYZ 3×3 matrix (row-major) */
+    bool     valid = false;
+};
 
 
 class CudaJ2KEncoder
@@ -55,18 +67,7 @@ public:
 	CudaJ2KEncoder(CudaJ2KEncoder const&) = delete;
 	CudaJ2KEncoder& operator=(CudaJ2KEncoder const&) = delete;
 
-	/** Encode 3-component 12-bit XYZ image to JPEG2000 codestream.
-	 *
-	 *  @param xyz_planes  Array of 3 pointers to planar int32_t data (12-bit values 0-4095).
-	 *                     Component order: X, Y, Z.  Size: width * height per plane.
-	 *  @param width       Image width in pixels.
-	 *  @param height      Image height in pixels.
-	 *  @param bit_rate    Target bit rate in bits/second.
-	 *  @param fps         Frame rate (used with bit_rate to compute per-frame budget).
-	 *  @param is_3d       True for stereoscopic (halves the per-frame budget).
-	 *  @param is_4k       True for 4K resolution.
-	 *  @return            Valid JPEG2000 codestream data.
-	 */
+	/** Encode 3-component 12-bit XYZ image to JPEG2000 codestream. */
 	std::vector<uint8_t> encode(
 		const int32_t* const xyz_planes[3],
 		int width,
@@ -77,12 +78,29 @@ public:
 		bool is_4k
 	);
 
+	/** V18: Encode from RGB48LE input with GPU color conversion.
+	 *  Eliminates CPU rgb_to_xyz bottleneck by running LUT+matrix on GPU. */
+	std::vector<uint8_t> encode_from_rgb48(
+		const uint16_t* rgb16,   /**< Interleaved RGB48LE, width*3 uint16 per row */
+		int width,
+		int height,
+		int rgb_stride_pixels,   /**< Row stride in uint16_t units (usually width*3) */
+		int64_t bit_rate,
+		int fps,
+		bool is_3d,
+		bool is_4k
+	);
+
+	/** Upload colour conversion LUT+matrix to GPU constant memory. */
+	void set_colour_params(GpuColourParams const& params);
+
 	bool is_initialized() const { return _initialized; }
+	bool has_colour_params() const { return _colour_params_valid; }
 
 private:
 	std::unique_ptr<CudaJ2KEncoderImpl> _impl;
 	bool _initialized = false;
-	std::mutex _mutex;
+	bool _colour_params_valid = false;
 };
 
 

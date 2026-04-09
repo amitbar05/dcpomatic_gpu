@@ -70,6 +70,10 @@ public:
 
 	bool same(std::shared_ptr<const DCPVideo> other) const;
 
+	int frames_per_second() const { return _frames_per_second; }
+	int64_t video_bit_rate() const { return _video_bit_rate; }
+	bool is_4k() const { return _resolution == Resolution::FOUR_K; }
+
 	static std::shared_ptr<dcp::OpenJPEGImage> convert_to_xyz(std::shared_ptr<const PlayerVideo> frame);
 
 	void convert_to_xyz(uint16_t* dst) const;

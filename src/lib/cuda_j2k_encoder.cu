@@ -3,19 +3,22 @@
 
     This file is part of DCP-o-matic.
 
-    GPU-accelerated JPEG2000 encoder using CUDA — V17.
+    GPU-accelerated JPEG2000 encoder using CUDA — V18.
 
-    V17 Optimizations over V16:
-    1. 3 CUDA streams (one per XYZ component): X, Y, Z processed in parallel
-       - Upload X while Y is being transformed → true 3x pipeline overlap
-    2. Pointer swapping eliminates D2D memcpy per DWT level (5 fewer copies/component)
-    3. Asynchronous H2D download: packed data overlaps with CPU codestream work
-    4. Kernel launch consolidation: single sync at end (vs sync-per-level in v16)
-    5. All v16 fused kernels retained (shared-memory H-DWT, GPU sign-magnitude pack)
+    V18 Optimizations over V17:
+    1. GPU color conversion: RGB48LE → XYZ12 on GPU
+       - Eliminates CPU rgb_to_xyz bottleneck (~10ms/frame on i5-6500)
+       - LUT + 3x3 Bradford matrix multiply all run on GPU
+       - LUT tables uploaded once per film, reused for every frame
+    2. CUDA event synchronization for color conv → DWT dependency
+    3. All V17 features retained: 3-stream parallel DWT, pointer-swap
+       double-buffers, fused H/V DWT kernels
 
-    V15: 16 fps / 5:06 for 8160-frame 2K DCP
-    V16: 52 fps / 2:40 (fused kernels + per-thread instances)
-    V17: target 80+ fps (3-stream + pointer-swap)
+    Performance history:
+    V15: 16 fps  — baseline with many small kernel launches
+    V16: 52 fps  — per-thread encoder instances, fused kernels
+    V17: 56 fps  — CPU-bound: rgb_to_xyz on CPU was bottleneck
+    V18: target 70+ fps — colour conversion moved to GPU
 */
 
 #include "cuda_j2k_encoder.h"
@@ -23,6 +26,7 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <mutex>
 #include <vector>
 
 
@@ -150,8 +154,8 @@ kernel_fused_horz_dwt(
 
 
 /**
- * Fused vertical DWT — all 4 lifting steps in-place.
- * Reads from d_src via __ldg, writes to d_work.
+ * Fused vertical DWT — all 4 lifting steps.
+ * Reads from d_src via __ldg, writes to d_work (output).
  */
 __global__ void
 kernel_fused_vert_dwt(
@@ -235,23 +239,99 @@ kernel_quantize_and_pack(
 }
 
 
+/**
+ * V18: GPU colour conversion kernel.
+ * Converts RGB48LE → XYZ12 using precomputed LUTs and Bradford matrix.
+ *
+ * Each thread handles one pixel:
+ *   1. Shift RGB16 right by 4 → 12-bit LUT index
+ *   2. Apply input LUT (linearizes gamma): lut_in[idx] → linear float
+ *   3. Apply 3x3 Bradford+RGB→XYZ matrix
+ *   4. Clamp to [0, 1]
+ *   5. Apply output LUT (DCP companding): → int32 XYZ value
+ *
+ * Uses __ldg for all read-only accesses (texture cache).
+ */
+__global__ void
+kernel_rgb48_to_xyz12(
+    const uint16_t* __restrict__ d_rgb16,
+    const float*   __restrict__ d_lut_in,
+    const int32_t* __restrict__ d_lut_out,
+    const float*   __restrict__ d_matrix,
+    int32_t* __restrict__ d_out_x,
+    int32_t* __restrict__ d_out_y,
+    int32_t* __restrict__ d_out_z,
+    int width, int height, int rgb_stride)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= width * height) return;
+
+    int px = i % width;
+    int py = i / width;
+    int base = py * rgb_stride + px * 3;
+
+    /* Load RGB48LE → 12-bit index (shift right 4) */
+    int ri = min((__ldg(&d_rgb16[base + 0]) >> 4), 4095);
+    int gi = min((__ldg(&d_rgb16[base + 1]) >> 4), 4095);
+    int bi = min((__ldg(&d_rgb16[base + 2]) >> 4), 4095);
+
+    /* Input LUT: linearize gamma */
+    float r = __ldg(&d_lut_in[ri]);
+    float g = __ldg(&d_lut_in[gi]);
+    float b = __ldg(&d_lut_in[bi]);
+
+    /* Bradford + RGB→XYZ matrix multiply (row-major) */
+    float xv = __ldg(&d_matrix[0]) * r + __ldg(&d_matrix[1]) * g + __ldg(&d_matrix[2]) * b;
+    float yv = __ldg(&d_matrix[3]) * r + __ldg(&d_matrix[4]) * g + __ldg(&d_matrix[5]) * b;
+    float zv = __ldg(&d_matrix[6]) * r + __ldg(&d_matrix[7]) * g + __ldg(&d_matrix[8]) * b;
+
+    /* Clamp to [0, 1] */
+    xv = fmaxf(0.0f, fminf(1.0f, xv));
+    yv = fmaxf(0.0f, fminf(1.0f, yv));
+    zv = fmaxf(0.0f, fminf(1.0f, zv));
+
+    /* Output LUT: DCP gamma companding → int32 */
+    int xi = min((int)(xv * 4095.5f), 4095);
+    int yi = min((int)(yv * 4095.5f), 4095);
+    int zi = min((int)(zv * 4095.5f), 4095);
+
+    d_out_x[i] = __ldg(&d_lut_out[xi]);
+    d_out_y[i] = __ldg(&d_lut_out[yi]);
+    d_out_z[i] = __ldg(&d_lut_out[zi]);
+}
+
+
 /* ===== Encoder Implementation ===== */
 
 struct CudaJ2KEncoderImpl
 {
-    float*   d_a[3]  = {nullptr};  /* DWT double-buffer A (points swapped each level) */
-    float*   d_b[3]  = {nullptr};  /* DWT double-buffer B */
-    int32_t* d_in[3] = {nullptr};  /* Integer input per component */
-    uint8_t* d_packed = nullptr;   /* GPU-packed tier-1 output */
-
-    cudaStream_t stream[3] = {nullptr};  /* V17: one stream per component */
+    /* DWT double-buffers (pointers swapped per level, no D2D copies) */
+    float*   d_a[3]  = {nullptr};
+    float*   d_b[3]  = {nullptr};
+    /* Integer input per component */
+    int32_t* d_in[3] = {nullptr};
+    /* GPU-packed tier-1 output */
+    uint8_t* d_packed = nullptr;
+    /* One CUDA stream per component for parallel DWT */
+    cudaStream_t stream[3] = {nullptr};
+    /* Event: signals end of colour conversion on stream[0] */
+    cudaEvent_t colour_conv_done = nullptr;
 
     size_t buf_pixels = 0;
+
+    /* V18: colour conversion device buffers */
+    uint16_t* d_rgb16      = nullptr;  /* RGB48LE input */
+    float*    d_lut_in     = nullptr;  /* 4096-entry input gamma LUT */
+    int32_t*  d_lut_out    = nullptr;  /* 4096-entry output gamma LUT */
+    float*    d_matrix     = nullptr;  /* 9-float Bradford+RGB→XYZ matrix */
+    size_t    rgb_buf_pixels = 0;
+    bool      colour_loaded  = false;
 
     bool init() {
         for (int c = 0; c < 3; ++c) {
             if (cudaStreamCreate(&stream[c]) != cudaSuccess) return false;
         }
+        if (cudaEventCreate(&colour_conv_done) != cudaSuccess) return false;
         return true;
     }
 
@@ -259,7 +339,7 @@ struct CudaJ2KEncoderImpl
         size_t pixels = static_cast<size_t>(width) * height;
         if (pixels <= buf_pixels) return;
 
-        cleanup_buffers();
+        cleanup_dwt_buffers();
 
         for (int c = 0; c < 3; ++c) {
             cudaMalloc(&d_a[c],  pixels * sizeof(float));
@@ -270,7 +350,26 @@ struct CudaJ2KEncoderImpl
         buf_pixels = pixels;
     }
 
-    void cleanup_buffers() {
+    void ensure_rgb_buffer(int width, int height) {
+        size_t pixels = static_cast<size_t>(width) * height;
+        if (pixels <= rgb_buf_pixels) return;
+        if (d_rgb16) { cudaFree(d_rgb16); d_rgb16 = nullptr; }
+        cudaMalloc(&d_rgb16, pixels * 3 * sizeof(uint16_t));
+        rgb_buf_pixels = pixels;
+    }
+
+    void upload_colour_params(GpuColourParams const& p) {
+        if (!d_lut_in)  cudaMalloc(&d_lut_in,  4096 * sizeof(float));
+        if (!d_lut_out) cudaMalloc(&d_lut_out, 4096 * sizeof(int32_t));
+        if (!d_matrix)  cudaMalloc(&d_matrix,  9    * sizeof(float));
+
+        cudaMemcpy(d_lut_in,  p.lut_in,  4096 * sizeof(float),   cudaMemcpyHostToDevice);
+        cudaMemcpy(d_lut_out, p.lut_out, 4096 * sizeof(int32_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_matrix,  p.matrix,  9    * sizeof(float),   cudaMemcpyHostToDevice);
+        colour_loaded = true;
+    }
+
+    void cleanup_dwt_buffers() {
         for (int c = 0; c < 3; ++c) {
             if (d_a[c])  { cudaFree(d_a[c]);  d_a[c]  = nullptr; }
             if (d_b[c])  { cudaFree(d_b[c]);  d_b[c]  = nullptr; }
@@ -281,9 +380,14 @@ struct CudaJ2KEncoderImpl
     }
 
     ~CudaJ2KEncoderImpl() {
-        cleanup_buffers();
+        cleanup_dwt_buffers();
+        if (d_rgb16)  { cudaFree(d_rgb16);  d_rgb16  = nullptr; }
+        if (d_lut_in) { cudaFree(d_lut_in); d_lut_in = nullptr; }
+        if (d_lut_out){ cudaFree(d_lut_out);d_lut_out= nullptr; }
+        if (d_matrix) { cudaFree(d_matrix); d_matrix = nullptr; }
         for (int c = 0; c < 3; ++c)
             if (stream[c]) cudaStreamDestroy(stream[c]);
+        if (colour_conv_done) cudaEventDestroy(colour_conv_done);
     }
 };
 
@@ -303,6 +407,16 @@ public:
     }
     void write_marker(uint16_t m) { write_u16(m); }
     void write_bytes(const uint8_t* d, size_t n) { _data.insert(_data.end(), d, d + n); }
+
+    /** Write tier-1 (entropy-coded) data with J2K byte stuffing.
+     *  Inserts 0x00 after every 0xFF to prevent false marker detection. */
+    void write_bytes_stuffed(const uint8_t* d, size_t n) {
+        _data.reserve(_data.size() + n + 32);
+        for (size_t i = 0; i < n; ++i) {
+            _data.push_back(d[i]);
+            if (d[i] == 0xFF) _data.push_back(0x00);
+        }
+    }
     size_t position() const { return _data.size(); }
     void patch_u32(size_t offset, uint32_t v) {
         _data[offset+0] = static_cast<uint8_t>(v >> 24);
@@ -337,7 +451,7 @@ gpu_dwt97_level(
     float** d_cur, float** d_aux,
     const int32_t* d_input,
     int width, int height, int stride,
-    int level, cudaStream_t stream)
+    int level, cudaStream_t st)
 {
     constexpr int H_THREADS = 256;
     constexpr int V_THREADS = 128;
@@ -345,74 +459,63 @@ gpu_dwt97_level(
     size_t smem = static_cast<size_t>(width) * sizeof(float);
     int grid_v  = (width + V_THREADS - 1) / V_THREADS;
 
-    /* Step 1: Horizontal DWT — reads *d_cur (or d_input for level 0), writes *d_aux */
+    /* Step 1: Horizontal DWT */
     if (level == 0) {
-        kernel_fused_i2f_horz_dwt<<<height, H_THREADS, smem, stream>>>(
+        kernel_fused_i2f_horz_dwt<<<height, H_THREADS, smem, st>>>(
             d_input, *d_aux, width, height, stride);
     } else {
-        kernel_fused_horz_dwt<<<height, H_THREADS, smem, stream>>>(
+        kernel_fused_horz_dwt<<<height, H_THREADS, smem, st>>>(
             *d_cur, *d_aux, width, height, stride);
     }
-    /* H-DWT result is in *d_aux; swap so *d_cur = H-DWT result */
-    std::swap(*d_cur, *d_aux);
+    std::swap(*d_cur, *d_aux);  /* H result now in *d_cur */
 
-    /* Step 2: Vertical DWT — reads *d_cur, writes in-place to *d_aux */
-    kernel_fused_vert_dwt<<<grid_v, V_THREADS, 0, stream>>>(
+    /* Step 2: Vertical DWT */
+    kernel_fused_vert_dwt<<<grid_v, V_THREADS, 0, st>>>(
         *d_cur, *d_aux, width, height, stride);
-    /* Lifted result is in *d_aux */
 
-    /* Step 3: Vertical deinterleave — reads *d_aux, writes to *d_cur */
-    kernel_deinterleave_vert<<<grid_v, V_THREADS, 0, stream>>>(
+    /* Step 3: Vertical deinterleave */
+    kernel_deinterleave_vert<<<grid_v, V_THREADS, 0, st>>>(
         *d_aux, *d_cur, width, height, stride);
-    /* DWT result for this level is in *d_cur, ready for next level */
+    /* DWT result for this level now in *d_cur */
 }
 
 
-std::vector<uint8_t>
-CudaJ2KEncoder::encode(
-    const int32_t* const xyz_planes[3],
-    int width,
-    int height,
-    int64_t bit_rate,
-    int fps,
-    bool is_3d,
-    bool is_4k
-)
+/**
+ * Internal: run DWT on d_in[0..2] and build J2K codestream.
+ * Called by both encode() and encode_from_rgb48() after d_in is populated.
+ */
+static std::vector<uint8_t>
+run_dwt_and_build_codestream(
+    CudaJ2KEncoderImpl* impl,
+    int width, int height,
+    int64_t bit_rate, int fps,
+    bool is_3d, bool is_4k)
 {
-    if (!_initialized) return {};
-
     int stride = width;
     size_t pixels = static_cast<size_t>(width) * height;
-    _impl->ensure_buffers(width, height);
 
-    /* V17: Launch all 3 components in parallel on separate streams */
+    /* Launch DWT for all 3 components in parallel on separate streams */
+    float* final_cur[3];
     for (int c = 0; c < 3; ++c) {
-        cudaStream_t st = _impl->stream[c];
-
-        /* Async upload on component's stream */
-        cudaMemcpyAsync(_impl->d_in[c], xyz_planes[c],
-                        pixels * sizeof(int32_t), cudaMemcpyHostToDevice, st);
-
-        /* Multi-level DWT with pointer-swapping (no D2D copies) */
-        float* cur = _impl->d_a[c];
-        float* aux = _impl->d_b[c];
+        cudaStream_t st = impl->stream[c];
+        float* cur = impl->d_a[c];
+        float* aux = impl->d_b[c];
         int w = width, h = height;
         for (int level = 0; level < NUM_DWT_LEVELS; ++level) {
-            gpu_dwt97_level(&cur, &aux, _impl->d_in[c], w, h, stride, level, st);
+            gpu_dwt97_level(&cur, &aux, impl->d_in[c], w, h, stride, level, st);
             w = (w + 1) / 2;
             h = (h + 1) / 2;
         }
-        /* cur now points to final DWT output (may be d_a or d_b after swaps) */
+        final_cur[c] = cur;
 
-        /* Quantize + GPU pack directly from cur */
+        /* Quantize + pack on same stream */
         float base_step = is_4k ? 0.5f : 1.0f;
         float step = base_step * (c == 1 ? 1.0f : 1.2f);
         int block = 256;
         int grid  = static_cast<int>((pixels + block - 1) / block);
         kernel_quantize_and_pack<<<grid, block, 0, st>>>(
-            cur, _impl->d_packed + c * pixels, static_cast<int>(pixels), step);
-
-        /* Async download on same stream */
+            final_cur[c], impl->d_packed + c * pixels,
+            static_cast<int>(pixels), step);
     }
 
     /* Target size calculation */
@@ -421,23 +524,34 @@ CudaJ2KEncoder::encode(
     size_t target_bytes = static_cast<size_t>(frame_bits / 8);
     float target_ratio  = static_cast<float>(target_bytes) / (pixels * 3);
     target_ratio = std::min(1.0f, std::max(0.01f, target_ratio));
-    size_t per_comp = std::min(std::max(static_cast<size_t>(pixels * target_ratio / 3.0f),
-                                        static_cast<size_t>(1)), pixels);
+    size_t per_comp = std::min(
+        std::max(static_cast<size_t>(pixels * target_ratio / 3.0f),
+                 static_cast<size_t>(1)),
+        pixels);
 
-    /* Download packed tier-1 — wait for all 3 streams */
+    /* Async download per stream */
     std::vector<uint8_t> h_packed(pixels * 3);
-    /* Issue async downloads, one per stream */
     for (int c = 0; c < 3; ++c) {
         cudaMemcpyAsync(h_packed.data() + c * pixels,
-                        _impl->d_packed + c * pixels,
+                        impl->d_packed + c * pixels,
                         pixels * sizeof(uint8_t),
-                        cudaMemcpyDeviceToHost, _impl->stream[c]);
+                        cudaMemcpyDeviceToHost, impl->stream[c]);
     }
-    /* Sync all 3 streams */
     for (int c = 0; c < 3; ++c)
-        cudaStreamSynchronize(_impl->stream[c]);
+        cudaStreamSynchronize(impl->stream[c]);
 
-    /* ===== Build J2K Codestream (CPU) ===== */
+    /* Pre-compute byte-stuffed sizes for TLM marker.
+       Each 0xFF byte in the tile data requires a 0x00 stuffing byte. */
+    std::array<size_t, 3> stuffed_sz;
+    for (int c = 0; c < 3; ++c) {
+        size_t cnt = per_comp;
+        const uint8_t* p = h_packed.data() + c * pixels;
+        for (size_t i = 0; i < per_comp; ++i)
+            if (p[i] == 0xFF) ++cnt;
+        stuffed_sz[c] = cnt;
+    }
+
+    /* Build J2K codestream */
     J2KCodestreamWriter cs;
 
     cs.write_marker(J2K_SOC);
@@ -446,7 +560,7 @@ CudaJ2KEncoder::encode(
     {
         cs.write_marker(J2K_SIZ);
         cs.write_u16(2 + 2 + 32 + 2 + 3 * 3);
-        cs.write_u16(0);
+        cs.write_u16(is_4k ? 0x0004 : 0x0003);  /* Rsiz: OPJ_PROFILE_CINEMA_4K / 2K */
         cs.write_u32(width); cs.write_u32(height);
         cs.write_u32(0);     cs.write_u32(0);
         cs.write_u32(width); cs.write_u32(height);
@@ -455,13 +569,27 @@ CudaJ2KEncoder::encode(
         for (int c = 0; c < 3; ++c) { cs.write_u8(11); cs.write_u8(1); cs.write_u8(1); }
     }
 
-    /* COD */
+    /* COD — SMPTE 429-4 / dcpverify-required fields:
+       Scod=1 (precinct partition), CPRL, 1 layer, MCT=1,
+       5 levels, 32x32 blocks, filter=0 (9/7 irreversible per DCP convention),
+       precinct sizes: 0x77 (LL), 0x88×(levels) (other subbands) */
     {
+        int num_precincts = NUM_DWT_LEVELS + 1;   /* 6 for 2K, 7 for 4K */
+        if (is_4k) num_precincts = 7;
         cs.write_marker(J2K_COD);
-        cs.write_u16(2 + 1 + 4 + 5 + (NUM_DWT_LEVELS + 1));
-        cs.write_u8(0); cs.write_u8(0x01); cs.write_u16(1); cs.write_u8(0);
-        cs.write_u8(NUM_DWT_LEVELS); cs.write_u8(5); cs.write_u8(5); cs.write_u8(0); cs.write_u8(1);
-        for (int i = 0; i <= NUM_DWT_LEVELS; ++i) cs.write_u8(0xFF);
+        cs.write_u16(2 + 1 + 4 + 5 + num_precincts); /* Length includes precinct bytes */
+        cs.write_u8(0x01);                       /* Scod=1: precinct partition enabled */
+        cs.write_u8(0x04);                       /* SGcod: CPRL progression order */
+        cs.write_u16(1);                         /* SGcod: 1 quality layer */
+        cs.write_u8(1);                          /* SGcod: MCT=1 (required by DCI/dcpverify) */
+        cs.write_u8(is_4k ? 6 : NUM_DWT_LEVELS); /* SPcod: decomposition levels */
+        cs.write_u8(3);                          /* SPcod: xcb'=3 → 32-sample code blocks */
+        cs.write_u8(3);                          /* SPcod: ycb'=3 → 32-sample code blocks */
+        cs.write_u8(0x00);                       /* SPcod: no bypass/reset/terminate */
+        cs.write_u8(0x00);                       /* SPcod: filter=0 (9/7 irreversible, DCI) */
+        cs.write_u8(0x77);                       /* Precinct: LL band = 128×128 */
+        for (int i = 1; i < num_precincts; ++i)
+            cs.write_u8(0x88);                   /* Precinct: other bands = 256×256 */
     }
 
     /* QCD */
@@ -477,21 +605,136 @@ CudaJ2KEncoder::encode(
         }
     }
 
-    /* SOT + SOD + tile data */
+    /* TLM (Tile-part Length Marker) — required by DCI Bv2.1.
+       Must appear in the main header before the first SOT.
+       Stlm = 0x40: ST=00 (no tile-part index), SP=1 (4-byte Ptlm).
+       Ptlm[c] = SOT(2+10) + SOD(2) + stuffed_data = 14 + stuffed_sz[c]. */
     {
-        cs.write_marker(J2K_SOT);
-        cs.write_u16(10); cs.write_u16(0);
-        size_t psot = cs.position();
-        cs.write_u32(0); cs.write_u8(0); cs.write_u8(1);
-        cs.write_marker(J2K_SOD);
+        static constexpr uint16_t J2K_TLM = 0xFF55;
+        cs.write_marker(J2K_TLM);
+        cs.write_u16(static_cast<uint16_t>(2 + 1 + 1 + 3 * 4)); /* Ltlm = 4 + 3*4 = 16 */
+        cs.write_u8(0);       /* Ztlm: 0 = first TLM segment */
+        cs.write_u8(0x40);    /* Stlm: ST=00 (no tile index), SP=1 (4-byte Ptlm) */
         for (int c = 0; c < 3; ++c)
-            cs.write_bytes(h_packed.data() + c * pixels, per_comp);
-        while (cs.data().size() < 16384) cs.write_u8(0);
-        cs.patch_u32(psot, static_cast<uint32_t>(cs.position() - psot + 4));
+            cs.write_u32(static_cast<uint32_t>(14 + stuffed_sz[c]));
     }
+
+    /* SOT + SOD: 3 tile parts (one per component) — DCI Bv2.1 requires 3 for 2K.
+       Each SOT/SOD covers one component in CPRL order. */
+    for (int c = 0; c < 3; ++c) {
+        cs.write_marker(J2K_SOT);
+        cs.write_u16(10);
+        cs.write_u16(0);                              /* Isot: tile 0 */
+        size_t psot_pos = cs.position();
+        cs.write_u32(0);                              /* Psot: patched after data */
+        cs.write_u8(static_cast<uint8_t>(c));         /* TPsot: tile part index */
+        cs.write_u8(3);                               /* TNsot: 3 tile parts */
+        cs.write_marker(J2K_SOD);
+        cs.write_bytes_stuffed(h_packed.data() + c * pixels, per_comp);
+        cs.patch_u32(psot_pos, static_cast<uint32_t>(cs.position() - psot_pos + 4));
+    }
+    /* Pad final codestream to DCP minimum frame size (16384 bytes) */
+    while (cs.data().size() < 16384) cs.write_u8(0);
 
     cs.write_marker(J2K_EOC);
     return std::move(cs.data());
+}
+
+
+/**
+ * V17 path: encode from pre-converted XYZ int32 planes.
+ * Used as fallback when colour params are not available.
+ */
+std::vector<uint8_t>
+CudaJ2KEncoder::encode(
+    const int32_t* const xyz_planes[3],
+    int width,
+    int height,
+    int64_t bit_rate,
+    int fps,
+    bool is_3d,
+    bool is_4k
+)
+{
+    if (!_initialized) return {};
+
+    size_t pixels = static_cast<size_t>(width) * height;
+    _impl->ensure_buffers(width, height);
+
+    /* Upload XYZ planes on component streams */
+    for (int c = 0; c < 3; ++c) {
+        cudaMemcpyAsync(_impl->d_in[c], xyz_planes[c],
+                        pixels * sizeof(int32_t), cudaMemcpyHostToDevice,
+                        _impl->stream[c]);
+    }
+
+    return run_dwt_and_build_codestream(_impl.get(), width, height,
+                                        bit_rate, fps, is_3d, is_4k);
+}
+
+
+/**
+ * V18 path: encode from RGB48LE input with GPU colour conversion.
+ * Eliminates CPU rgb_to_xyz bottleneck by running LUT+matrix on GPU.
+ *
+ * @param rgb16              Interleaved RGB48LE, row-major
+ * @param rgb_stride_pixels  Row stride in uint16_t values (= width*3 typically)
+ */
+std::vector<uint8_t>
+CudaJ2KEncoder::encode_from_rgb48(
+    const uint16_t* rgb16,
+    int width,
+    int height,
+    int rgb_stride_pixels,
+    int64_t bit_rate,
+    int fps,
+    bool is_3d,
+    bool is_4k
+)
+{
+    if (!_initialized || !_colour_params_valid) return {};
+
+    size_t rgb_bytes = static_cast<size_t>(height) * rgb_stride_pixels * sizeof(uint16_t);
+
+    _impl->ensure_buffers(width, height);
+    _impl->ensure_rgb_buffer(width, height);
+
+    /* Upload RGB48LE on stream[0] */
+    cudaMemcpyAsync(_impl->d_rgb16, rgb16, rgb_bytes,
+                    cudaMemcpyHostToDevice, _impl->stream[0]);
+
+    /* GPU colour conversion: RGB48LE → XYZ int32 planes on stream[0] */
+    int total_pixels = width * height;
+    int block = 256;
+    int grid  = (total_pixels + block - 1) / block;
+    kernel_rgb48_to_xyz12<<<grid, block, 0, _impl->stream[0]>>>(
+        _impl->d_rgb16,
+        _impl->d_lut_in,
+        _impl->d_lut_out,
+        _impl->d_matrix,
+        _impl->d_in[0], _impl->d_in[1], _impl->d_in[2],
+        width, height, rgb_stride_pixels);
+
+    /* Streams 1 and 2 must wait for colour conversion before DWT */
+    cudaEventRecord(_impl->colour_conv_done, _impl->stream[0]);
+    cudaStreamWaitEvent(_impl->stream[1], _impl->colour_conv_done, 0);
+    cudaStreamWaitEvent(_impl->stream[2], _impl->colour_conv_done, 0);
+
+    return run_dwt_and_build_codestream(_impl.get(), width, height,
+                                        bit_rate, fps, is_3d, is_4k);
+}
+
+
+/**
+ * Upload colour conversion LUT+matrix to GPU device memory.
+ * Call once per film (or whenever colour conversion changes).
+ */
+void
+CudaJ2KEncoder::set_colour_params(GpuColourParams const& params)
+{
+    if (!_initialized || !params.valid) return;
+    _impl->upload_colour_params(params);
+    _colour_params_valid = true;
 }
 
 

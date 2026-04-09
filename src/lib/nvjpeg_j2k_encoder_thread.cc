@@ -27,6 +27,7 @@
 #include "image.h"
 #include "util.h"
 #include <dcp/openjpeg_image.h>
+#include <dcp/rgb_xyz.h>
 
 #include "i18n.h"
 
@@ -51,40 +52,107 @@ NvjpegJ2KEncoderThread::log_thread_start() const
 }
 
 
+/**
+ * Build GpuColourParams from a libdcp ColourConversion.
+ * Called once per encoder thread on the first frame.
+ *
+ * - lut_in[4096]:  12-bit index → linear float (input gamma linearisation)
+ * - lut_out[4096]: linear float [0,1] → DCP int32 (output gamma companding)
+ * - matrix[9]:     Bradford + RGB→XYZ combined matrix (row-major)
+ */
+static GpuColourParams
+build_gpu_colour_params(dcp::ColourConversion const& conv)
+{
+	GpuColourParams p;
+
+	/* Input LUT: 12-bit index → linear float */
+	auto const& lut_in_d = conv.in()->double_lut(0, 1, 12, false);
+	for (int i = 0; i < 4096; ++i)
+		p.lut_in[i] = static_cast<float>(lut_in_d[i]);
+
+	/* Output LUT: linear [0,1] → DCP int32 via PiecewiseLUT2.
+	   Sample the piecewise LUT at uniform float intervals. */
+	auto lut_out = dcp::make_inverse_gamma_lut(conv.out());
+	for (int i = 0; i < 4096; ++i)
+		p.lut_out[i] = lut_out.lookup(i / 4095.0);
+
+	/* Bradford + RGB→XYZ combined matrix (9 doubles → 9 floats) */
+	double mat[9];
+	dcp::combined_rgb_to_xyz(conv, mat);
+	for (int i = 0; i < 9; ++i)
+		p.matrix[i] = static_cast<float>(mat[i]);
+
+	p.valid = true;
+	return p;
+}
+
+
 shared_ptr<dcp::ArrayData>
 NvjpegJ2KEncoderThread::encode(DCPVideo const& frame)
 {
 	try {
-		/* Convert frame to XYZ color space (same as CPU path) */
-		auto xyz = DCPVideo::convert_to_xyz(frame.frame());
-		auto size = xyz->size();
+		/* On first frame (or if colour params not yet uploaded), extract
+		   colour conversion params and upload LUT+matrix to GPU. */
+		if (!_cuda_j2k->has_colour_params()) {
+			auto const& colour_conv = frame.frame()->colour_conversion();
+			if (colour_conv) {
+				auto params = build_gpu_colour_params(colour_conv.get());
+				_cuda_j2k->set_colour_params(params);
+			}
+		}
 
-		/* Pass XYZ planar data to GPU J2K encoder */
-		const int32_t* planes[3] = {
-			xyz->data(0),
-			xyz->data(1),
-			xyz->data(2)
-		};
+		std::vector<uint8_t> encoded;
 
-		auto encoded = _cuda_j2k->encode(
-			planes,
-			size.width,
-			size.height,
-			100000000,  /* 100 Mbit/s default */
-			24,
-			frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
-			false       /* not 4K for now */
-		);
+		if (_cuda_j2k->has_colour_params()) {
+			/* V18 path: get raw RGB48LE and do colour conversion on GPU */
+			auto image = frame.frame()->image(
+				[](AVPixelFormat) { return AV_PIX_FMT_RGB48LE; },
+				VideoRange::FULL,
+				false
+			);
+			auto size = image->size();
+			/* stride()[0] is in bytes; divide by sizeof(uint16_t) to get uint16_t stride */
+			int rgb_stride = image->stride()[0] / static_cast<int>(sizeof(uint16_t));
+
+			encoded = _cuda_j2k->encode_from_rgb48(
+				reinterpret_cast<const uint16_t*>(image->data()[0]),
+				size.width,
+				size.height,
+				rgb_stride,
+				frame.video_bit_rate(),
+				frame.frames_per_second(),
+				frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
+				frame.is_4k()
+			);
+		} else {
+			/* Fallback: CPU colour conversion (V17 path) */
+			auto xyz = DCPVideo::convert_to_xyz(frame.frame());
+			auto size = xyz->size();
+			const int32_t* planes[3] = {
+				xyz->data(0),
+				xyz->data(1),
+				xyz->data(2)
+			};
+			encoded = _cuda_j2k->encode(
+				planes,
+				size.width,
+				size.height,
+				frame.video_bit_rate(),
+				frame.frames_per_second(),
+				frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
+				frame.is_4k()
+			);
+		}
 
 		if (encoded.empty()) {
 			LOG_ERROR(N_("CUDA J2K encode returned empty data for frame {}"), frame.index());
 			return {};
 		}
 
-		/* Wrap in ArrayData for the writer */
 		auto result = make_shared<dcp::ArrayData>(encoded.size());
 		memcpy(result->data(), encoded.data(), encoded.size());
 		return result;
+
 	} catch (std::exception& e) {
 		LOG_ERROR(N_("CUDA J2K GPU encode failed ({})"), e.what());
 	}
