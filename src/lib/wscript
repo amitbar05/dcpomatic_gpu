@@ -274,12 +274,21 @@ def build(bld):
     if bld.env.ENABLE_GROK:
         obj.source += ' grok_j2k_encoder_thread.cc grok/util.cc'
 
+    cuda_out_node = None
     if bld.env.ENABLE_NVJPEG:
         obj.source += ' nvjpeg_encoder.cc nvjpeg_j2k_encoder_thread.cc'
         obj.uselib += ' NVJPEG CUDART'
-        # CUDA J2K encoder is compiled separately with nvcc
-        # Build with: nvcc -c -o cuda_j2k_encoder.o cuda_j2k_encoder.cu
-        # Then link the .o file
+        # Compile CUDA J2K encoder with nvcc and include in the shared library
+        from waflib.Task import Task
+        class nvcc_compile(Task):
+            color = 'GREEN'
+            run_str = 'nvcc -c -O3 -arch=sm_61 -std=c++17 --compiler-options=-fPIC -I${SRC[0].parent.abspath()} -o ${TGT[0].abspath()} ${SRC[0].abspath()}'
+        cuda_src = bld.path.find_resource('cuda_j2k_encoder.cu')
+        cuda_out_node = bld.path.get_bld().make_node('cuda_j2k_encoder.o')
+        t = nvcc_compile(env=bld.env)
+        t.set_inputs([cuda_src])
+        t.set_outputs([cuda_out_node])
+        bld.add_to_group(t)
 
     if bld.env.TARGET_WINDOWS_64 or bld.env.TARGET_WINDOWS_32:
         obj.uselib += ' WINSOCK2 DBGHELP SHLWAPI MSWSOCK BOOST_LOCALE SETUPAPI OLE32 UUID'
@@ -290,6 +299,10 @@ def build(bld):
         obj.source += ' cross_linux.cc cross_unix.cc i18n_setup_linux.cc'
     if bld.env.STATIC_DCPOMATIC:
         obj.uselib += ' XMLPP'
+
+    # Append CUDA .o node after all string-based source additions (avoids list/str concat issues)
+    if cuda_out_node is not None:
+        obj.source = obj.source.split() + [cuda_out_node]
 
     obj.target = 'dcpomatic2'
 

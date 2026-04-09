@@ -102,6 +102,9 @@ help(function <void (string)> out)
 	out("      --export-format <format>      export project to a file, rather than making a DCP: specify mov or mp4\n");
 	out("      --export-filename <filename>  filename to export to with --export-format\n");
 	out("      --hints                       analyze film for hints before encoding and abort if any are found\n");
+#ifdef DCPOMATIC_NVJPEG
+	out("      --gpu                         use GPU (nvJPEG) for JPEG2000 encoding\n");
+#endif
 	out("\ne.g.\n");
 	out(fmt::format("\n  {} -t 4 make-dcp my_great_movie\n", program_name));
 	out(fmt::format("\n  {} config grok-licence 12345ABCD\n", program_name));
@@ -291,6 +294,7 @@ encode_cli(int argc, char* argv[], function<void (string)> out, function<void ()
 	optional<string> export_format;
 	optional<boost::filesystem::path> export_filename;
 	bool hints = false;
+	bool use_gpu = false;
 	string command = "make-dcp";
 
 	/* This makes it possible to call getopt several times in the same executable, for tests */
@@ -317,10 +321,11 @@ encode_cli(int argc, char* argv[], function<void (string)> out, function<void ()
 			{ "export-format", required_argument, 0, 'C' },
 			{ "export-filename", required_argument, 0, 'D' },
 			{ "hints", no_argument, 0, 'E' },
+			{ "gpu", no_argument, 0, 'F' },
 			{ 0, 0, 0, 0 }
 		};
 
-		int c = getopt_long(argc, argv, "vhfnrt:j:kAs:ldc:BC:D:E", long_options, &option_index);
+		int c = getopt_long(argc, argv, "vhfnrt:j:kAs:ldc:BC:D:EF", long_options, &option_index);
 
 		if (c == -1) {
 			break;
@@ -378,6 +383,9 @@ encode_cli(int argc, char* argv[], function<void (string)> out, function<void ()
 			break;
 		case 'E':
 			hints = true;
+			break;
+		case 'F':
+			use_gpu = true;
 			break;
 		}
 	}
@@ -616,7 +624,7 @@ encode_cli(int argc, char* argv[], function<void (string)> out, function<void ()
 		JobManager::instance()->add(job);
 	} else {
 		try {
-			make_dcp(film, behaviour);
+			make_dcp(film, behaviour, use_gpu);
 		} catch (runtime_error& e) {
 			return fmt::format("Could not make DCP: {}\n", e.what());
 		}

@@ -22,6 +22,7 @@
 #include "dcpomatic_log.h"
 #include "exceptions.h"
 #include <dcp/array_data.h>
+#include <fmt/format.h>
 #include <cstring>
 #include <algorithm>
 
@@ -36,7 +37,7 @@ using dcp::ArrayData;
 		nvjpegStatus_t status = (call); \
 		if (status != NVJPEG_STATUS_SUCCESS) { \
 			LOG_ERROR("nvJPEG error {} at {}:{}", static_cast<int>(status), __FILE__, __LINE__); \
-			throw EncodeError(String::compose("nvJPEG error %1", static_cast<int>(status))); \
+			throw EncodeError(fmt::format("nvJPEG error {}", static_cast<int>(status))); \
 		} \
 	} while (0)
 
@@ -45,7 +46,7 @@ using dcp::ArrayData;
 		cudaError_t err = (call); \
 		if (err != cudaSuccess) { \
 			LOG_ERROR("CUDA error {} ({}) at {}:{}", static_cast<int>(err), cudaGetErrorString(err), __FILE__, __LINE__); \
-			throw EncodeError(String::compose("CUDA error: %1", cudaGetErrorString(err))); \
+			throw EncodeError(fmt::format("CUDA error: {}", cudaGetErrorString(err))); \
 		} \
 	} while (0)
 

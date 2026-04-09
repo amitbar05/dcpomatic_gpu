@@ -463,7 +463,14 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 		auto const current_nvjpeg_threads = std::count_if(_threads.begin(), _threads.end(), is_nvjpeg_thread);
 
 		for (auto i = current_nvjpeg_threads; i < gpu; ++i) {
-			auto thread = make_shared<NvjpegJ2KEncoderThread>(*this, _cuda_j2k_encoder);
+			/* V16: each thread gets its own CudaJ2KEncoder instance with its own
+			 * CUDA stream and device buffers, allowing true parallel GPU encoding */
+			auto per_thread_encoder = std::make_shared<CudaJ2KEncoder>();
+			if (!per_thread_encoder->is_initialized()) {
+				LOG_ERROR_NC("Could not initialize per-thread CUDA J2K encoder");
+				break;
+			}
+			auto thread = make_shared<NvjpegJ2KEncoderThread>(*this, per_thread_encoder);
 			thread->start();
 			_threads.push_back(thread);
 		}
