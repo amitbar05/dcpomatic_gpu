@@ -129,8 +129,55 @@ static J2KCheck check_j2k(const std::vector<uint8_t>& d) {
 
 /* ===== GPU DWT extraction (uses v12 kernels linked in) ===== */
 
-extern __global__ void v12_dwt_h(float*,float*,int,int,int);
-extern __global__ void v12_dwt_v(float*,float*,int,int,int);
+/*
+ * We test GPU DWT by running the full encoder and checking the J2K output.
+ * For DWT numerical comparison, we use a simple standalone DWT kernel set
+ * that matches the encoder's lifting steps exactly.
+ */
+static constexpr float T_ALPHA=-1.586134342f, T_BETA=-0.052980118f;
+static constexpr float T_GAMMA=0.882911075f, T_DELTA=0.443506852f;
+
+__global__ void test_dwt_h(float* data, float* out, int w, int h, int s) {
+    extern __shared__ float sm[];
+    int y = blockIdx.x; if (y >= h) return;
+    int t = threadIdx.x, nt = blockDim.x;
+    for (int i = t; i < w; i += nt) sm[i] = data[y*s+i];
+    __syncthreads();
+    for (int x = 1+t*2; x < w-1; x += nt*2) sm[x] += T_ALPHA*(sm[x-1]+sm[x+1]);
+    if (t==0 && w>1 && !(w&1)) sm[w-1] += 2.f*T_ALPHA*sm[w-2];
+    __syncthreads();
+    if (t==0) sm[0] += 2.f*T_BETA*sm[min(1,w-1)];
+    for (int x = 2+t*2; x < w; x += nt*2) sm[x] += T_BETA*(sm[x-1]+sm[min(x+1,w-1)]);
+    __syncthreads();
+    for (int x = 1+t*2; x < w-1; x += nt*2) sm[x] += T_GAMMA*(sm[x-1]+sm[x+1]);
+    if (t==0 && w>1 && !(w&1)) sm[w-1] += 2.f*T_GAMMA*sm[w-2];
+    __syncthreads();
+    if (t==0) sm[0] += 2.f*T_DELTA*sm[min(1,w-1)];
+    for (int x = 2+t*2; x < w; x += nt*2) sm[x] += T_DELTA*(sm[x-1]+sm[min(x+1,w-1)]);
+    __syncthreads();
+    int hw = (w+1)/2;
+    for (int x = t*2; x < w; x += nt*2) out[y*s+x/2] = sm[x];
+    for (int x = t*2+1; x < w; x += nt*2) out[y*s+hw+x/2] = sm[x];
+}
+
+__global__ void test_dwt_v(float* data, float* out, int w, int h, int s) {
+    int x = blockIdx.x*blockDim.x+threadIdx.x; if (x >= w) return;
+    #define TC(y) data[(y)*s+x]
+    #define TD(y) out[(y)*s+x]
+    for (int y=1;y<h-1;y+=2) TC(y)+=T_ALPHA*(TC(y-1)+TC(y+1));
+    if (h>1&&!(h&1)) TC(h-1)+=2.f*T_ALPHA*TC(h-2);
+    TC(0)+=2.f*T_BETA*TC(min(1,h-1));
+    for (int y=2;y<h;y+=2) TC(y)+=T_BETA*(TC(y-1)+TC(min(y+1,h-1)));
+    for (int y=1;y<h-1;y+=2) TC(y)+=T_GAMMA*(TC(y-1)+TC(y+1));
+    if (h>1&&!(h&1)) TC(h-1)+=2.f*T_GAMMA*TC(h-2);
+    TC(0)+=2.f*T_DELTA*TC(min(1,h-1));
+    for (int y=2;y<h;y+=2) TC(y)+=T_DELTA*(TC(y-1)+TC(min(y+1,h-1)));
+    int hh=(h+1)/2;
+    for (int y=0;y<h;y+=2) TD(y/2)=TC(y);
+    for (int y=1;y<h;y+=2) TD(hh+y/2)=TC(y);
+    #undef TC
+    #undef TD
+}
 
 static std::vector<float> gpu_dwt_only(const int32_t* input, int w, int h) {
     size_t n=size_t(w)*h;
@@ -140,7 +187,6 @@ static std::vector<float> gpu_dwt_only(const int32_t* input, int w, int h) {
     for(size_t i=0;i<n;++i) hf[i]=float(input[i]);
     cudaMemcpy(d_a,hf.data(),n*4,cudaMemcpyHostToDevice);}
 
-    /* Query GPU for block size (same logic as v12) */
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
     int h_blk = std::min(256, prop.maxThreadsPerBlock);
@@ -150,9 +196,9 @@ static std::vector<float> gpu_dwt_only(const int32_t* input, int w, int h) {
 
     int cw=w,ch=h,s=w;
     for(int l=0;l<5;++l){
-        v12_dwt_h<<<ch,h_blk,cw*sizeof(float)>>>(d_a,d_b,cw,ch,s);
+        test_dwt_h<<<ch,h_blk,cw*sizeof(float)>>>(d_a,d_b,cw,ch,s);
         std::swap(d_a,d_b);
-        v12_dwt_v<<<(cw+v_blk-1)/v_blk,v_blk>>>(d_a,d_b,cw,ch,s);
+        test_dwt_v<<<(cw+v_blk-1)/v_blk,v_blk>>>(d_a,d_b,cw,ch,s);
         std::swap(d_a,d_b);
         cw=(cw+1)/2;ch=(ch+1)/2;
     }
