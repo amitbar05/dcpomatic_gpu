@@ -234,7 +234,10 @@ kernel_quantize_and_pack(
     float val = __ldg(&d_comp[i]) / step_size;
     int q = __float2int_rn(val);
     uint8_t sign = (q < 0) ? 0x80 : 0x00;
-    uint8_t mag = static_cast<uint8_t>(min(127, abs(q)));
+    /* Cap magnitude at 126 (0x7E): prevents sign|mag == 0xFF (0x80|0x7F).
+     * 0xFF in the bitstream would require byte stuffing; this eliminates it.
+     * Quality impact: negligible (only affects highest-energy coefficients). */
+    uint8_t mag = static_cast<uint8_t>(min(126, abs(q)));
     d_packed[i] = sign | mag;
 }
 
@@ -327,6 +330,10 @@ struct CudaJ2KEncoderImpl
     size_t    rgb_buf_pixels = 0;
     bool      colour_loaded  = false;
 
+    /* V19: pinned (page-locked) host memory for fast H2D upload and D2H download */
+    uint8_t*  h_packed_pinned  = nullptr;  /* Pinned download buffer */
+    size_t    pinned_buf_pixels = 0;
+
     bool init() {
         for (int c = 0; c < 3; ++c) {
             if (cudaStreamCreate(&stream[c]) != cudaSuccess) return false;
@@ -348,6 +355,7 @@ struct CudaJ2KEncoderImpl
         }
         cudaMalloc(&d_packed, pixels * 3 * sizeof(uint8_t));
         buf_pixels = pixels;
+        ensure_pinned_buffer(width, height);
     }
 
     void ensure_rgb_buffer(int width, int height) {
@@ -356,6 +364,14 @@ struct CudaJ2KEncoderImpl
         if (d_rgb16) { cudaFree(d_rgb16); d_rgb16 = nullptr; }
         cudaMalloc(&d_rgb16, pixels * 3 * sizeof(uint16_t));
         rgb_buf_pixels = pixels;
+    }
+
+    void ensure_pinned_buffer(int width, int height) {
+        size_t pixels = static_cast<size_t>(width) * height;
+        if (pixels <= pinned_buf_pixels) return;
+        if (h_packed_pinned) { cudaFreeHost(h_packed_pinned); h_packed_pinned = nullptr; }
+        cudaMallocHost(&h_packed_pinned, pixels * 3 * sizeof(uint8_t));
+        pinned_buf_pixels = pixels;
     }
 
     void upload_colour_params(GpuColourParams const& p) {
@@ -385,6 +401,7 @@ struct CudaJ2KEncoderImpl
         if (d_lut_in) { cudaFree(d_lut_in); d_lut_in = nullptr; }
         if (d_lut_out){ cudaFree(d_lut_out);d_lut_out= nullptr; }
         if (d_matrix) { cudaFree(d_matrix); d_matrix = nullptr; }
+        if (h_packed_pinned) { cudaFreeHost(h_packed_pinned); h_packed_pinned = nullptr; }
         for (int c = 0; c < 3; ++c)
             if (stream[c]) cudaStreamDestroy(stream[c]);
         if (colour_conv_done) cudaEventDestroy(colour_conv_done);
@@ -529,10 +546,10 @@ run_dwt_and_build_codestream(
                  static_cast<size_t>(1)),
         pixels);
 
-    /* Async download per stream */
-    std::vector<uint8_t> h_packed(pixels * 3);
+    /* V19: async download to pinned memory (DMA, no staging copy) */
+    impl->ensure_pinned_buffer(width, height);
     for (int c = 0; c < 3; ++c) {
-        cudaMemcpyAsync(h_packed.data() + c * pixels,
+        cudaMemcpyAsync(impl->h_packed_pinned + c * pixels,
                         impl->d_packed + c * pixels,
                         pixels * sizeof(uint8_t),
                         cudaMemcpyDeviceToHost, impl->stream[c]);
@@ -540,17 +557,8 @@ run_dwt_and_build_codestream(
     for (int c = 0; c < 3; ++c)
         cudaStreamSynchronize(impl->stream[c]);
 
-    /* Pre-compute byte-stuffed sizes for TLM marker.
-       Each 0xFF byte in the tile data requires a 0x00 stuffing byte. */
-    std::array<size_t, 3> stuffed_sz;
-    for (int c = 0; c < 3; ++c) {
-        size_t cnt = per_comp;
-        const uint8_t* p = h_packed.data() + c * pixels;
-        for (size_t i = 0; i < per_comp; ++i)
-            if (p[i] == 0xFF) ++cnt;
-        stuffed_sz[c] = cnt;
-    }
-
+    /* V19: magnitude capped at 126, so 0xFF never appears in packed data.
+     * No byte stuffing needed; tile part size is exact. */
     /* Build J2K codestream */
     J2KCodestreamWriter cs;
 
@@ -616,7 +624,7 @@ run_dwt_and_build_codestream(
         cs.write_u8(0);       /* Ztlm: 0 = first TLM segment */
         cs.write_u8(0x40);    /* Stlm: ST=00 (no tile index), SP=1 (4-byte Ptlm) */
         for (int c = 0; c < 3; ++c)
-            cs.write_u32(static_cast<uint32_t>(14 + stuffed_sz[c]));
+            cs.write_u32(static_cast<uint32_t>(14 + per_comp));  /* No byte stuffing needed */
     }
 
     /* SOT + SOD: 3 tile parts (one per component) — DCI Bv2.1 requires 3 for 2K.
@@ -630,7 +638,7 @@ run_dwt_and_build_codestream(
         cs.write_u8(static_cast<uint8_t>(c));         /* TPsot: tile part index */
         cs.write_u8(3);                               /* TNsot: 3 tile parts */
         cs.write_marker(J2K_SOD);
-        cs.write_bytes_stuffed(h_packed.data() + c * pixels, per_comp);
+        cs.write_bytes(impl->h_packed_pinned + c * pixels, per_comp);  /* No 0xFF → no stuffing */
         cs.patch_u32(psot_pos, static_cast<uint32_t>(cs.position() - psot_pos + 4));
     }
     /* Pad final codestream to DCP minimum frame size (16384 bytes) */
