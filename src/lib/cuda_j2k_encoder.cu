@@ -511,6 +511,18 @@ run_dwt_and_build_codestream(
     int stride = width;
     size_t pixels = static_cast<size_t>(width) * height;
 
+    /* V20: Compute per_comp BEFORE quantize to avoid processing unused data.
+     * At 150 Mbps / 24 fps, per_comp ≈ 87 KB vs 2.2 MB total → ~25× savings. */
+    int64_t frame_bits = bit_rate / fps;
+    if (is_3d) frame_bits /= 2;
+    size_t target_bytes = static_cast<size_t>(frame_bits / 8);
+    float target_ratio  = static_cast<float>(target_bytes) / (pixels * 3);
+    target_ratio = std::min(1.0f, std::max(0.01f, target_ratio));
+    size_t per_comp = std::min(
+        std::max(static_cast<size_t>(pixels * target_ratio / 3.0f),
+                 static_cast<size_t>(1)),
+        pixels);
+
     /* Launch DWT for all 3 components in parallel on separate streams */
     float* final_cur[3];
     for (int c = 0; c < 3; ++c) {
@@ -525,33 +537,23 @@ run_dwt_and_build_codestream(
         }
         final_cur[c] = cur;
 
-        /* Quantize + pack on same stream */
+        /* Quantize + pack only per_comp elements (the ones we'll actually write) */
         float base_step = is_4k ? 0.5f : 1.0f;
         float step = base_step * (c == 1 ? 1.0f : 1.2f);
         int block = 256;
-        int grid  = static_cast<int>((pixels + block - 1) / block);
+        int grid  = static_cast<int>((per_comp + block - 1) / block);
         kernel_quantize_and_pack<<<grid, block, 0, st>>>(
-            final_cur[c], impl->d_packed + c * pixels,
-            static_cast<int>(pixels), step);
+            final_cur[c], impl->d_packed + c * per_comp,
+            static_cast<int>(per_comp), step);
     }
 
-    /* Target size calculation */
-    int64_t frame_bits = bit_rate / fps;
-    if (is_3d) frame_bits /= 2;
-    size_t target_bytes = static_cast<size_t>(frame_bits / 8);
-    float target_ratio  = static_cast<float>(target_bytes) / (pixels * 3);
-    target_ratio = std::min(1.0f, std::max(0.01f, target_ratio));
-    size_t per_comp = std::min(
-        std::max(static_cast<size_t>(pixels * target_ratio / 3.0f),
-                 static_cast<size_t>(1)),
-        pixels);
-
-    /* V19: async download to pinned memory (DMA, no staging copy) */
+    /* V20: download only per_comp bytes per component (not full pixels).
+     * At 150 Mbps / 24 fps: per_comp ≈ 87 KB vs 2.2 MB → ~25× less transfer. */
     impl->ensure_pinned_buffer(width, height);
     for (int c = 0; c < 3; ++c) {
-        cudaMemcpyAsync(impl->h_packed_pinned + c * pixels,
-                        impl->d_packed + c * pixels,
-                        pixels * sizeof(uint8_t),
+        cudaMemcpyAsync(impl->h_packed_pinned + c * per_comp,
+                        impl->d_packed + c * per_comp,
+                        per_comp * sizeof(uint8_t),
                         cudaMemcpyDeviceToHost, impl->stream[c]);
     }
     for (int c = 0; c < 3; ++c)
@@ -638,7 +640,7 @@ run_dwt_and_build_codestream(
         cs.write_u8(static_cast<uint8_t>(c));         /* TPsot: tile part index */
         cs.write_u8(3);                               /* TNsot: 3 tile parts */
         cs.write_marker(J2K_SOD);
-        cs.write_bytes(impl->h_packed_pinned + c * pixels, per_comp);  /* No 0xFF → no stuffing */
+        cs.write_bytes(impl->h_packed_pinned + c * per_comp, per_comp);  /* No 0xFF → no stuffing */
         cs.patch_u32(psot_pos, static_cast<uint32_t>(cs.position() - psot_pos + 4));
     }
     /* Pad final codestream to DCP minimum frame size (16384 bytes) */
