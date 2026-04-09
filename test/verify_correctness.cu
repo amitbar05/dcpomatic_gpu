@@ -1,5 +1,5 @@
 /*
-    Thorough Correctness Verification: CUDA v7 vs Slang v7 vs CPU reference
+    Thorough Correctness Verification: CUDA v12 vs Slang v12 vs CPU reference
 
     Tests:
     1. J2K codestream structure (markers)
@@ -8,10 +8,11 @@
     4. Bitstream determinism (same input -> same output)
     5. Multi-frame consistency
     6. Edge cases (all-zero, all-max, gradient patterns)
+    7. Multiple resolutions (2K, 4K, odd sizes)
 
     Build:
       nvcc -std=c++17 -O2 test/verify_correctness.cu \
-        src/lib/cuda_j2k_encoder_v7.cu src/lib/slang_j2k_encoder_v7.cu \
+        src/lib/cuda_j2k_encoder_v12.cu src/lib/slang_j2k_encoder_v12.cu \
         -I src/lib -lcudart -o test/verify_correctness
 */
 
@@ -126,26 +127,32 @@ static J2KCheck check_j2k(const std::vector<uint8_t>& d) {
 }
 
 
-/* ===== GPU DWT extraction (encode without J2K packaging) ===== */
+/* ===== GPU DWT extraction (uses v12 kernels linked in) ===== */
 
-/* Kernels from v7 - need forward declarations */
-/* Use whichever version's kernels are linked */
-extern __global__ void v10_dwt_h(float*,float*,int,int,int);
-extern __global__ void v10_dwt_v(float*,float*,int,int,int);
+extern __global__ void v12_dwt_h(float*,float*,int,int,int);
+extern __global__ void v12_dwt_v(float*,float*,int,int,int);
 
 static std::vector<float> gpu_dwt_only(const int32_t* input, int w, int h) {
     size_t n=size_t(w)*h;
     float *d_a,*d_b;
     cudaMalloc(&d_a,n*4); cudaMalloc(&d_b,n*4);
-    /* Convert int32->float on CPU (like v10 does) */
     {std::vector<float> hf(n);
     for(size_t i=0;i<n;++i) hf[i]=float(input[i]);
     cudaMemcpy(d_a,hf.data(),n*4,cudaMemcpyHostToDevice);}
+
+    /* Query GPU for block size (same logic as v12) */
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    int h_blk = std::min(256, prop.maxThreadsPerBlock);
+    h_blk = (h_blk / prop.warpSize) * prop.warpSize;
+    int v_blk = std::min(128, prop.maxThreadsPerBlock);
+    v_blk = (v_blk / prop.warpSize) * prop.warpSize;
+
     int cw=w,ch=h,s=w;
     for(int l=0;l<5;++l){
-        v10_dwt_h<<<ch,128,cw*sizeof(float)>>>(d_a,d_b,cw,ch,s);
+        v12_dwt_h<<<ch,h_blk,cw*sizeof(float)>>>(d_a,d_b,cw,ch,s);
         std::swap(d_a,d_b);
-        v10_dwt_v<<<(cw+127)/128,128>>>(d_a,d_b,cw,ch,s);
+        v12_dwt_v<<<(cw+v_blk-1)/v_blk,v_blk>>>(d_a,d_b,cw,ch,s);
         std::swap(d_a,d_b);
         cw=(cw+1)/2;ch=(ch+1)/2;
     }
@@ -175,12 +182,12 @@ static std::vector<int32_t> make_pattern(int w, int h, int type) {
     for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
         size_t i=y*w+x;
         switch(type) {
-        case 0: v[i]=0; break;                         // all zero
-        case 1: v[i]=4095; break;                      // all max
-        case 2: v[i]=int32_t(x*4095/w); break;         // horizontal gradient
-        case 3: v[i]=int32_t(y*4095/h); break;         // vertical gradient
-        case 4: v[i]=int32_t((x+y)%4096); break;       // diagonal
-        case 5: v[i]=((x^y)&1)?4095:0; break;          // checkerboard
+        case 0: v[i]=0; break;
+        case 1: v[i]=4095; break;
+        case 2: v[i]=int32_t(x*4095/std::max(1,w-1)); break;
+        case 3: v[i]=int32_t(y*4095/std::max(1,h-1)); break;
+        case 4: v[i]=int32_t((x+y)%4096); break;
+        case 5: v[i]=((x^y)&1)?4095:0; break;
         }
     }
     return v;
@@ -198,12 +205,18 @@ int main(int argc, char* argv[])
     int fails=0, total=0;
 
     std::cout << "======================================================" << std::endl;
-    std::cout << " Correctness Verification: CUDA v7 & Slang v7" << std::endl;
+    std::cout << " Correctness Verification: CUDA v12 & Slang v12" << std::endl;
+    std::cout << " (Generic, architecture-agnostic build)" << std::endl;
     std::cout << "======================================================" << std::endl;
 
     cudaDeviceProp prop;
-    if(cudaGetDeviceProperties(&prop,0)==cudaSuccess)
+    if(cudaGetDeviceProperties(&prop,0)==cudaSuccess) {
         std::cout << "GPU: " << prop.name << std::endl;
+        std::cout << "  Compute: " << prop.major << "." << prop.minor
+                  << ", SMs: " << prop.multiProcessorCount
+                  << ", Shared mem: " << prop.sharedMemPerBlock/1024 << " KB"
+                  << ", Warp: " << prop.warpSize << std::endl;
+    }
 
     /* Initialize encoders */
     CudaJ2KEncoder cuda_enc;
@@ -214,7 +227,7 @@ int main(int argc, char* argv[])
     /* ===== Test 1: DWT Numerical Correctness ===== */
     std::cout << "\n--- Test 1: DWT Numerical Correctness (GPU vs CPU reference) ---" << std::endl;
     {
-        auto pattern = make_pattern(W, H, 2); // horizontal gradient
+        auto pattern = make_pattern(W, H, 2);
         auto cpu_result = cpu_full_dwt(pattern.data(), W, H);
         auto gpu_result = gpu_dwt_only(pattern.data(), W, H);
 
@@ -227,8 +240,6 @@ int main(int argc, char* argv[])
         }
         double avg_err=sum_err/n;
         std::cout << "    Max error: " << max_err << ", Avg error: " << avg_err << std::endl;
-        /* GPU shared-memory ops may differ from CPU sequential due to
-         * float associativity. 0.02 tolerance is well within J2K quantization step. */
         TEST("DWT max error < 0.02 (float rounding)", max_err < 0.02);
         TEST("DWT avg error < 0.001", avg_err < 0.001);
     }
@@ -304,8 +315,77 @@ int main(int argc, char* argv[])
         }
     }
 
-    /* ===== Test 5: Real Video Frames ===== */
-    std::cout << "\n--- Test 5: Real Video Frames ---" << std::endl;
+    /* ===== Test 5: Multiple Resolutions ===== */
+    std::cout << "\n--- Test 5: Multiple Resolutions ---" << std::endl;
+    {
+        struct Res { int w, h; const char* name; };
+        Res resolutions[] = {
+            {1920, 1080, "1920x1080 (Full HD)"},
+            {2048, 1080, "2048x1080 (2K DCI)"},
+            {1998, 1080, "1998x1080 (2K flat)"},
+            {2048, 858,  "2048x858 (2K scope)"},
+            {1024, 540,  "1024x540 (half 2K)"},
+            {512, 270,   "512x270 (quarter)"},
+            {256, 128,   "256x128 (tiny)"},
+            {100, 100,   "100x100 (odd size)"},
+            {33, 17,     "33x17 (very small odd)"},
+        };
+
+        for (auto& res : resolutions) {
+            auto pat = make_pattern(res.w, res.h, 2);
+            const int32_t* p[3] = {pat.data(), pat.data(), pat.data()};
+            auto cj = cuda_enc.encode(p, res.w, res.h, 100000000, 24, false, false);
+            auto sj = slang_enc.encode(p, res.w, res.h, 100000000, 24, false, false);
+            auto cc = check_j2k(cj);
+            auto sc = check_j2k(sj);
+
+            TEST(std::string("CUDA ") + res.name + " valid", cc.valid());
+            TEST(std::string("Slang ") + res.name + " valid", sc.valid());
+            TEST(std::string("Match ") + res.name, cj == sj);
+
+            /* Verify SIZ dimensions match */
+            TEST(std::string("CUDA ") + res.name + " SIZ w", cc.siz_w == res.w);
+            TEST(std::string("CUDA ") + res.name + " SIZ h", cc.siz_h == res.h);
+        }
+    }
+
+    /* ===== Test 6: 4K Flag ===== */
+    std::cout << "\n--- Test 6: 4K Mode ---" << std::endl;
+    {
+        auto pat = make_pattern(W, H, 2);
+        const int32_t* p[3] = {pat.data(), pat.data(), pat.data()};
+        auto c2k = cuda_enc.encode(p, W, H, 100000000, 24, false, false);
+        auto c4k = cuda_enc.encode(p, W, H, 100000000, 24, false, true);
+        auto s2k = slang_enc.encode(p, W, H, 100000000, 24, false, false);
+        auto s4k = slang_enc.encode(p, W, H, 100000000, 24, false, true);
+
+        TEST("CUDA 2K valid", check_j2k(c2k).valid());
+        TEST("CUDA 4K valid", check_j2k(c4k).valid());
+        TEST("Slang 2K valid", check_j2k(s2k).valid());
+        TEST("Slang 4K valid", check_j2k(s4k).valid());
+        /* 4K uses different quantization step, so output should differ */
+        TEST("CUDA 2K != 4K (different quant)", c2k != c4k);
+        TEST("CUDA 4K == Slang 4K", c4k == s4k);
+    }
+
+    /* ===== Test 7: 3D (Stereo) Mode ===== */
+    std::cout << "\n--- Test 7: Stereo 3D Mode ---" << std::endl;
+    {
+        auto pat = make_pattern(W, H, 3);
+        const int32_t* p[3] = {pat.data(), pat.data(), pat.data()};
+        auto c2d = cuda_enc.encode(p, W, H, 100000000, 24, false, false);
+        auto c3d = cuda_enc.encode(p, W, H, 100000000, 24, true, false);
+        auto s3d = slang_enc.encode(p, W, H, 100000000, 24, true, false);
+
+        TEST("CUDA 2D valid", check_j2k(c2d).valid());
+        TEST("CUDA 3D valid", check_j2k(c3d).valid());
+        TEST("Slang 3D valid", check_j2k(s3d).valid());
+        /* 3D halves the bit budget, so output may differ in size */
+        TEST("CUDA 3D == Slang 3D", c3d == s3d);
+    }
+
+    /* ===== Test 8: Real Video Frames ===== */
+    std::cout << "\n--- Test 8: Real Video Frames ---" << std::endl;
     if(argc > 1) {
         std::ifstream fin(argv[1],std::ios::binary);
         int nframes = (argc>4) ? std::atoi(argv[4]) : 10;
