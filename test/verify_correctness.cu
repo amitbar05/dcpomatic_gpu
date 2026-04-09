@@ -130,27 +130,28 @@ static J2KCheck check_j2k(const std::vector<uint8_t>& d) {
 
 /* Kernels from v7 - need forward declarations */
 /* Use whichever version's kernels are linked */
-extern __global__ void v8_i2f(const int32_t*,float*,int);
-extern __global__ void v8_dwt_h_par(float*,float*,int,int,int);
-extern __global__ void v8_dwt_v(float*,float*,int,int,int);
+extern __global__ void v10_dwt_h(float*,float*,int,int,int);
+extern __global__ void v10_dwt_v(float*,float*,int,int,int);
 
 static std::vector<float> gpu_dwt_only(const int32_t* input, int w, int h) {
     size_t n=size_t(w)*h;
-    float *d_a,*d_b; int32_t*d_in;
-    cudaMalloc(&d_a,n*4); cudaMalloc(&d_b,n*4); cudaMalloc(&d_in,n*4);
-    cudaMemcpy(d_in,input,n*4,cudaMemcpyHostToDevice);
-    v8_i2f<<<(n+127)/128,128>>>(d_in,d_a,n);
+    float *d_a,*d_b;
+    cudaMalloc(&d_a,n*4); cudaMalloc(&d_b,n*4);
+    /* Convert int32->float on CPU (like v10 does) */
+    {std::vector<float> hf(n);
+    for(size_t i=0;i<n;++i) hf[i]=float(input[i]);
+    cudaMemcpy(d_a,hf.data(),n*4,cudaMemcpyHostToDevice);}
     int cw=w,ch=h,s=w;
     for(int l=0;l<5;++l){
-        v8_dwt_h_par<<<ch,128,cw*sizeof(float)>>>(d_a,d_b,cw,ch,s);
+        v10_dwt_h<<<ch,128,cw*sizeof(float)>>>(d_a,d_b,cw,ch,s);
         std::swap(d_a,d_b);
-        v8_dwt_v<<<(cw+127)/128,128>>>(d_a,d_b,cw,ch,s);
+        v10_dwt_v<<<(cw+127)/128,128>>>(d_a,d_b,cw,ch,s);
         std::swap(d_a,d_b);
         cw=(cw+1)/2;ch=(ch+1)/2;
     }
     std::vector<float> result(n);
     cudaMemcpy(result.data(),d_a,n*4,cudaMemcpyDeviceToHost);
-    cudaFree(d_a);cudaFree(d_b);cudaFree(d_in);
+    cudaFree(d_a);cudaFree(d_b);
     return result;
 }
 
