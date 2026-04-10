@@ -39,6 +39,8 @@
 #ifdef DCPOMATIC_NVJPEG
 #include "nvjpeg_j2k_encoder_thread.h"
 #include "cuda_j2k_encoder.h"
+#include "slang_j2k_encoder_thread.h"
+#include "slang_j2k_encoder.h"
 #endif
 #include "remote_j2k_encoder_thread.h"
 #include "j2k_encoder.h"
@@ -476,6 +478,28 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 		}
 
 		remove_threads(gpu, current_nvjpeg_threads, is_nvjpeg_thread);
+	}
+
+	/* Slang GPU (V17 encoder — runs alongside CUDA for comparison/fallback) */
+	if (_use_nvjpeg_gpu) {
+		auto const is_slang_thread = [](shared_ptr<J2KEncoderThread> thread) {
+			return static_cast<bool>(dynamic_pointer_cast<SlangJ2KEncoderThread>(thread));
+		};
+
+		auto const current_slang_threads = std::count_if(_threads.begin(), _threads.end(), is_slang_thread);
+
+		for (auto i = current_slang_threads; i < gpu; ++i) {
+			auto per_thread_encoder = std::make_shared<SlangJ2KEncoder>();
+			if (!per_thread_encoder->is_initialized()) {
+				LOG_ERROR_NC("Could not initialize per-thread Slang J2K encoder");
+				break;
+			}
+			auto thread = make_shared<SlangJ2KEncoderThread>(*this, per_thread_encoder);
+			thread->start();
+			_threads.push_back(thread);
+		}
+
+		remove_threads(gpu, current_slang_threads, is_slang_thread);
 	}
 #endif
 
