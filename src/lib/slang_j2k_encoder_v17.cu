@@ -317,6 +317,93 @@
     - Also removes y3-specific guards from partial-block lifting (y3>=height is guaranteed)
     - Expected: 3-8% RGB+HDWT0 speedup from improved texture load MLP utilization
 
+    V86 Improvements (int2 __ldg load vectorization in s17_fused_i2f_dwt_h_ho_4row (XYZ int32 path) — parity CUDA V124):
+    - Load loop: for(i=t;i<w;i+=nt) 4×int32 load → for(i=t*2;i<w;i+=nt*2) 4×int2 __ldg.
+    - Each int2 covers {in[row*s+i], in[row*s+i+1]}: 2 int32 in one 64-bit load.
+    - 8 × 32-bit loads → 4 × 64-bit loads: 2× fewer load instructions; same bytes.
+    - DCI widths always even → i=t*2 always even → 8-byte aligned int2. Coalesced preserved.
+
+    V85 Improvements (__half2 __ldg load vectorization in s17_dwt_h_half_io_4row interior — parity CUDA V123):
+    - Load loop: for(i=t;i<w;i+=nt) 4×__ldg(__half) → for(i=t*2;i<w;i+=nt*2) 4×__ldg(__half2).
+    - Each __half2 load covers {row[i], row[i+1]}: 2 __half in one 32-bit load instruction.
+    - 8 scalar 16-bit loads → 4 vectorized 32-bit loads: 2× fewer load instructions per thread.
+    - Unpack: sm01[i]={low(r0),low(r1)}, sm01[i+1]={high(r0),high(r1)}.
+    - DCI widths always even → i=t*2 always even → 4-byte aligned. Coalesced access preserved.
+    - Expected: 1-3% speedup in load phase of s17_dwt_h_half_io_4row (~15% of GPU time).
+
+    V84 Improvements (DCI even-height invariant in s17_rgb48_xyz_hdwt0_1ch_2row_p12 (2K HOT) — parity CUDA V122):
+    - DCI heights always even (1080/2160) → y1=y0+1 always < height → else (partial scalar) branch is dead.
+    - Removed entire else block (28 lines: scalar load + scalar lifting + single-row scatter).
+    - Unconditional __half2 path: compiler eliminates register partitioning for dead branch.
+    - Better instruction cache coverage; smaller kernel binary; same correctness for all DCI content.
+
+    V83 Improvements (uint32_t __ldg replaces 3×byte __ldg per channel in hot p12 load loops — parity CUDA V121):
+    - s17_rgb48_xyz_hdwt0_1ch_1row_p12 (4K HOT) + s17_rgb48_xyz_hdwt0_1ch_2row_p12 (2K HOT).
+    - 9 byte __ldg → 3 uint32_t __ldg per pixel pair per row: 3× fewer load instructions.
+    - Pixel extraction: even=((rw&0xFF)<<4)|((rw>>12)&0xF); odd=((rw>>8)&0xF)<<8|((rw>>16)&0xFF).
+    - Misaligned reads (off=p*3) handled correctly by CUDA __ldg texture cache.
+    - 4K: 4 iters×3 loads (was 9) per iter → 4× better MLP per unrolled group.
+    - 2K: 2 iters×same benefit. Expected: 2-5% RGB+HDWT0 speedup → ~0.5-1% overall.
+
+    V82 Improvements (DCI even-width invariant in remaining kernels: S17_HDWT_HALF macro, 1ch/2ch kernels, 2row_p12 partial — parity CUDA V119):
+    - S17_HDWT_HALF macro (float-path): Alpha/Gamma w>1&&!(w&1) → always; Beta/Delta min(1,w-1)→1, min(x+1,w-1)→x+1.
+    - s17_rgb48_xyz_hdwt0_1ch (1-row): same simplification.
+    - s17_rgb48_xyz_hdwt0_1ch_2row (2-row, y1<height guards): same.
+    - s17_rgb48_xyz_hdwt0_1ch_2row_p12 partial block: same.
+    - Completes DCI invariant cleanup across all Slang kernels; all w>1&&!(w&1) guards removed.
+
+    V81 Improvements (DCI even-width invariant in 4row_p12 interior+partial, and s17_dwt_h_half_io_4row partial — parity CUDA V118):
+    - s17_rgb48_xyz_hdwt0_1ch_4row_p12 interior: Alpha/Gamma if(t==0&&w>1&&!(w&1)) → if(t==0).
+    - Beta/Delta boundary sm01[min(1,w-1)] → sm01[1] (sm23 same); saves 2 VMIN+2 ISETP per block.
+    - s17_rgb48_xyz_hdwt0_1ch_4row_p12 partial block: same simplifications.
+    - s17_dwt_h_half_io_4row partial block (else branch): Alpha/Gamma/Beta/Delta simplified.
+    - 4row_p12 interior fires on 134/135 blocks per 2K frame; partial on last block only.
+
+    V80 Improvements (DCI even-width invariant in s17_dwt_h_half_io_4row partial block + s17_dwt_h_half_io_2row — parity CUDA V117):
+    - 4-row kernel: interior (V73) already simplified; partial (else branch) still had old DCI guards.
+    - 2-row kernel (s17_dwt_h_half_io_2row): also still had old guards — both fixed in this version.
+    - Alpha/Gamma: if(t==0&&w>1&&!(w&1)) → if(t==0); DCI widths always even and >1.
+    - Beta/Delta: sm[min(1,w-1)] → sm[1]; saves 1 VMIN+SEL per boundary thread.
+    - Beta/Delta loop: sm[min(x+1,w-1)] → sm[x+1] (x even, w even: x<w → x≤w-2 → x+1≤w-1).
+    - 2-row kernel fires on all 540 rows of level-1 (2K); 4-row partial on last row-group only.
+
+    V79 Improvements (__launch_bounds__(512,4) → (512,3) on 1row/2row RGB p12 kernels — parity CUDA V116):
+    - V51 set (512,4) targeting ≤32 regs/T for 4 blk/SM, but V53 added 8KB sm_lut:
+      smem = 8KB + 7.68KB = 15.68KB → PreferShared(48KB) → 3 blk/SM (smem-limited).
+    - (512,3) → ≤42 regs/T; 3 blk/SM maintained (42×512=21504 → 65536/21504=3 blk/SM).
+    - 10 extra registers relax compiler register budget for complex color+DWT kernel.
+    - Applied to s17_rgb48_xyz_hdwt0_1ch_2row_p12 and s17_rgb48_xyz_hdwt0_1ch_1row_p12.
+    - Expected: 5-15% RGB+HDWT0 speedup if compiler was spilling under 32-reg constraint.
+
+    V78 Improvements (quantize L1-row early exit before inv_* computation — parity CUDA V115):
+    - s17_qe_subband_ml: L1 rows (row >= ll5_h*16) need only inv_l1 = base_inv*0.833333333f.
+    - Moving early exit before the 5 other inv_* FMULs saves 5 FMUL for >50% of 2K/4K rows.
+    - Register pressure for L1 path: 6 floats → 1 float (base_inv) + inline constant.
+    - row_lv ternary simplified to drop case 1 (guaranteed row_lv in {2..5} after early exit).
+    - Dispatch: if(row_lv==1) branch removed (dead code after early exit added above lambda).
+
+    V77 Improvements (Drop dead h>2 guard in reg-blocked V-DWT Beta/Delta boundary — parity CUDA V114):
+    - s17_dwt_v_fp16_hi_reg_ho: DCI subband heights 34/68/135 always > 2.
+    - (h & 1) && (h > 2) → (h & 1): saves 1 ISETP+AND per boundary invocation.
+    - Applied to both Beta and Delta odd-height boundary cases.
+
+    V76 Improvements (Simplify H-DWT i2f-4row Alpha/Gamma boundary + Beta/Delta min() — parity CUDA V113):
+    - DCI even-width invariant applied to s17_fused_i2f_dwt_h_ho_4row (int32 XYZ input path).
+    - Alpha/Gamma: if(t==0&&w>1&&!(w&1)) → if(t==0); saves 2 ISETP+PREDAND per block.
+    - Beta/Delta: sm01[min(1,w-1)] → sm01[1]; saves 1 VMIN+SEL per boundary thread.
+    - This kernel handles level-0 H-DWT for the fallback encode() path (int32 XYZ planes).
+
+    V75 Improvements (Simplify reg V-DWT boundary guards — parity CUDA V112):
+    - s17_dwt_v_fp16_hi_reg_ho: DCI heights always > 1 → drop h>1 from Alpha/Gamma even guards.
+    - col[min(1,h-1)] → col[1] in Beta/Delta boundaries (all DCI subband heights ≥ 34 > 1).
+    - Eliminates 2 VMIN + 2 ISETP+AND per column across 3 V-DWT levels.
+
+    V74 Improvements (Simplify boundary conditions in HOT kernels — parity CUDA V111):
+    - Apply DCI even-width invariant to s17_rgb48_xyz_hdwt0_1ch_2row_p12 (2K HOT) and
+      s17_rgb48_xyz_hdwt0_1ch_1row_p12 (4K HOT) DWT lifting passes.
+    - Alpha/Gamma: if(t==0&&w>1&&!(w&1)) → if(t==0); Beta/Delta: sm[min(1,w-1)] → sm[1].
+    - More impactful than V73 (4-row dead path): these are the actual hot kernels.
+
     V73 Improvements (Simplify H-DWT 4-row Alpha/Gamma boundary + Beta/Delta min() — parity CUDA V110):
     - DCI subbands: widths always even (1920/960/480/240/120/60) and always >1.
     - Alpha/Gamma: if(t==0&&w>1&&!(w&1)) → if(t==0); saves 2 ISETP+PREDAND per block.
@@ -986,14 +1073,19 @@ __global__ void s17_fused_i2f_dwt_h_ho_4row(const int32_t* __restrict__ in, __ha
          * HFMA2 processes 2 rows per instruction (2× throughput vs V37 scalar). */
         __half2* sm01 = reinterpret_cast<__half2*>(sm);
         __half2* sm23 = reinterpret_cast<__half2*>(sm + 2*w);
+        /* V86: int2 __ldg loads — 4 × 64-bit loads replace 8 × 32-bit loads per 2-col pair.
+         * DCI widths always even → i=t*2 even → 8-byte aligned int2 load. Parity CUDA V124.
+         * 2× fewer load instructions; extract .x/.y for i2f conversion. */
         #pragma unroll 2
-        for (int i=t; i<w; i+=nt) {
-            sm01[i] = __halves2half2(
-                __float2half(__int2float_rn(in[y0*s+i])),
-                __float2half(__int2float_rn(in[y1*s+i])));
-            sm23[i] = __halves2half2(
-                __float2half(__int2float_rn(in[y2*s+i])),
-                __float2half(__int2float_rn(in[y3*s+i])));
+        for (int i=t*2; i<w; i+=nt*2) {
+            int2 r0 = __ldg(reinterpret_cast<const int2*>(&in[y0*s+i]));
+            int2 r1 = __ldg(reinterpret_cast<const int2*>(&in[y1*s+i]));
+            int2 r2 = __ldg(reinterpret_cast<const int2*>(&in[y2*s+i]));
+            int2 r3 = __ldg(reinterpret_cast<const int2*>(&in[y3*s+i]));
+            sm01[i]   = __halves2half2(__float2half(__int2float_rn(r0.x)), __float2half(__int2float_rn(r1.x)));
+            sm01[i+1] = __halves2half2(__float2half(__int2float_rn(r0.y)), __float2half(__int2float_rn(r1.y)));
+            sm23[i]   = __halves2half2(__float2half(__int2float_rn(r2.x)), __float2half(__int2float_rn(r3.x)));
+            sm23[i+1] = __halves2half2(__float2half(__int2float_rn(r2.y)), __float2half(__int2float_rn(r3.y)));
         }
         __syncthreads();
         /* Alpha — HFMA2; #pragma unroll 2 for 4K MLP. */
@@ -1004,7 +1096,8 @@ __global__ void s17_fused_i2f_dwt_h_ho_4row(const int32_t* __restrict__ in, __ha
                 sm01[x] = __hfma2(kA, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
                 sm23[x] = __hfma2(kA, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
             }
-            if(t==0&&w>1&&!(w&1)) {
+            /* V76: DCI w always even and >1 → simplify Alpha boundary; parity CUDA V113. */
+            if(t==0) {
                 const __half2 kA2 = __half2half2(__float2half(2.f*ALPHA));
                 sm01[w-1] = __hfma2(kA2, sm01[w-2], sm01[w-1]);
                 sm23[w-1] = __hfma2(kA2, sm23[w-2], sm23[w-1]);
@@ -1016,8 +1109,9 @@ __global__ void s17_fused_i2f_dwt_h_ho_4row(const int32_t* __restrict__ in, __ha
             const __half2 kB = __half2half2(__float2half(BETA));
             if(t==0) {
                 const __half2 kB2 = __half2half2(__float2half(2.f*BETA));
-                sm01[0] = __hfma2(kB2, sm01[min(1,w-1)], sm01[0]);
-                sm23[0] = __hfma2(kB2, sm23[min(1,w-1)], sm23[0]);
+                /* V76: DCI w always >1 → min(1,w-1)=1; drop runtime min. */
+                sm01[0] = __hfma2(kB2, sm01[1], sm01[0]);
+                sm23[0] = __hfma2(kB2, sm23[1], sm23[0]);
             }
             /* V65: x always even → even w: min(x+1,w-1)=x+1; drop MIN per iteration. */
             #pragma unroll 2
@@ -1035,7 +1129,8 @@ __global__ void s17_fused_i2f_dwt_h_ho_4row(const int32_t* __restrict__ in, __ha
                 sm01[x] = __hfma2(kG, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
                 sm23[x] = __hfma2(kG, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
             }
-            if(t==0&&w>1&&!(w&1)) {
+            /* V76: DCI w always even and >1 → simplify Gamma boundary. */
+            if(t==0) {
                 const __half2 kG2 = __half2half2(__float2half(2.f*GAMMA));
                 sm01[w-1] = __hfma2(kG2, sm01[w-2], sm01[w-1]);
                 sm23[w-1] = __hfma2(kG2, sm23[w-2], sm23[w-1]);
@@ -1047,8 +1142,9 @@ __global__ void s17_fused_i2f_dwt_h_ho_4row(const int32_t* __restrict__ in, __ha
             const __half2 kD = __half2half2(__float2half(DELTA));
             if(t==0) {
                 const __half2 kD2 = __half2half2(__float2half(2.f*DELTA));
-                sm01[0] = __hfma2(kD2, sm01[min(1,w-1)], sm01[0]);
-                sm23[0] = __hfma2(kD2, sm23[min(1,w-1)], sm23[0]);
+                /* V76: DCI w always >1 → min(1,w-1)=1; drop runtime min. */
+                sm01[0] = __hfma2(kD2, sm01[1], sm01[0]);
+                sm23[0] = __hfma2(kD2, sm23[1], sm23[0]);
             }
             /* V65: same even-w invariant as Beta — drop MIN. */
             #pragma unroll 2
@@ -1089,21 +1185,23 @@ __global__ void s17_fused_i2f_dwt_h_ho_4row(const int32_t* __restrict__ in, __ha
             if(y1<h) sm[w+x]   +=__half(ALPHA)*(sm[w+x-1]  +sm[w+x+1]);
             if(y2<h) sm[2*w+x] +=__half(ALPHA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
-        if(t==0&&w>1&&!(w&1)) {
+        /* V80: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+        if(t==0) {
             sm[w-1]   +=__half(2.f*ALPHA)*sm[w-2];
             if(y1<h) sm[2*w-1] +=__half(2.f*ALPHA)*sm[2*w-2];
             if(y2<h) sm[3*w-1] +=__half(2.f*ALPHA)*sm[3*w-2];
         }
         __syncthreads();
+        /* V80: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
         if(t==0) {
-            sm[0]     +=__half(2.f*BETA)*sm[min(1,w-1)];
-            if(y1<h) sm[w]   +=__half(2.f*BETA)*sm[w+min(1,w-1)];
-            if(y2<h) sm[2*w] +=__half(2.f*BETA)*sm[2*w+min(1,w-1)];
+            sm[0]     +=__half(2.f*BETA)*sm[1];
+            if(y1<h) sm[w]   +=__half(2.f*BETA)*sm[w+1];
+            if(y2<h) sm[2*w] +=__half(2.f*BETA)*sm[2*w+1];
         }
         for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]     +=__half(BETA)*(sm[x-1]     +sm[min(x+1,w-1)]);
-            if(y1<h) sm[w+x]   +=__half(BETA)*(sm[w+x-1]  +sm[w+min(x+1,w-1)]);
-            if(y2<h) sm[2*w+x] +=__half(BETA)*(sm[2*w+x-1]+sm[2*w+min(x+1,w-1)]);
+            sm[x]     +=__half(BETA)*(sm[x-1]     +sm[x+1]);
+            if(y1<h) sm[w+x]   +=__half(BETA)*(sm[w+x-1]  +sm[w+x+1]);
+            if(y2<h) sm[2*w+x] +=__half(BETA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
         __syncthreads();
         for (int x=1+t*2; x<w-1; x+=nt*2) {
@@ -1111,21 +1209,23 @@ __global__ void s17_fused_i2f_dwt_h_ho_4row(const int32_t* __restrict__ in, __ha
             if(y1<h) sm[w+x]   +=__half(GAMMA)*(sm[w+x-1]  +sm[w+x+1]);
             if(y2<h) sm[2*w+x] +=__half(GAMMA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
-        if(t==0&&w>1&&!(w&1)) {
+        /* V80: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+        if(t==0) {
             sm[w-1]   +=__half(2.f*GAMMA)*sm[w-2];
             if(y1<h) sm[2*w-1] +=__half(2.f*GAMMA)*sm[2*w-2];
             if(y2<h) sm[3*w-1] +=__half(2.f*GAMMA)*sm[3*w-2];
         }
         __syncthreads();
+        /* V80: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
         if(t==0) {
-            sm[0]     +=__half(2.f*DELTA)*sm[min(1,w-1)];
-            if(y1<h) sm[w]   +=__half(2.f*DELTA)*sm[w+min(1,w-1)];
-            if(y2<h) sm[2*w] +=__half(2.f*DELTA)*sm[2*w+min(1,w-1)];
+            sm[0]     +=__half(2.f*DELTA)*sm[1];
+            if(y1<h) sm[w]   +=__half(2.f*DELTA)*sm[w+1];
+            if(y2<h) sm[2*w] +=__half(2.f*DELTA)*sm[2*w+1];
         }
         for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]     +=__half(DELTA)*(sm[x-1]     +sm[min(x+1,w-1)]);
-            if(y1<h) sm[w+x]   +=__half(DELTA)*(sm[w+x-1]  +sm[w+min(x+1,w-1)]);
-            if(y2<h) sm[2*w+x] +=__half(DELTA)*(sm[2*w+x-1]+sm[2*w+min(x+1,w-1)]);
+            sm[x]     +=__half(DELTA)*(sm[x-1]     +sm[x+1]);
+            if(y1<h) sm[w+x]   +=__half(DELTA)*(sm[w+x-1]  +sm[w+x+1]);
+            if(y2<h) sm[2*w+x] +=__half(DELTA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
         __syncthreads();
         for (int x=t*2; x<w; x+=nt*2) {
@@ -1510,23 +1610,29 @@ __global__ void s17_dwt_v_fp16_hi_reg_ho(const __half* __restrict__ d_src,
     /* Alpha: odd rows — V60: #pragma unroll 4 — step=2 → fully independent iterations; 4× ILP. */
     #pragma unroll 4
     for (int y = 1; y < h-1; y += 2) col[y] += kA*(col[y-1]+col[y+1]);
-    if (h>1&&!(h&1)) col[h-1] += kA2*col[h-2];
+    /* V75: DCI heights always > 1 → h>1 guard removed; check only even parity. Parity CUDA V112. */
+    if (!(h&1)) col[h-1] += kA2*col[h-2];
     /* V64: Beta — hoist boundary case to enable #pragma unroll 4 on main loop.
      * Main: y<h-1 ensures y+1<h → col[y+1] directly (no min() clamp needed).
      * Boundary (odd h only): col[h-1]+=kB*(col[h-2]+col[h-1]) matches min(y+1,h-1)=h-1 semantics. */
-    col[0] += kB2*col[min(1,h-1)];
+    /* V75: DCI heights always > 1 → min(1,h-1)=1 always; drop runtime min. */
+    col[0] += kB2*col[1];
     #pragma unroll 4
     for (int y = 2; y < h - 1; y += 2) col[y] += kB*(col[y-1]+col[y+1]);
-    if ((h & 1) && (h > 2)) col[h-1] += kB*(col[h-2]+col[h-1]);
+    /* V77: DCI heights always > 2 (34/68/135) → drop h>2 guard; parity CUDA V114. */
+    if (h & 1) col[h-1] += kB*(col[h-2]+col[h-1]);
     /* Gamma: odd rows — same structure as Alpha; V60: #pragma unroll 4 → 4× ILP. */
     #pragma unroll 4
     for (int y = 1; y < h-1; y += 2) col[y] += kG*(col[y-1]+col[y+1]);
-    if (h>1&&!(h&1)) col[h-1] += kG2*col[h-2];
+    /* V75: DCI heights always > 1 → h>1 guard removed. */
+    if (!(h&1)) col[h-1] += kG2*col[h-2];
     /* V64: Delta — same boundary-hoist transformation as Beta above. */
-    col[0] += kD2*col[min(1,h-1)];
+    /* V75: DCI heights always > 1 → min(1,h-1)=1 always; drop runtime min. */
+    col[0] += kD2*col[1];
     #pragma unroll 4
     for (int y = 2; y < h - 1; y += 2) col[y] += kD*(col[y-1]+col[y+1]);
-    if ((h & 1) && (h > 2)) col[h-1] += kD*(col[h-2]+col[h-1]);
+    /* V77: DCI heights always > 2 → drop h>2 guard (same as Beta above). */
+    if (h & 1) col[h-1] += kD*(col[h-2]+col[h-1]);
 
     /* V60: #pragma unroll 4 on both scatter write loops — 4 concurrent global stores per batch. */
     int hh = (h+1)/2;
@@ -1701,24 +1807,28 @@ __global__ void s17_dwt_h_half_io_2row(const __half* __restrict__ data, __half* 
         sm[x]  +=__half(ALPHA)*(sm[x-1]+sm[x+1]);
         if(y1<h) sm[w+x]+=__half(ALPHA)*(sm[w+x-1]+sm[w+x+1]);
     }
-    if(t==0&&w>1&&!(w&1)) { sm[w-1]+=__half(2.f*ALPHA)*sm[w-2]; if(y1<h) sm[2*w-1]+=__half(2.f*ALPHA)*sm[2*w-2]; }
+    /* V80: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+    if(t==0) { sm[w-1]+=__half(2.f*ALPHA)*sm[w-2]; if(y1<h) sm[2*w-1]+=__half(2.f*ALPHA)*sm[2*w-2]; }
     __syncthreads();
-    if(t==0) { sm[0]+=__half(2.f*BETA)*sm[min(1,w-1)]; if(y1<h) sm[w]+=__half(2.f*BETA)*sm[w+min(1,w-1)]; }
+    /* V80: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
+    if(t==0) { sm[0]+=__half(2.f*BETA)*sm[1]; if(y1<h) sm[w]+=__half(2.f*BETA)*sm[w+1]; }
     for (int x=2+t*2; x<w; x+=nt*2) {
-        sm[x]  +=__half(BETA)*(sm[x-1]+sm[min(x+1,w-1)]);
-        if(y1<h) sm[w+x]+=__half(BETA)*(sm[w+x-1]+sm[w+min(x+1,w-1)]);
+        sm[x]  +=__half(BETA)*(sm[x-1]+sm[x+1]);
+        if(y1<h) sm[w+x]+=__half(BETA)*(sm[w+x-1]+sm[w+x+1]);
     }
     __syncthreads();
     for (int x=1+t*2; x<w-1; x+=nt*2) {
         sm[x]  +=__half(GAMMA)*(sm[x-1]+sm[x+1]);
         if(y1<h) sm[w+x]+=__half(GAMMA)*(sm[w+x-1]+sm[w+x+1]);
     }
-    if(t==0&&w>1&&!(w&1)) { sm[w-1]+=__half(2.f*GAMMA)*sm[w-2]; if(y1<h) sm[2*w-1]+=__half(2.f*GAMMA)*sm[2*w-2]; }
+    /* V80: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+    if(t==0) { sm[w-1]+=__half(2.f*GAMMA)*sm[w-2]; if(y1<h) sm[2*w-1]+=__half(2.f*GAMMA)*sm[2*w-2]; }
     __syncthreads();
-    if(t==0) { sm[0]+=__half(2.f*DELTA)*sm[min(1,w-1)]; if(y1<h) sm[w]+=__half(2.f*DELTA)*sm[w+min(1,w-1)]; }
+    /* V80: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
+    if(t==0) { sm[0]+=__half(2.f*DELTA)*sm[1]; if(y1<h) sm[w]+=__half(2.f*DELTA)*sm[w+1]; }
     for (int x=2+t*2; x<w; x+=nt*2) {
-        sm[x]  +=__half(DELTA)*(sm[x-1]+sm[min(x+1,w-1)]);
-        if(y1<h) sm[w+x]+=__half(DELTA)*(sm[w+x-1]+sm[w+min(x+1,w-1)]);
+        sm[x]  +=__half(DELTA)*(sm[x-1]+sm[x+1]);
+        if(y1<h) sm[w+x]+=__half(DELTA)*(sm[w+x-1]+sm[w+x+1]);
     }
     __syncthreads();
     for (int x=t*2; x<w; x+=nt*2) {
@@ -1752,12 +1862,21 @@ void s17_dwt_h_half_io_4row(const __half* __restrict__ data, __half* __restrict_
          * Total smem unchanged: 4w __half = 2w __half2 per region × 2 regions. */
         __half2* sm01 = reinterpret_cast<__half2*>(sm);
         __half2* sm23 = reinterpret_cast<__half2*>(sm + 2*w);
-        /* V57: #pragma unroll 2 — 2×4 concurrent __ldg per thread → better DRAM latency hiding.
-         * 2K L1 (w=960/nt=512=2 iters): fully unrolled. 4K L1 (1920/512=4 iters): 2 pairs. */
+        /* V85: __half2 __ldg loads — 4 × 32-bit loads replace 8 × 16-bit loads per 2-col pair.
+         * DCI widths always even (960/480/240/120) → x=t*2 always even → 4-byte aligned __half2.
+         * Each __half2 load covers {row[x], row[x+1]}; unpack into interleaved sm01/sm23 layout.
+         * 2× fewer load instructions per thread; coalesced access preserved (parity CUDA V123).
+         * V57: #pragma unroll 2 retained — 4K: 2 iters; 2K: 1 iter → DRAM latency hiding. */
         #pragma unroll 2
-        for (int i=t; i<w; i+=nt) {
-            sm01[i] = __halves2half2(__ldg(&data[y0*s+i]), __ldg(&data[y1*s+i]));
-            sm23[i] = __halves2half2(__ldg(&data[y2*s+i]), __ldg(&data[y3*s+i]));
+        for (int i=t*2; i<w; i+=nt*2) {
+            __half2 r0 = __ldg(reinterpret_cast<const __half2*>(&data[y0*s+i]));
+            __half2 r1 = __ldg(reinterpret_cast<const __half2*>(&data[y1*s+i]));
+            __half2 r2 = __ldg(reinterpret_cast<const __half2*>(&data[y2*s+i]));
+            __half2 r3 = __ldg(reinterpret_cast<const __half2*>(&data[y3*s+i]));
+            sm01[i]   = __halves2half2(__low2half(r0), __low2half(r1));   /* {y0[i],   y1[i]}   */
+            sm01[i+1] = __halves2half2(__high2half(r0), __high2half(r1)); /* {y0[i+1], y1[i+1]} */
+            sm23[i]   = __halves2half2(__low2half(r2), __low2half(r3));
+            sm23[i+1] = __halves2half2(__high2half(r2), __high2half(r3));
         }
         __syncthreads();
         /* V59: Alpha — #pragma unroll 2: 4K L1 has 2 iters → interleaves 2×4 HFMA2/HADD2
@@ -1860,21 +1979,23 @@ void s17_dwt_h_half_io_4row(const __half* __restrict__ data, __half* __restrict_
             if(y1<h) sm[w+x]   +=__half(ALPHA)*(sm[w+x-1]  +sm[w+x+1]);
             if(y2<h) sm[2*w+x] +=__half(ALPHA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
-        if(t==0&&w>1&&!(w&1)) {
+        /* V81: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+        if(t==0) {
             sm[w-1]   +=__half(2.f*ALPHA)*sm[w-2];
             if(y1<h) sm[2*w-1] +=__half(2.f*ALPHA)*sm[2*w-2];
             if(y2<h) sm[3*w-1] +=__half(2.f*ALPHA)*sm[3*w-2];
         }
         __syncthreads();
+        /* V81: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
         if(t==0) {
-            sm[0]     +=__half(2.f*BETA)*sm[min(1,w-1)];
-            if(y1<h) sm[w]   +=__half(2.f*BETA)*sm[w+min(1,w-1)];
-            if(y2<h) sm[2*w] +=__half(2.f*BETA)*sm[2*w+min(1,w-1)];
+            sm[0]     +=__half(2.f*BETA)*sm[1];
+            if(y1<h) sm[w]   +=__half(2.f*BETA)*sm[w+1];
+            if(y2<h) sm[2*w] +=__half(2.f*BETA)*sm[2*w+1];
         }
         for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]     +=__half(BETA)*(sm[x-1]     +sm[min(x+1,w-1)]);
-            if(y1<h) sm[w+x]   +=__half(BETA)*(sm[w+x-1]  +sm[w+min(x+1,w-1)]);
-            if(y2<h) sm[2*w+x] +=__half(BETA)*(sm[2*w+x-1]+sm[2*w+min(x+1,w-1)]);
+            sm[x]     +=__half(BETA)*(sm[x-1]     +sm[x+1]);
+            if(y1<h) sm[w+x]   +=__half(BETA)*(sm[w+x-1]  +sm[w+x+1]);
+            if(y2<h) sm[2*w+x] +=__half(BETA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
         __syncthreads();
         for (int x=1+t*2; x<w-1; x+=nt*2) {
@@ -1882,21 +2003,23 @@ void s17_dwt_h_half_io_4row(const __half* __restrict__ data, __half* __restrict_
             if(y1<h) sm[w+x]   +=__half(GAMMA)*(sm[w+x-1]  +sm[w+x+1]);
             if(y2<h) sm[2*w+x] +=__half(GAMMA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
-        if(t==0&&w>1&&!(w&1)) {
+        /* V81: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+        if(t==0) {
             sm[w-1]   +=__half(2.f*GAMMA)*sm[w-2];
             if(y1<h) sm[2*w-1] +=__half(2.f*GAMMA)*sm[2*w-2];
             if(y2<h) sm[3*w-1] +=__half(2.f*GAMMA)*sm[3*w-2];
         }
         __syncthreads();
+        /* V81: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
         if(t==0) {
-            sm[0]     +=__half(2.f*DELTA)*sm[min(1,w-1)];
-            if(y1<h) sm[w]   +=__half(2.f*DELTA)*sm[w+min(1,w-1)];
-            if(y2<h) sm[2*w] +=__half(2.f*DELTA)*sm[2*w+min(1,w-1)];
+            sm[0]     +=__half(2.f*DELTA)*sm[1];
+            if(y1<h) sm[w]   +=__half(2.f*DELTA)*sm[w+1];
+            if(y2<h) sm[2*w] +=__half(2.f*DELTA)*sm[2*w+1];
         }
         for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]     +=__half(DELTA)*(sm[x-1]     +sm[min(x+1,w-1)]);
-            if(y1<h) sm[w+x]   +=__half(DELTA)*(sm[w+x-1]  +sm[w+min(x+1,w-1)]);
-            if(y2<h) sm[2*w+x] +=__half(DELTA)*(sm[2*w+x-1]+sm[2*w+min(x+1,w-1)]);
+            sm[x]     +=__half(DELTA)*(sm[x-1]     +sm[x+1]);
+            if(y1<h) sm[w+x]   +=__half(DELTA)*(sm[w+x-1]  +sm[w+x+1]);
+            if(y2<h) sm[2*w+x] +=__half(DELTA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
         __syncthreads();
         for (int x=t*2; x<w; x+=nt*2) {
@@ -2013,23 +2136,8 @@ void s17_qe_subband_ml(
 {
     int row = blockIdx.x; if (row >= n_rows) return;
 
-    /* V66: 1 __frcp_rn + 5 FMUL instead of 6 __frcp_rn — parity CUDA V103.
-     * Saves 5 SFU ops per warp (4 cycles each on Ampere = 20 cycles/warp).
-     * 1/(step*mult) ≈ (1/step)*(1/mult) within 1-2 ULP — negligible for step sizing. */
+    /* V66: __frcp_rn computed first; V78: inv_* deferred until after L1 early exit — parity CUDA V115. */
     float base_inv = __frcp_rn(base_step);
-    float inv_dc = base_inv * 1.538461538f;  /* 1/0.65 */
-    float inv_l5 = base_inv * 1.176470588f;  /* 1/0.85 */
-    float inv_l4 = base_inv * 1.052631579f;  /* 1/0.95 */
-    float inv_l3 = base_inv * 0.952380952f;  /* 1/1.05 */
-    float inv_l2 = base_inv * 0.892857143f;  /* 1/1.12 */
-    float inv_l1 = base_inv * 0.833333333f;  /* 1/1.20 */
-
-    bool is_dc_row = (row < ll5_h);
-    bool is_l5_row = (row < ll5_h * 2);
-    int row_lv = is_l5_row ? 5 :
-                 (row < ll5_h*4  ? 4 :
-                 (row < ll5_h*8  ? 3 :
-                 (row < ll5_h*16 ? 2 : 1)));
 
     const __half* row_src = src + static_cast<size_t>(row) * stride;
     uint8_t*      row_dst = out + static_cast<size_t>(row) * stride;
@@ -2119,9 +2227,34 @@ void s17_qe_subband_ml(
         }
     };
 
-    if (row_lv == 1) {
-        vq8(0, stride, inv_l1, blockDim.x);
-    } else if (row_lv == 2) {
+    /* V78: L1-row early exit — saves 5 FMUL per thread for >50% of 2K/4K rows.
+     * L1 rows (row >= ll5_h*16): only inv_l1 = base_inv*0.833... needed.
+     * Exiting before the 5 other FMUL constants avoids wasted compute for majority path.
+     * Register pressure: 6 floats → 1 (base_inv) + inline constant for L1 blocks.
+     * Parity: CUDA V115. */
+    if (row >= ll5_h * 16) {
+        vq8(0, stride, base_inv * 0.833333333f, blockDim.x);
+        return;
+    }
+
+    /* V66: 5 FMUL instead of 5 __frcp_rn (only reached for non-L1 rows, <50% of rows).
+     * Saves 5 SFU ops per warp; compile-time reciprocal mult constants. */
+    float inv_dc = base_inv * 1.538461538f;  /* 1/0.65 */
+    float inv_l5 = base_inv * 1.176470588f;  /* 1/0.85 */
+    float inv_l4 = base_inv * 1.052631579f;  /* 1/0.95 */
+    float inv_l3 = base_inv * 0.952380952f;  /* 1/1.05 */
+    float inv_l2 = base_inv * 0.892857143f;  /* 1/1.12 */
+    float inv_l1 = base_inv * 0.833333333f;  /* 1/1.20 */
+
+    bool is_dc_row = (row < ll5_h);
+    bool is_l5_row = (row < ll5_h * 2);
+    /* V78: row < ll5_h*16 guaranteed by early exit above → row_lv in {2..5}. */
+    int row_lv = is_l5_row ? 5 :
+                 (row < ll5_h*4  ? 4 :
+                 (row < ll5_h*8  ? 3 : 2));
+
+    /* row_lv == 1 handled above (early exit); dispatch only L2..L5/DC rows here. */
+    if (row_lv == 2) {
         const int mid = ll5_c * 16;
         vq8(0,   mid,    inv_l2, blockDim.x);
         vq8(mid, stride, inv_l1, blockDim.x);
@@ -2200,18 +2333,19 @@ __global__ void s17_rgb48_xyz_hdwt0(
     __syncthreads();
 
     int w = width, hw = (w+1)/2;
+    /* V82: DCI w always even and >1 → drop w>1&&!(w&1); min(1,w-1)=1; min(x+1,w-1)=x+1. */
 #define S17_HDWT_HALF(smc, dst)                                                              \
     for (int x=1+t*2; x<w-1; x+=nt*2) (smc)[x]+=ALPHA*((smc)[x-1]+(smc)[x+1]);            \
-    if(t==0&&w>1&&!(w&1)) (smc)[w-1]+=2.f*ALPHA*(smc)[w-2];                                \
+    if(t==0) (smc)[w-1]+=2.f*ALPHA*(smc)[w-2];                                              \
     __syncthreads();                                                                          \
-    if(t==0) (smc)[0]+=2.f*BETA*(smc)[min(1,w-1)];                                          \
-    for (int x=2+t*2; x<w; x+=nt*2) (smc)[x]+=BETA*((smc)[x-1]+(smc)[min(x+1,w-1)]);      \
+    if(t==0) (smc)[0]+=2.f*BETA*(smc)[1];                                                   \
+    for (int x=2+t*2; x<w; x+=nt*2) (smc)[x]+=BETA*((smc)[x-1]+(smc)[x+1]);               \
     __syncthreads();                                                                          \
     for (int x=1+t*2; x<w-1; x+=nt*2) (smc)[x]+=GAMMA*((smc)[x-1]+(smc)[x+1]);            \
-    if(t==0&&w>1&&!(w&1)) (smc)[w-1]+=2.f*GAMMA*(smc)[w-2];                                \
+    if(t==0) (smc)[w-1]+=2.f*GAMMA*(smc)[w-2];                                              \
     __syncthreads();                                                                          \
-    if(t==0) (smc)[0]+=2.f*DELTA*(smc)[min(1,w-1)];                                         \
-    for (int x=2+t*2; x<w; x+=nt*2) (smc)[x]+=DELTA*((smc)[x-1]+(smc)[min(x+1,w-1)]);     \
+    if(t==0) (smc)[0]+=2.f*DELTA*(smc)[1];                                                  \
+    for (int x=2+t*2; x<w; x+=nt*2) (smc)[x]+=DELTA*((smc)[x-1]+(smc)[x+1]);              \
     __syncthreads();                                                                          \
     for (int x=t*2;   x<w; x+=nt*2) (dst)[y*stride+x/2]    =__float2half((smc)[x]*NORM_L); \
     for (int x=t*2+1; x<w; x+=nt*2) (dst)[y*stride+hw+x/2] =__float2half((smc)[x]*NORM_H); \
@@ -2263,17 +2397,18 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch(
     }
     __syncthreads();
 
+    /* V82: DCI w always even and >1 → drop w>1&&!(w&1); min(1,w-1)=1; min(x+1,w-1)=x+1. */
     for (int x=1+t*2; x<w-1; x+=nt*2) sm[x]+=__half(ALPHA)*(sm[x-1]+sm[x+1]);
-    if(t==0&&w>1&&!(w&1)) sm[w-1]+=__half(2.f*ALPHA)*sm[w-2];
+    if(t==0) sm[w-1]+=__half(2.f*ALPHA)*sm[w-2];
     __syncthreads();
-    if(t==0) sm[0]+=__half(2.f*BETA)*sm[min(1,w-1)];
-    for (int x=2+t*2; x<w; x+=nt*2) sm[x]+=__half(BETA)*(sm[x-1]+sm[min(x+1,w-1)]);
+    if(t==0) sm[0]+=__half(2.f*BETA)*sm[1];
+    for (int x=2+t*2; x<w; x+=nt*2) sm[x]+=__half(BETA)*(sm[x-1]+sm[x+1]);
     __syncthreads();
     for (int x=1+t*2; x<w-1; x+=nt*2) sm[x]+=__half(GAMMA)*(sm[x-1]+sm[x+1]);
-    if(t==0&&w>1&&!(w&1)) sm[w-1]+=__half(2.f*GAMMA)*sm[w-2];
+    if(t==0) sm[w-1]+=__half(2.f*GAMMA)*sm[w-2];
     __syncthreads();
-    if(t==0) sm[0]+=__half(2.f*DELTA)*sm[min(1,w-1)];
-    for (int x=2+t*2; x<w; x+=nt*2) sm[x]+=__half(DELTA)*(sm[x-1]+sm[min(x+1,w-1)]);
+    if(t==0) sm[0]+=__half(2.f*DELTA)*sm[1];
+    for (int x=2+t*2; x<w; x+=nt*2) sm[x]+=__half(DELTA)*(sm[x-1]+sm[x+1]);
     __syncthreads();
     for (int x=t*2;   x<w; x+=nt*2) d_hout[y*stride+x/2]    = sm[x] * __half(NORM_L);
     for (int x=t*2+1; x<w; x+=nt*2) d_hout[y*stride+hw+x/2] = sm[x] * __half(NORM_H);
@@ -2333,24 +2468,25 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_2row(
         sm[x]  +=__half(ALPHA)*(sm[x-1]+sm[x+1]);
         if(y1<height) sm[w+x]+=__half(ALPHA)*(sm[w+x-1]+sm[w+x+1]);
     }
-    if(t==0&&w>1&&!(w&1)) { sm[w-1]+=__half(2.f*ALPHA)*sm[w-2]; if(y1<height) sm[2*w-1]+=__half(2.f*ALPHA)*sm[2*w-2]; }
+    /* V82: DCI w always even and >1 → drop w>1&&!(w&1); min(1,w-1)=1; min(x+1,w-1)=x+1. */
+    if(t==0) { sm[w-1]+=__half(2.f*ALPHA)*sm[w-2]; if(y1<height) sm[2*w-1]+=__half(2.f*ALPHA)*sm[2*w-2]; }
     __syncthreads();
-    if(t==0) { sm[0]+=__half(2.f*BETA)*sm[min(1,w-1)]; if(y1<height) sm[w]+=__half(2.f*BETA)*sm[w+min(1,w-1)]; }
+    if(t==0) { sm[0]+=__half(2.f*BETA)*sm[1]; if(y1<height) sm[w]+=__half(2.f*BETA)*sm[w+1]; }
     for (int x=2+t*2; x<w; x+=nt*2) {
-        sm[x]  +=__half(BETA)*(sm[x-1]+sm[min(x+1,w-1)]);
-        if(y1<height) sm[w+x]+=__half(BETA)*(sm[w+x-1]+sm[w+min(x+1,w-1)]);
+        sm[x]  +=__half(BETA)*(sm[x-1]+sm[x+1]);
+        if(y1<height) sm[w+x]+=__half(BETA)*(sm[w+x-1]+sm[w+x+1]);
     }
     __syncthreads();
     for (int x=1+t*2; x<w-1; x+=nt*2) {
         sm[x]  +=__half(GAMMA)*(sm[x-1]+sm[x+1]);
         if(y1<height) sm[w+x]+=__half(GAMMA)*(sm[w+x-1]+sm[w+x+1]);
     }
-    if(t==0&&w>1&&!(w&1)) { sm[w-1]+=__half(2.f*GAMMA)*sm[w-2]; if(y1<height) sm[2*w-1]+=__half(2.f*GAMMA)*sm[2*w-2]; }
+    if(t==0) { sm[w-1]+=__half(2.f*GAMMA)*sm[w-2]; if(y1<height) sm[2*w-1]+=__half(2.f*GAMMA)*sm[2*w-2]; }
     __syncthreads();
-    if(t==0) { sm[0]+=__half(2.f*DELTA)*sm[min(1,w-1)]; if(y1<height) sm[w]+=__half(2.f*DELTA)*sm[w+min(1,w-1)]; }
+    if(t==0) { sm[0]+=__half(2.f*DELTA)*sm[1]; if(y1<height) sm[w]+=__half(2.f*DELTA)*sm[w+1]; }
     for (int x=2+t*2; x<w; x+=nt*2) {
-        sm[x]  +=__half(DELTA)*(sm[x-1]+sm[min(x+1,w-1)]);
-        if(y1<height) sm[w+x]+=__half(DELTA)*(sm[w+x-1]+sm[w+min(x+1,w-1)]);
+        sm[x]  +=__half(DELTA)*(sm[x-1]+sm[x+1]);
+        if(y1<height) sm[w+x]+=__half(DELTA)*(sm[w+x-1]+sm[w+x+1]);
     }
     __syncthreads();
     for (int x=t*2; x<w; x+=nt*2) {
@@ -2367,8 +2503,11 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_2row(
 /* V18e: Packed 12-bit planar variant of s17_rgb48_xyz_hdwt0_1ch_2row (parity with CUDA V54).
  * Input d_rgb12: 3 contiguous planes (R/G/B), each height*packed_row_stride bytes.
  * packed_row_stride = (width/2)*3; pair unpack: even=(b0<<4|b1>>4), odd=((b1&0xF)<<8|b2). */
-/* V51: __launch_bounds__(512,4) — forces ≤32 regs/T → guaranteed 4 blk/SM (was potentially 3 if compiler used 36 regs/T). */
-__global__ __launch_bounds__(512, 4)
+/* V79: __launch_bounds__(512,3) — matches actual 3 blk/SM smem limit (was 512,4 from V51).
+ * V53 added 8KB sm_lut; smem=15.68KB → PreferShared(48KB)=3 blk/SM actual occupancy cap.
+ * (512,3) → ≤42 regs/T; gives compiler 10 extra registers vs old (512,4)→32 regs limit.
+ * Parity: CUDA V116. */
+__global__ __launch_bounds__(512, 3)
 void s17_rgb48_xyz_hdwt0_1ch_2row_p12(
     const uint8_t*  __restrict__ d_rgb12,
     const __half*   __restrict__ d_lut_in,  /* V18f: was float */
@@ -2410,24 +2549,28 @@ void s17_rgb48_xyz_hdwt0_1ch_2row_p12(
         float v = __saturatef(m0*r+m1*g+m2*b);
         return s17_u16_to_f16(__ldg(&d_lut_out[(int)(v*4095.5f)]));
     };
-    if (y1 < height) {
+    /* V84: DCI height always even (1080/2160) → y1=y0+1 always < height; partial else branch removed.
+     * Compiler can now optimize unconditionally — no register partitioning for dead branch.
+     * Parity: CUDA V122. */
+    {
         /* Interior path: both rows valid — __half2 lifting, 2× FMA throughput. */
         __half2* sm2 = reinterpret_cast<__half2*>(sm);
-        /* V52: #pragma unroll 2 — 2K has ~2 iters/thread; compiler issues 2× LUT __ldg in parallel. */
+        /* V83: uint32_t __ldg replaces 3×byte __ldg per channel — 3× fewer load instructions per pair.
+         * V52: #pragma unroll 2 — 2K ~2 iters; 3 loads (was 9) per row → better MLP per iteration. */
         #pragma unroll 2
         for (int p = t; p*2 < w; p += nt) {
             int off0 = y0*packed_row_stride + p*3;
-            uint8_t rb0=__ldg(r_p+off0), rb1=__ldg(r_p+off0+1), rb2=__ldg(r_p+off0+2);
-            uint8_t gb0=__ldg(g_p+off0), gb1=__ldg(g_p+off0+1), gb2=__ldg(g_p+off0+2);
-            uint8_t bb0=__ldg(b_p+off0), bb1=__ldg(b_p+off0+1), bb2=__ldg(b_p+off0+2);
-            __half e0 = s17_lut_xyz_2r((int(rb0)<<4)|(int(rb1)>>4), (int(gb0)<<4)|(int(gb1)>>4), (int(bb0)<<4)|(int(bb1)>>4));
-            __half o0 = s17_lut_xyz_2r(((int(rb1)&0xF)<<8)|int(rb2), ((int(gb1)&0xF)<<8)|int(gb2), ((int(bb1)&0xF)<<8)|int(bb2));
+            uint32_t rw0=__ldg(reinterpret_cast<const uint32_t*>(r_p+off0));
+            uint32_t gw0=__ldg(reinterpret_cast<const uint32_t*>(g_p+off0));
+            uint32_t bw0=__ldg(reinterpret_cast<const uint32_t*>(b_p+off0));
+            __half e0 = s17_lut_xyz_2r(((rw0&0xFF)<<4)|((rw0>>12)&0xF), ((gw0&0xFF)<<4)|((gw0>>12)&0xF), ((bw0&0xFF)<<4)|((bw0>>12)&0xF));
+            __half o0 = s17_lut_xyz_2r(((rw0>>8)&0xF)<<8|((rw0>>16)&0xFF), ((gw0>>8)&0xF)<<8|((gw0>>16)&0xFF), ((bw0>>8)&0xF)<<8|((bw0>>16)&0xFF));
             int off1 = y1*packed_row_stride + p*3;
-            uint8_t rb0_=__ldg(r_p+off1), rb1_=__ldg(r_p+off1+1), rb2_=__ldg(r_p+off1+2);
-            uint8_t gb0_=__ldg(g_p+off1), gb1_=__ldg(g_p+off1+1), gb2_=__ldg(g_p+off1+2);
-            uint8_t bb0_=__ldg(b_p+off1), bb1_=__ldg(b_p+off1+1), bb2_=__ldg(b_p+off1+2);
-            __half e1 = s17_lut_xyz_2r((int(rb0_)<<4)|(int(rb1_)>>4), (int(gb0_)<<4)|(int(gb1_)>>4), (int(bb0_)<<4)|(int(bb1_)>>4));
-            __half o1 = s17_lut_xyz_2r(((int(rb1_)&0xF)<<8)|int(rb2_), ((int(gb1_)&0xF)<<8)|int(gb2_), ((int(bb1_)&0xF)<<8)|int(bb2_));
+            uint32_t rw1=__ldg(reinterpret_cast<const uint32_t*>(r_p+off1));
+            uint32_t gw1=__ldg(reinterpret_cast<const uint32_t*>(g_p+off1));
+            uint32_t bw1=__ldg(reinterpret_cast<const uint32_t*>(b_p+off1));
+            __half e1 = s17_lut_xyz_2r(((rw1&0xFF)<<4)|((rw1>>12)&0xF), ((gw1&0xFF)<<4)|((gw1>>12)&0xF), ((bw1&0xFF)<<4)|((bw1>>12)&0xF));
+            __half o1 = s17_lut_xyz_2r(((rw1>>8)&0xF)<<8|((rw1>>16)&0xFF), ((gw1>>8)&0xF)<<8|((gw1>>16)&0xFF), ((bw1>>8)&0xF)<<8|((bw1>>16)&0xFF));
             sm2[p*2]   = __halves2half2(e0, e1);
             sm2[p*2+1] = __halves2half2(o0, o1);
         }
@@ -2438,13 +2581,15 @@ void s17_rgb48_xyz_hdwt0_1ch_2row_p12(
             #pragma unroll 2
             for (int x=1+t*2; x<w-1; x+=nt*2)
                 sm2[x] = __hfma2(kA, __hadd2(sm2[x-1], sm2[x+1]), sm2[x]);
-            if(t==0&&w>1&&!(w&1))
+            /* V74: DCI w always even and >1 → simplify Alpha boundary (parity CUDA V111). */
+            if(t==0)
                 sm2[w-1] = __hfma2(__half2half2(__float2half(2.f*ALPHA)), sm2[w-2], sm2[w-1]);
         }
         __syncthreads();
         {
             const __half2 kB = __half2half2(__float2half(BETA));
-            if(t==0) sm2[0] = __hfma2(__half2half2(__float2half(2.f*BETA)), sm2[min(1,w-1)], sm2[0]);
+            /* V74: DCI w always >1 → min(1,w-1)=1; drop runtime min. */
+            if(t==0) sm2[0] = __hfma2(__half2half2(__float2half(2.f*BETA)), sm2[1], sm2[0]);
             /* V65: x always even → even w: min(x+1,w-1)=x+1; drop MIN per iteration. */
             #pragma unroll 2
             for (int x=2+t*2; x<w-1; x+=nt*2)
@@ -2456,13 +2601,15 @@ void s17_rgb48_xyz_hdwt0_1ch_2row_p12(
             #pragma unroll 2
             for (int x=1+t*2; x<w-1; x+=nt*2)
                 sm2[x] = __hfma2(kG, __hadd2(sm2[x-1], sm2[x+1]), sm2[x]);
-            if(t==0&&w>1&&!(w&1))
+            /* V74: DCI w always even and >1 → simplify Gamma boundary. */
+            if(t==0)
                 sm2[w-1] = __hfma2(__half2half2(__float2half(2.f*GAMMA)), sm2[w-2], sm2[w-1]);
         }
         __syncthreads();
         {
             const __half2 kD = __half2half2(__float2half(DELTA));
-            if(t==0) sm2[0] = __hfma2(__half2half2(__float2half(2.f*DELTA)), sm2[min(1,w-1)], sm2[0]);
+            /* V74: DCI w always >1 → min(1,w-1)=1; drop runtime min. */
+            if(t==0) sm2[0] = __hfma2(__half2half2(__float2half(2.f*DELTA)), sm2[1], sm2[0]);
             /* V65: same even-w invariant — drop MIN. */
             #pragma unroll 2
             for (int x=2+t*2; x<w-1; x+=nt*2)
@@ -2484,37 +2631,6 @@ void s17_rgb48_xyz_hdwt0_1ch_2row_p12(
                 d_hout[y1*stride+hw+p] = __high2half(vH);
             }
         }
-    } else {
-        /* Partial path: y1 >= height — process row0 only (scalar). */
-        for (int p = t; p*2 < w; p += nt) {
-            int off = y0*packed_row_stride + p*3;
-            uint8_t rb0=__ldg(r_p+off), rb1=__ldg(r_p+off+1), rb2=__ldg(r_p+off+2);
-            uint8_t gb0=__ldg(g_p+off), gb1=__ldg(g_p+off+1), gb2=__ldg(g_p+off+2);
-            uint8_t bb0=__ldg(b_p+off), bb1=__ldg(b_p+off+1), bb2=__ldg(b_p+off+2);
-            sm[p*2]   = s17_lut_xyz_2r((int(rb0)<<4)|(int(rb1)>>4), (int(gb0)<<4)|(int(gb1)>>4), (int(bb0)<<4)|(int(bb1)>>4));
-            sm[p*2+1] = s17_lut_xyz_2r(((int(rb1)&0xF)<<8)|int(rb2), ((int(gb1)&0xF)<<8)|int(gb2), ((int(bb1)&0xF)<<8)|int(bb2));
-        }
-        __syncthreads();
-        for (int x=1+t*2; x<w-1; x+=nt*2)
-            sm[x]+=__half(ALPHA)*(sm[x-1]+sm[x+1]);
-        if(t==0&&w>1&&!(w&1)) sm[w-1]+=__half(2.f*ALPHA)*sm[w-2];
-        __syncthreads();
-        if(t==0) sm[0]+=__half(2.f*BETA)*sm[min(1,w-1)];
-        for (int x=2+t*2; x<w; x+=nt*2)
-            sm[x]+=__half(BETA)*(sm[x-1]+sm[min(x+1,w-1)]);
-        __syncthreads();
-        for (int x=1+t*2; x<w-1; x+=nt*2)
-            sm[x]+=__half(GAMMA)*(sm[x-1]+sm[x+1]);
-        if(t==0&&w>1&&!(w&1)) sm[w-1]+=__half(2.f*GAMMA)*sm[w-2];
-        __syncthreads();
-        if(t==0) sm[0]+=__half(2.f*DELTA)*sm[min(1,w-1)];
-        for (int x=2+t*2; x<w; x+=nt*2)
-            sm[x]+=__half(DELTA)*(sm[x-1]+sm[min(x+1,w-1)]);
-        __syncthreads();
-        for (int p = t; p < w/2; p += nt) {
-            d_hout[y0*stride+p]    = sm[p*2]   * __half(NORM_L);
-            d_hout[y0*stride+hw+p] = sm[p*2+1] * __half(NORM_H);
-        }
     }
 }
 
@@ -2523,8 +2639,10 @@ void s17_rgb48_xyz_hdwt0_1ch_2row_p12(
  * grid=height; smem=w*sizeof(__half) (3.84KB@2K, 7.68KB@4K).
  * For 4K: smem=7.68KB; PreferNone(32KB/SM)→4 blk/SM=100% occ vs 2-row's 2 blk/SM=50%.
  * Simpler than 2-row: no y1 guard, single-row smem. Launch: <<<height, h_block, w*2B, s>>>. */
-/* V51: __launch_bounds__(512,4) — forces ≤32 regs/T → guaranteed 4 blk/SM (was potentially 3 if compiler used 36 regs/T). */
-__global__ __launch_bounds__(512, 4)
+/* V79: __launch_bounds__(512,3) — same fix as 2row_p12 above (parity CUDA V116).
+ * smem=15.68KB (sm_lut 8KB + DWT 7.68KB for 4K 1row) → PreferShared(48KB)=3 blk/SM actual.
+ * (512,3) → ≤42 regs/T; relaxes compiler register budget from 32 to 42. */
+__global__ __launch_bounds__(512, 3)
 void s17_rgb48_xyz_hdwt0_1ch_1row_p12(
     const uint8_t*  __restrict__ d_rgb12,
     const __half*   __restrict__ d_lut_in,
@@ -2569,15 +2687,17 @@ void s17_rgb48_xyz_hdwt0_1ch_1row_p12(
         float v = __saturatef(m0*r+m1*g+m2*b);
         return s17_u16_to_f16(__ldg(&d_lut_out[(int)(v*4095.5f)]));
     };
-    /* V52: #pragma unroll 4 — 4K has ~4 iters/thread; compiler issues 4× __ldg simultaneously. */
+    /* V83: uint32_t __ldg replaces 3×byte __ldg per channel — 3× fewer load instr per pair.
+     * uint32_t at off = byte0|(byte1<<8)|(byte2<<16)|...; even=(byte0<<4)|(byte1>>4); odd=((byte1&0xF)<<8)|byte2.
+     * V52: #pragma unroll 4 — 4K has ~4 iters; 3 loads (was 9) → better MLP per unrolled group. */
     #pragma unroll 4
     for (int p = t; p*2 < w; p += nt) {
         int off = y0*packed_row_stride + p*3;
-        uint8_t rb0=__ldg(r_p+off), rb1=__ldg(r_p+off+1), rb2=__ldg(r_p+off+2);
-        uint8_t gb0=__ldg(g_p+off), gb1=__ldg(g_p+off+1), gb2=__ldg(g_p+off+2);
-        uint8_t bb0=__ldg(b_p+off), bb1=__ldg(b_p+off+1), bb2=__ldg(b_p+off+2);
-        sm[p*2]   = s17_lut_xyz_1r((int(rb0)<<4)|(int(rb1)>>4), (int(gb0)<<4)|(int(gb1)>>4), (int(bb0)<<4)|(int(bb1)>>4));
-        sm[p*2+1] = s17_lut_xyz_1r(((int(rb1)&0xF)<<8)|int(rb2), ((int(gb1)&0xF)<<8)|int(gb2), ((int(bb1)&0xF)<<8)|int(bb2));
+        uint32_t rw=__ldg(reinterpret_cast<const uint32_t*>(r_p+off));
+        uint32_t gw=__ldg(reinterpret_cast<const uint32_t*>(g_p+off));
+        uint32_t bw=__ldg(reinterpret_cast<const uint32_t*>(b_p+off));
+        sm[p*2]   = s17_lut_xyz_1r(((rw&0xFF)<<4)|((rw>>12)&0xF), ((gw&0xFF)<<4)|((gw>>12)&0xF), ((bw&0xFF)<<4)|((bw>>12)&0xF));
+        sm[p*2+1] = s17_lut_xyz_1r(((rw>>8)&0xF)<<8|((rw>>16)&0xFF), ((gw>>8)&0xF)<<8|((gw>>16)&0xFF), ((bw>>8)&0xF)<<8|((bw>>16)&0xFF));
     }
     __syncthreads();
 
@@ -2585,9 +2705,11 @@ void s17_rgb48_xyz_hdwt0_1ch_1row_p12(
     #pragma unroll 4
     for (int x=1+t*2; x<w-1; x+=nt*2)
         sm[x]+=__half(ALPHA)*(sm[x-1]+sm[x+1]);
-    if(t==0&&w>1&&!(w&1)) sm[w-1]+=__half(2.f*ALPHA)*sm[w-2];
+    /* V74: DCI w always even and >1 → simplify Alpha boundary; parity CUDA V111. */
+    if(t==0) sm[w-1]+=__half(2.f*ALPHA)*sm[w-2];
     __syncthreads();
-    if(t==0) sm[0]+=__half(2.f*BETA)*sm[min(1,w-1)];
+    /* V74: DCI w always >1 → min(1,w-1)=1; drop runtime min. */
+    if(t==0) sm[0]+=__half(2.f*BETA)*sm[1];
     /* V65: x always even → even w (4K=3840 even): x≤w-2 → x+1≤w-1 → drop MIN. */
     #pragma unroll 4
     for (int x=2+t*2; x<w-1; x+=nt*2)
@@ -2596,9 +2718,11 @@ void s17_rgb48_xyz_hdwt0_1ch_1row_p12(
     #pragma unroll 4
     for (int x=1+t*2; x<w-1; x+=nt*2)
         sm[x]+=__half(GAMMA)*(sm[x-1]+sm[x+1]);
-    if(t==0&&w>1&&!(w&1)) sm[w-1]+=__half(2.f*GAMMA)*sm[w-2];
+    /* V74: DCI w always even and >1 → simplify Gamma boundary. */
+    if(t==0) sm[w-1]+=__half(2.f*GAMMA)*sm[w-2];
     __syncthreads();
-    if(t==0) sm[0]+=__half(2.f*DELTA)*sm[min(1,w-1)];
+    /* V74: DCI w always >1 → min(1,w-1)=1; drop runtime min. */
+    if(t==0) sm[0]+=__half(2.f*DELTA)*sm[1];
     /* V65: same even-w invariant — drop MIN from Delta loop. */
     #pragma unroll 4
     for (int x=2+t*2; x<w-1; x+=nt*2)
@@ -2707,7 +2831,8 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_4row_p12(
                 sm01[x] = __hfma2(kA2, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
                 sm23[x] = __hfma2(kA2, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
             }
-            if(t==0&&w>1&&!(w&1)) {
+            /* V81: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+            if(t==0) {
                 const __half2 kA2bd = __half2half2(__float2half(2.f*ALPHA));
                 sm01[w-1] = __hfma2(kA2bd, sm01[w-2], sm01[w-1]);
                 sm23[w-1] = __hfma2(kA2bd, sm23[w-2], sm23[w-1]);
@@ -2719,8 +2844,9 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_4row_p12(
             const __half2 kB2 = __half2half2(__float2half(BETA));
             if(t==0) {
                 const __half2 kB2bd = __half2half2(__float2half(2.f*BETA));
-                sm01[0] = __hfma2(kB2bd, sm01[min(1,w-1)], sm01[0]);
-                sm23[0] = __hfma2(kB2bd, sm23[min(1,w-1)], sm23[0]);
+                /* V81: DCI w>1 → min(1,w-1)=1; drop runtime min. */
+                sm01[0] = __hfma2(kB2bd, sm01[1], sm01[0]);
+                sm23[0] = __hfma2(kB2bd, sm23[1], sm23[0]);
             }
             /* V69: x always even → even w (DCI) → x≤w-2 → x+1≤w-1 → drop MIN. */
             #pragma unroll 2
@@ -2738,7 +2864,8 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_4row_p12(
                 sm01[x] = __hfma2(kG2, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
                 sm23[x] = __hfma2(kG2, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
             }
-            if(t==0&&w>1&&!(w&1)) {
+            /* V81: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+            if(t==0) {
                 const __half2 kG2bd = __half2half2(__float2half(2.f*GAMMA));
                 sm01[w-1] = __hfma2(kG2bd, sm01[w-2], sm01[w-1]);
                 sm23[w-1] = __hfma2(kG2bd, sm23[w-2], sm23[w-1]);
@@ -2750,8 +2877,9 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_4row_p12(
             const __half2 kD2 = __half2half2(__float2half(DELTA));
             if(t==0) {
                 const __half2 kD2bd = __half2half2(__float2half(2.f*DELTA));
-                sm01[0] = __hfma2(kD2bd, sm01[min(1,w-1)], sm01[0]);
-                sm23[0] = __hfma2(kD2bd, sm23[min(1,w-1)], sm23[0]);
+                /* V81: DCI w>1 → min(1,w-1)=1; drop runtime min. */
+                sm01[0] = __hfma2(kD2bd, sm01[1], sm01[0]);
+                sm23[0] = __hfma2(kD2bd, sm23[1], sm23[0]);
             }
             /* V69: same even-w invariant as Beta — drop MIN. */
             #pragma unroll 2
@@ -2817,21 +2945,23 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_4row_p12(
             if(y1<height) sm[w+x]  +=__half(ALPHA)*(sm[w+x-1]  +sm[w+x+1]);
             if(y2<height) sm[2*w+x]+=__half(ALPHA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
-        if(t==0&&w>1&&!(w&1)) {
+        /* V81: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+        if(t==0) {
             sm[w-1]  +=__half(2.f*ALPHA)*sm[w-2];
             if(y1<height) sm[2*w-1]+=__half(2.f*ALPHA)*sm[2*w-2];
             if(y2<height) sm[3*w-1]+=__half(2.f*ALPHA)*sm[3*w-2];
         }
         __syncthreads();
+        /* V81: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
         if(t==0) {
-            sm[0]    +=__half(2.f*BETA)*sm[min(1,w-1)];
-            if(y1<height) sm[w]  +=__half(2.f*BETA)*sm[w+min(1,w-1)];
-            if(y2<height) sm[2*w]+=__half(2.f*BETA)*sm[2*w+min(1,w-1)];
+            sm[0]    +=__half(2.f*BETA)*sm[1];
+            if(y1<height) sm[w]  +=__half(2.f*BETA)*sm[w+1];
+            if(y2<height) sm[2*w]+=__half(2.f*BETA)*sm[2*w+1];
         }
         for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]    +=__half(BETA)*(sm[x-1]    +sm[min(x+1,w-1)]);
-            if(y1<height) sm[w+x]  +=__half(BETA)*(sm[w+x-1]  +sm[w+min(x+1,w-1)]);
-            if(y2<height) sm[2*w+x]+=__half(BETA)*(sm[2*w+x-1]+sm[2*w+min(x+1,w-1)]);
+            sm[x]    +=__half(BETA)*(sm[x-1]    +sm[x+1]);
+            if(y1<height) sm[w+x]  +=__half(BETA)*(sm[w+x-1]  +sm[w+x+1]);
+            if(y2<height) sm[2*w+x]+=__half(BETA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
         __syncthreads();
         for (int x=1+t*2; x<w-1; x+=nt*2) {
@@ -2839,21 +2969,23 @@ __global__ void s17_rgb48_xyz_hdwt0_1ch_4row_p12(
             if(y1<height) sm[w+x]  +=__half(GAMMA)*(sm[w+x-1]  +sm[w+x+1]);
             if(y2<height) sm[2*w+x]+=__half(GAMMA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
-        if(t==0&&w>1&&!(w&1)) {
+        /* V81: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
+        if(t==0) {
             sm[w-1]  +=__half(2.f*GAMMA)*sm[w-2];
             if(y1<height) sm[2*w-1]+=__half(2.f*GAMMA)*sm[2*w-2];
             if(y2<height) sm[3*w-1]+=__half(2.f*GAMMA)*sm[3*w-2];
         }
         __syncthreads();
+        /* V81: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
         if(t==0) {
-            sm[0]    +=__half(2.f*DELTA)*sm[min(1,w-1)];
-            if(y1<height) sm[w]  +=__half(2.f*DELTA)*sm[w+min(1,w-1)];
-            if(y2<height) sm[2*w]+=__half(2.f*DELTA)*sm[2*w+min(1,w-1)];
+            sm[0]    +=__half(2.f*DELTA)*sm[1];
+            if(y1<height) sm[w]  +=__half(2.f*DELTA)*sm[w+1];
+            if(y2<height) sm[2*w]+=__half(2.f*DELTA)*sm[2*w+1];
         }
         for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]    +=__half(DELTA)*(sm[x-1]    +sm[min(x+1,w-1)]);
-            if(y1<height) sm[w+x]  +=__half(DELTA)*(sm[w+x-1]  +sm[w+min(x+1,w-1)]);
-            if(y2<height) sm[2*w+x]+=__half(DELTA)*(sm[2*w+x-1]+sm[2*w+min(x+1,w-1)]);
+            sm[x]    +=__half(DELTA)*(sm[x-1]    +sm[x+1]);
+            if(y1<height) sm[w+x]  +=__half(DELTA)*(sm[w+x-1]  +sm[w+x+1]);
+            if(y2<height) sm[2*w+x]+=__half(DELTA)*(sm[2*w+x-1]+sm[2*w+x+1]);
         }
         __syncthreads();
         for (int x=t*2; x<w; x+=nt*2) {
