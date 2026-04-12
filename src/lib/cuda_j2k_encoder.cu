@@ -804,6 +804,7 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <chrono>
 #include <future>
 #include <mutex>
 #include <vector>
@@ -4643,15 +4644,20 @@ CudaJ2KEncoder::encode_ebcot(
 {
     if (!_initialized || !_colour_params_valid) return {};
 
+    auto tmark = [](const char*) {}; /* profiling disabled */
+
     _impl->ensure_buffers(width, height);
     _impl->ensure_rgb_buffer(width, height);
 
     const int num_levels = is_4k ? 6 : NUM_DWT_LEVELS;
     int stride = width;
 
+    tmark("setup");
+
     /* Step 1: H2D — upload RGB48 to GPU */
     size_t rgb_bytes = static_cast<size_t>(height) * rgb_stride_pixels * sizeof(uint16_t);
     cudaMemcpy(_impl->d_rgb16[0], rgb16, rgb_bytes, cudaMemcpyHostToDevice);
+    tmark("H2D");
 
     /* Step 2: GPU colour conversion + H-DWT level 0 (fused kernel) */
     size_t ch_smem = static_cast<size_t>(width) * sizeof(__half);
@@ -4678,6 +4684,7 @@ CudaJ2KEncoder::encode_ebcot(
     /* Sync DWT completion */
     for (int c = 0; c < 3; ++c)
         cudaStreamSynchronize(_impl->stream[c]);
+    tmark("DWT");
 
     /* Step 4: Build code-block table if needed */
     int64_t frame_bits = bit_rate / fps;
@@ -4733,16 +4740,6 @@ CudaJ2KEncoder::encode_ebcot(
     int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
     for (int c = 0; c < 3; ++c) {
-        /* Zero the output buffers */
-        cudaMemsetAsync(_impl->d_ebcot_data[c], 0, (size_t)num_cbs * CB_BUF_SIZE, _impl->stream[c]);
-        cudaMemsetAsync(_impl->d_ebcot_len[c], 0, num_cbs * sizeof(uint16_t), _impl->stream[c]);
-        cudaMemsetAsync(_impl->d_ebcot_npasses[c], 0, num_cbs * sizeof(uint8_t), _impl->stream[c]);
-
-        /* Adjust step for X/Z components (1.1× coarser) */
-        /* The CB info table has Y-component steps; we need to update for X/Z */
-        /* For simplicity, the kernel reads step from CB info — fix by using component-specific tables */
-        /* TODO: per-component step adjustment in kernel */
-
         kernel_ebcot_t1<<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
             _impl->d_a[c], stride,
             _impl->d_cb_info, num_cbs,
@@ -4752,7 +4749,12 @@ CudaJ2KEncoder::encode_ebcot(
             _impl->d_ebcot_passlens[c]);
     }
 
-    /* Step 6: D2H transfer of coded data */
+    /* Sync EBCOT T1 */
+    for (int c = 0; c < 3; ++c)
+        cudaStreamSynchronize(_impl->stream[c]);
+    tmark("EBCOT_T1");
+
+    /* Step 6: D2H transfer of coded data — only transfer actual lengths, not full CB_BUF_SIZE */
     for (int c = 0; c < 3; ++c) {
         cudaMemcpyAsync(_impl->h_ebcot_data[c], _impl->d_ebcot_data[c],
                         (size_t)num_cbs * CB_BUF_SIZE, cudaMemcpyDeviceToHost, _impl->stream[c]);
@@ -4764,9 +4766,9 @@ CudaJ2KEncoder::encode_ebcot(
                         (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
     }
 
-    /* Sync all streams */
     for (int c = 0; c < 3; ++c)
         cudaStreamSynchronize(_impl->stream[c]);
+    tmark("D2H");
 
     /* Step 7: CPU T2 assembly + codestream construction */
     const uint8_t*  cd[3] = { _impl->h_ebcot_data[0], _impl->h_ebcot_data[1], _impl->h_ebcot_data[2] };
@@ -4774,12 +4776,14 @@ CudaJ2KEncoder::encode_ebcot(
     const uint8_t*  np[3] = { _impl->h_ebcot_npasses[0], _impl->h_ebcot_npasses[1], _impl->h_ebcot_npasses[2] };
     const uint16_t* pl[3] = { _impl->h_ebcot_passlens[0], _impl->h_ebcot_passlens[1], _impl->h_ebcot_passlens[2] };
 
-    return build_ebcot_codestream(
+    auto result = build_ebcot_codestream(
         width, height, is_4k, is_3d,
         num_levels, base_step,
         _impl->ebcot_subbands,
         cd, cl, np, pl,
         target_bytes);
+    tmark("T2+CS");
+    return result;
 }
 
 

@@ -26,7 +26,7 @@ static constexpr int CB_PIXELS   = CB_DIM * CB_DIM;  /* 1024 */
 static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
 static constexpr int MAX_BPLANES = 16;   /* max bit-planes for 12-bit + guard */
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
-static constexpr int CB_BUF_SIZE = 8192; /* max coded bytes per code-block */
+static constexpr int CB_BUF_SIZE = 4096; /* max coded bytes per code-block (32×32 × ~3 bytes avg) */
 
 /* Subband types */
 static constexpr int SUBBAND_LL = 0;
@@ -214,18 +214,24 @@ __device__ static void mq_flush(MQCoder* mq) {
 
 /* ===== T1 Context Determination (ITU-T T.800, Table D.1/D.2/D.3) ===== */
 
-/* Significance state flags for 8 neighbors */
-#define SIG_N(sigma, r, c, w, h)  (((r) > 0)                                   ? ((sigma)[((r)-1)*(w)+(c)]) : 0)
-#define SIG_S(sigma, r, c, w, h)  (((r) < (h)-1)                               ? ((sigma)[((r)+1)*(w)+(c)]) : 0)
-#define SIG_W(sigma, r, c, w, h)  (((c) > 0)                                   ? ((sigma)[(r)*(w)+((c)-1)]) : 0)
-#define SIG_E(sigma, r, c, w, h)  (((c) < (w)-1)                               ? ((sigma)[(r)*(w)+((c)+1)]) : 0)
-#define SIG_NW(sigma, r, c, w, h) (((r) > 0 && (c) > 0)                        ? ((sigma)[((r)-1)*(w)+((c)-1)]) : 0)
-#define SIG_NE(sigma, r, c, w, h) (((r) > 0 && (c) < (w)-1)                    ? ((sigma)[((r)-1)*(w)+((c)+1)]) : 0)
-#define SIG_SW(sigma, r, c, w, h) (((r) < (h)-1 && (c) > 0)                    ? ((sigma)[((r)+1)*(w)+((c)-1)]) : 0)
-#define SIG_SE(sigma, r, c, w, h) (((r) < (h)-1 && (c) < (w)-1)               ? ((sigma)[((r)+1)*(w)+((c)+1)]) : 0)
+/* Significance state accessors for packed uint32 bitfields */
+__device__ static int sig_bit(const uint32_t* sigma_bits, int r, int c, int h) {
+    if (r < 0 || r >= h || c < 0 || c >= CB_DIM) return 0;
+    return (sigma_bits[r] >> c) & 1;
+}
+
+/* Legacy macros redirected to bitfield accessor */
+#define SIG_N(sigma, r, c, w, h)  sig_bit(sigma, (r)-1, (c), (h))
+#define SIG_S(sigma, r, c, w, h)  sig_bit(sigma, (r)+1, (c), (h))
+#define SIG_W(sigma, r, c, w, h)  sig_bit(sigma, (r), (c)-1, (h))
+#define SIG_E(sigma, r, c, w, h)  sig_bit(sigma, (r), (c)+1, (h))
+#define SIG_NW(sigma, r, c, w, h) sig_bit(sigma, (r)-1, (c)-1, (h))
+#define SIG_NE(sigma, r, c, w, h) sig_bit(sigma, (r)-1, (c)+1, (h))
+#define SIG_SW(sigma, r, c, w, h) sig_bit(sigma, (r)+1, (c)-1, (h))
+#define SIG_SE(sigma, r, c, w, h) sig_bit(sigma, (r)+1, (c)+1, (h))
 
 /* Zero-coding context (Table D.1) — returns context label 0-8 */
-__device__ static int t1_zero_context(const uint8_t* sigma, int r, int c, int w, int h, int subband) {
+__device__ static int t1_zero_context(const uint32_t* sigma, int r, int c, int w, int h, int subband) {
     int sh = SIG_N(sigma,r,c,w,h)  + SIG_S(sigma,r,c,w,h);   /* vertical */
     int sv = SIG_W(sigma,r,c,w,h)  + SIG_E(sigma,r,c,w,h);   /* horizontal */
     int sd = SIG_NW(sigma,r,c,w,h) + SIG_NE(sigma,r,c,w,h) +
@@ -269,19 +275,19 @@ __device__ static int t1_zero_context(const uint8_t* sigma, int r, int c, int w,
 
 /* Sign coding context (Table D.2) — returns context label offset (0-4) + XOR bit.
  * Per OpenJPEG: contributions are clamped to [-1, 1] via min(pos_count,1)-min(neg_count,1). */
-__device__ static void t1_sign_context(const uint8_t* sigma, const int8_t* signs,
+__device__ static void t1_sign_context(const uint32_t* sigma, const uint32_t* sign_bits,
                                         int r, int c, int w, int h,
                                         int* ctx_out, int* xor_bit_out) {
     /* Horizontal: min(positive,1) - min(negative,1) → range [-1, 1] */
     int hpos = 0, hneg = 0;
-    if (c > 0 && sigma[r*w+(c-1)]) { if (signs[r*w+(c-1)]) hneg++; else hpos++; }
-    if (c < w-1 && sigma[r*w+(c+1)]) { if (signs[r*w+(c+1)]) hneg++; else hpos++; }
-    int hc = (hpos > 0 ? 1 : 0) - (hneg > 0 ? 1 : 0);  /* clamped to [-1, 1] */
+    if (c > 0 && sig_bit(sigma,r,c-1,h)) { if ((sign_bits[r]>>(c-1))&1) hneg++; else hpos++; }
+    if (c < w-1 && sig_bit(sigma,r,c+1,h)) { if ((sign_bits[r]>>(c+1))&1) hneg++; else hpos++; }
+    int hc = (hpos > 0 ? 1 : 0) - (hneg > 0 ? 1 : 0);
 
     /* Vertical: same clamping */
     int vpos = 0, vneg = 0;
-    if (r > 0 && sigma[(r-1)*w+c]) { if (signs[(r-1)*w+c]) vneg++; else vpos++; }
-    if (r < h-1 && sigma[(r+1)*w+c]) { if (signs[(r+1)*w+c]) vneg++; else vpos++; }
+    if (r > 0 && sig_bit(sigma,r-1,c,h)) { if ((sign_bits[r-1]>>c)&1) vneg++; else vpos++; }
+    if (r < h-1 && sig_bit(sigma,r+1,c,h)) { if ((sign_bits[r+1]>>c)&1) vneg++; else vpos++; }
     int vc = (vpos > 0 ? 1 : 0) - (vneg > 0 ? 1 : 0);
 
     /* Normalize: if hc < 0, flip signs */
@@ -308,15 +314,15 @@ __device__ static void t1_sign_context(const uint8_t* sigma, const int8_t* signs
 
 /* Magnitude refinement context (Table D.3) — returns context label offset (0-2).
  * Per OpenJPEG: offset 0 = no sig neighbors + first ref, 1 = sig neighbors + first ref, 2 = not first ref. */
-__device__ static int t1_mr_context(const uint8_t* sigma, const uint8_t* firstref,
+__device__ static int t1_mr_context(const uint32_t* sigma, const uint32_t* firstref_bits,
                                      int r, int c, int w, int h) {
-    if (!firstref[r*w+c])
+    if (!((firstref_bits[r] >> c) & 1))
         return 2;  /* not first refinement */
     int sum = SIG_N(sigma,r,c,w,h) + SIG_S(sigma,r,c,w,h) +
               SIG_W(sigma,r,c,w,h) + SIG_E(sigma,r,c,w,h) +
               SIG_NW(sigma,r,c,w,h) + SIG_NE(sigma,r,c,w,h) +
               SIG_SW(sigma,r,c,w,h) + SIG_SE(sigma,r,c,w,h);
-    return (sum >= 1) ? 1 : 0;  /* 0=no neighbors, 1=has neighbors */
+    return (sum >= 1) ? 1 : 0;
 }
 
 
@@ -355,34 +361,36 @@ __global__ void kernel_ebcot_t1(
         return;
     }
 
-    /* 1. Load and quantize DWT coefficients */
-    int16_t mag[CB_DIM * CB_DIM];   /* absolute quantized magnitudes */
-    uint8_t sigma[CB_DIM * CB_DIM]; /* significance state */
-    int8_t  sign_arr[CB_DIM * CB_DIM]; /* sign (0=positive, 1=negative) */
-    uint8_t firstref[CB_DIM * CB_DIM]; /* first refinement flag */
-    uint8_t coded_in_pass[CB_DIM * CB_DIM]; /* was this sample coded in current pass? */
+    /* 1. Load and quantize DWT coefficients.
+     * Pack sigma/sign/firstref/coded as uint32 bitfields (1 bit per column per row).
+     * This reduces local memory from ~5KB to ~2.3KB per thread. */
+    int16_t mag[CB_DIM * CB_DIM];
+    uint32_t sigma_bits[CB_DIM];    /* significance: bit c = sigma[r][c] */
+    uint32_t sign_bits[CB_DIM];     /* sign: bit c = negative */
+    uint32_t firstref_bits[CB_DIM]; /* first refinement: bit c = first time */
+    uint32_t coded_bits[CB_DIM];    /* coded in current pass */
 
-    /* Zero-initialize */
-    for (int i = 0; i < cbw * cbh; i++) {
-        sigma[i] = 0;
-        firstref[i] = 1; /* 1 = first time refinement */
+    for (int r = 0; r < cbh; r++) {
+        sigma_bits[r] = 0;
+        firstref_bits[r] = 0xFFFFFFFF; /* all 1s = first time */
     }
 
     float inv_step = 1.0f / cbi.quant_step;
     int max_mag = 0;
     for (int r = 0; r < cbh; r++) {
+        uint32_t sb = 0;
         for (int c = 0; c < cbw; c++) {
             float val = __half2float(d_dwt[(cbi.y0 + r) * dwt_stride + (cbi.x0 + c)]);
-            int q = static_cast<int>(fabsf(val) * inv_step + 0.5f);
+            int q = __float2int_rn(fabsf(val) * inv_step);
             mag[r * cbw + c] = static_cast<int16_t>(q);
-            sign_arr[r * cbw + c] = (val < 0.0f) ? 1 : 0;
+            if (val < 0.0f) sb |= (1u << c);
             if (q > max_mag) max_mag = q;
         }
+        sign_bits[r] = sb;
     }
 
-    /* 2. Compute number of bit-planes */
-    int num_bp = 0;
-    { int tmp = max_mag; while (tmp > 0) { num_bp++; tmp >>= 1; } }
+    /* 2. Compute number of bit-planes using __clz (count leading zeros) */
+    int num_bp = (max_mag > 0) ? (32 - __clz(max_mag)) : 0;
     if (num_bp == 0) {
         d_coded_len[cb_idx] = 0;
         d_num_passes[cb_idx] = 0;
@@ -405,43 +413,38 @@ __global__ void kernel_ebcot_t1(
     for (int bp = num_bp - 1; bp >= 0; bp--) {
         bool first_bp = (bp == num_bp - 1);
 
-        for (int i = 0; i < cbw * cbh; i++) coded_in_pass[i] = 0;
+        for (int r2 = 0; r2 < cbh; r2++) coded_bits[r2] = 0;
 
         /* --- Significance Propagation Pass (SPP) — skip for first bit-plane --- */
         if (!first_bp) {
-
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
             for (int c = 0; c < cbw; c++) {
                 for (int r = stripe_y; r < stripe_end; r++) {
-                    int idx = r * cbw + c;
-                    if (sigma[idx]) continue; /* already significant */
+                    if ((sigma_bits[r] >> c) & 1) continue;
 
-                    /* Check if any neighbor is significant */
-                    int has_sig_nbr = SIG_N(sigma,r,c,cbw,cbh) | SIG_S(sigma,r,c,cbw,cbh) |
-                                      SIG_W(sigma,r,c,cbw,cbh) | SIG_E(sigma,r,c,cbw,cbh) |
-                                      SIG_NW(sigma,r,c,cbw,cbh)| SIG_NE(sigma,r,c,cbw,cbh)|
-                                      SIG_SW(sigma,r,c,cbw,cbh)| SIG_SE(sigma,r,c,cbw,cbh);
+                    int has_sig_nbr = SIG_N(sigma_bits,r,c,cbw,cbh) | SIG_S(sigma_bits,r,c,cbw,cbh) |
+                                      SIG_W(sigma_bits,r,c,cbw,cbh) | SIG_E(sigma_bits,r,c,cbw,cbh) |
+                                      SIG_NW(sigma_bits,r,c,cbw,cbh)| SIG_NE(sigma_bits,r,c,cbw,cbh)|
+                                      SIG_SW(sigma_bits,r,c,cbw,cbh)| SIG_SE(sigma_bits,r,c,cbw,cbh);
                     if (!has_sig_nbr) continue;
 
-                    /* Code significance bit */
-                    int bit = (mag[idx] >> bp) & 1;
-                    int zc = t1_zero_context(sigma, r, c, cbw, cbh, cbi.subband_type);
+                    int bit = (mag[r * cbw + c] >> bp) & 1;
+                    int zc = t1_zero_context(sigma_bits, r, c, cbw, cbh, cbi.subband_type);
                     mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
 
                     if (bit) {
-                        /* Newly significant — code sign */
-                        sigma[idx] = 1;
+                        sigma_bits[r] |= (1u << c);
                         int sc_ctx, xor_bit;
-                        t1_sign_context(sigma, sign_arr, r, c, cbw, cbh, &sc_ctx, &xor_bit);
-                        mq_encode(&mq, T1_CTXNO_SC + sc_ctx, sign_arr[idx] ^ xor_bit);
+                        t1_sign_context(sigma_bits, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
+                        mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
                     }
-                    coded_in_pass[idx] = 1;
+                    coded_bits[r] |= (1u << c);
                 }
             }
         }
         pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
-        } /* end if (!first_bp) for SPP */
+        } /* end SPP */
 
         /* --- Magnitude Refinement Pass (MRP) — skip for first bit-plane --- */
         if (!first_bp) {
@@ -449,50 +452,41 @@ __global__ void kernel_ebcot_t1(
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
             for (int c = 0; c < cbw; c++) {
                 for (int r = stripe_y; r < stripe_end; r++) {
-                    int idx = r * cbw + c;
-                    if (!sigma[idx] || coded_in_pass[idx]) continue;
-                    /* Was significant before this bit-plane */
-                    int bit = (mag[idx] >> bp) & 1;
-                    int mr = t1_mr_context(sigma, firstref, r, c, cbw, cbh);
+                    if (!((sigma_bits[r] >> c) & 1) || ((coded_bits[r] >> c) & 1)) continue;
+                    int bit = (mag[r * cbw + c] >> bp) & 1;
+                    int mr = t1_mr_context(sigma_bits, firstref_bits, r, c, cbw, cbh);
                     mq_encode(&mq, T1_CTXNO_MR + mr, bit);
-                    firstref[idx] = 0;
+                    firstref_bits[r] &= ~(1u << c);
                 }
             }
         }
         pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
-        } /* end if (!first_bp) for MRP */
+        } /* end MRP */
 
         /* --- Cleanup Pass (CUP) — always runs, including first bit-plane --- */
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
             for (int c = 0; c < cbw; c++) {
-                /* Run-length coding: check if all 4 rows in stripe column are insignificant
-                 * and have no significant neighbors */
+                uint32_t cmask = 1u << c;
                 int all_zero = 1;
                 int stripe_len = stripe_end - stripe_y;
                 if (stripe_len == 4) {
                     for (int r = stripe_y; r < stripe_end; r++) {
-                        int idx = r * cbw + c;
-                        if (sigma[idx] || coded_in_pass[idx]) { all_zero = 0; break; }
-                        int has_sig_nbr = SIG_N(sigma,r,c,cbw,cbh) | SIG_S(sigma,r,c,cbw,cbh) |
-                                          SIG_W(sigma,r,c,cbw,cbh) | SIG_E(sigma,r,c,cbw,cbh) |
-                                          SIG_NW(sigma,r,c,cbw,cbh)| SIG_NE(sigma,r,c,cbw,cbh)|
-                                          SIG_SW(sigma,r,c,cbw,cbh)| SIG_SE(sigma,r,c,cbw,cbh);
+                        if ((sigma_bits[r] | coded_bits[r]) & cmask) { all_zero = 0; break; }
+                        int has_sig_nbr = SIG_N(sigma_bits,r,c,cbw,cbh) | SIG_S(sigma_bits,r,c,cbw,cbh) |
+                                          SIG_W(sigma_bits,r,c,cbw,cbh) | SIG_E(sigma_bits,r,c,cbw,cbh) |
+                                          SIG_NW(sigma_bits,r,c,cbw,cbh)| SIG_NE(sigma_bits,r,c,cbw,cbh)|
+                                          SIG_SW(sigma_bits,r,c,cbw,cbh)| SIG_SE(sigma_bits,r,c,cbw,cbh);
                         if (has_sig_nbr) { all_zero = 0; break; }
                     }
-                } else {
-                    all_zero = 0;
-                }
+                } else { all_zero = 0; }
 
                 if (all_zero) {
-                    /* Check if any of the 4 will become significant in this bit-plane */
                     int any_sig = 0;
-                    for (int r = stripe_y; r < stripe_end; r++) {
+                    for (int r = stripe_y; r < stripe_end; r++)
                         if ((mag[r * cbw + c] >> bp) & 1) { any_sig = 1; break; }
-                    }
                     mq_encode(&mq, T1_CTXNO_AGG, any_sig);
                     if (!any_sig) continue;
-                    /* Code the run length: find first significant */
                     int run_len = 0;
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if ((mag[r * cbw + c] >> bp) & 1) break;
@@ -500,43 +494,37 @@ __global__ void kernel_ebcot_t1(
                     }
                     mq_encode(&mq, T1_CTXNO_UNI, (run_len >> 1) & 1);
                     mq_encode(&mq, T1_CTXNO_UNI, run_len & 1);
-                    /* Code that sample and its sign */
                     int r = stripe_y + run_len;
-                    int idx = r * cbw + c;
-                    sigma[idx] = 1;
+                    sigma_bits[r] |= cmask;
                     int sc_ctx, xor_bit;
-                    t1_sign_context(sigma, sign_arr, r, c, cbw, cbh, &sc_ctx, &xor_bit);
-                    mq_encode(&mq, T1_CTXNO_SC + sc_ctx, sign_arr[idx] ^ xor_bit);
-                    coded_in_pass[idx] = 1;
-                    /* Continue with remaining samples in the stripe column */
+                    t1_sign_context(sigma_bits, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
+                    mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
+                    coded_bits[r] |= cmask;
                     for (r = stripe_y + run_len + 1; r < stripe_end; r++) {
-                        idx = r * cbw + c;
-                        if (sigma[idx] || coded_in_pass[idx]) continue;
-                        int bit = (mag[idx] >> bp) & 1;
-                        int zc = t1_zero_context(sigma, r, c, cbw, cbh, cbi.subband_type);
+                        if ((sigma_bits[r] | coded_bits[r]) & cmask) continue;
+                        int bit = (mag[r * cbw + c] >> bp) & 1;
+                        int zc = t1_zero_context(sigma_bits, r, c, cbw, cbh, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
                         if (bit) {
-                            sigma[idx] = 1;
-                            t1_sign_context(sigma, sign_arr, r, c, cbw, cbh, &sc_ctx, &xor_bit);
-                            mq_encode(&mq, T1_CTXNO_SC + sc_ctx, sign_arr[idx] ^ xor_bit);
+                            sigma_bits[r] |= cmask;
+                            t1_sign_context(sigma_bits, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
+                            mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
                         }
-                        coded_in_pass[idx] = 1;
+                        coded_bits[r] |= cmask;
                     }
                 } else {
-                    /* Non-run-length path: code each sample individually */
                     for (int r = stripe_y; r < stripe_end; r++) {
-                        int idx = r * cbw + c;
-                        if (sigma[idx] || coded_in_pass[idx]) continue;
-                        int bit = (mag[idx] >> bp) & 1;
-                        int zc = t1_zero_context(sigma, r, c, cbw, cbh, cbi.subband_type);
+                        if ((sigma_bits[r] | coded_bits[r]) & cmask) continue;
+                        int bit = (mag[r * cbw + c] >> bp) & 1;
+                        int zc = t1_zero_context(sigma_bits, r, c, cbw, cbh, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
                         if (bit) {
-                            sigma[idx] = 1;
+                            sigma_bits[r] |= cmask;
                             int sc_ctx, xor_bit;
-                            t1_sign_context(sigma, sign_arr, r, c, cbw, cbh, &sc_ctx, &xor_bit);
-                            mq_encode(&mq, T1_CTXNO_SC + sc_ctx, sign_arr[idx] ^ xor_bit);
+                            t1_sign_context(sigma_bits, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
+                            mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
                         }
-                        coded_in_pass[idx] = 1;
+                        coded_bits[r] |= cmask;
                     }
                 }
             }
