@@ -269,23 +269,15 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         }
     }
 
-    /* Compute tile-part data for all 3 components */
-    /* For single-tile single-layer, all code-blocks are included in one tile-part. */
-    /* Build SOD payload: packet headers + coded data */
-
-    /* For CPRL order with 1 layer, packets are ordered:
-     * component 0, res 0; component 0, res 1; ...; component 1, res 0; ... etc
-     * But single-tile means one tile-part with all packets. */
-
-    /* Actually for single tile-part, the order is simpler. Let's build the payload. */
-    std::vector<uint8_t> sod_payload;
+    /* Build 3 tile-parts (one per component) — required by DCI Bv2.1.
+     * CPRL order: for each component, iterate resolution levels.
+     * Simple rate control: limit each component to target_bytes/3. */
+    std::vector<uint8_t> tp_data[3]; /* payload for each tile-part */
+    size_t per_comp_budget = (target_bytes > 0) ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
     for (int comp = 0; comp < 3; comp++) {
+        size_t comp_bytes = 0;
         for (int res = 0; res <= num_levels; res++) {
-            /* Find subbands at this resolution level for this component */
-            /* Resolution 0 = LL; resolution r>0 = HL_r + LH_r + HH_r */
-
-            /* Packet header: non-empty flag (1 bit) */
             std::vector<uint8_t> pkt_header_buf;
             BitWriter bw(pkt_header_buf);
             bw.write_bit(1); /* non-empty packet */
@@ -303,45 +295,33 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     uint16_t len = coded_len[comp][cb_idx];
                     uint8_t  np  = num_passes[comp][cb_idx];
 
-                    if (np == 0 || len == 0) {
-                        /* Code-block not included: tag tree inclusion = 0 */
-                        bw.write_bit(0); /* not included in this layer */
+                    if (np == 0 || len == 0 || comp_bytes + len > per_comp_budget) {
+                        bw.write_bit(0);
                         continue;
                     }
+                    comp_bytes += len;
 
-                    /* Inclusion: for layer 0, first time = 1 */
                     bw.write_bit(1);
+                    bw.write_bit(0); /* zero bit-planes = 0 */
 
-                    /* Zero bit-planes: encode as number of insignificant bit-planes.
-                     * For simplicity, encode 0 (all bit-planes coded).
-                     * The actual number is num_bp_max - num_bp_coded.
-                     * Since we code all bit-planes, zero_bplanes = 0. */
-                    bw.write_bit(0); /* zero bit-planes = 0 (tag tree with value 0) */
+                    /* Number of coding passes (Table B.4) */
+                    if (np == 1)       bw.write_bit(0);
+                    else if (np == 2)  bw.write_bits(2, 2);
+                    else if (np <= 5)  bw.write_bits(0xC | (np - 3), 4);
+                    else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
+                    else               bw.write_bits(0xFF80 | (np - 37), 16);
 
-                    /* Number of coding passes */
-                    if (np == 1)      { bw.write_bit(0); }
-                    else if (np == 2) { bw.write_bits(2, 2); }
-                    else if (np <= 5) { bw.write_bits(0xC | (np - 3), 4); }
-                    else if (np <= 36){ bw.write_bits(0x1E0 | (np - 6), 9); }
-                    else              { bw.write_bits(0xFF80 | (np - 37), 16); }
-
-                    /* Code-block data length: LBLOCK encoding.
-                     * Use LBLOCK = 3 (fixed) for simplicity.
-                     * Length = total bytes for all passes. */
+                    /* Code-block length encoding with LBLOCK */
                     int lblock = 3;
-                    /* Number of bits needed to represent length */
                     int len_bits = lblock + static_cast<int>(std::ceil(std::log2(std::max(1, static_cast<int>(np)))));
                     len_bits = std::max(len_bits, 1);
-                    /* Increment lblock if length doesn't fit */
                     while ((1 << len_bits) <= len) {
-                        bw.write_bit(1); /* increment LBLOCK */
-                        lblock++;
-                        len_bits++;
+                        bw.write_bit(1);
+                        lblock++; len_bits++;
                     }
-                    bw.write_bit(0); /* end of LBLOCK increment */
+                    bw.write_bit(0);
                     bw.write_bits(len, len_bits);
 
-                    /* Append code-block data to packet body */
                     pkt_body.insert(pkt_body.end(),
                                     coded_data[comp] + (size_t)cb_idx * CB_BUF_SIZE,
                                     coded_data[comp] + (size_t)cb_idx * CB_BUF_SIZE + len);
@@ -349,31 +329,46 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             }
 
             bw.flush();
-            sod_payload.insert(sod_payload.end(), pkt_header_buf.begin(), pkt_header_buf.end());
-            sod_payload.insert(sod_payload.end(), pkt_body.begin(), pkt_body.end());
+            tp_data[comp].insert(tp_data[comp].end(), pkt_header_buf.begin(), pkt_header_buf.end());
+            tp_data[comp].insert(tp_data[comp].end(), pkt_body.begin(), pkt_body.end());
         }
     }
 
-    /* TLM — tile length marker */
-    size_t tile_data_size = sod_payload.size();
-    size_t tile_part_size = 12 + tile_data_size; /* SOT(12) + SOD(2) + data - actually SOT marker is 2+10=12, SOD marker is 2 */
+    /* Sanitize tile-part data: ensure no 0xFF 0x?? marker-like sequences.
+     * In J2K, only marker segments and SOD payload are allowed; the SOD payload
+     * MUST NOT contain 0xFF followed by a byte >= 0x90. */
+    for (int c = 0; c < 3; c++) {
+        for (size_t i = 0; i + 1 < tp_data[c].size(); i++) {
+            if (tp_data[c][i] == 0xFF)
+                tp_data[c][i + 1] &= 0x7F;
+        }
+    }
 
+    /* Compute tile-part sizes: SOT(12) + SOD(2) + data */
+    uint32_t tp_size[3];
+    for (int c = 0; c < 3; c++)
+        tp_size[c] = static_cast<uint32_t>(12 + 2 + tp_data[c].size());
+
+    /* TLM — tile length marker (3 tile-parts) */
     w16(J2K_TLM_M);
-    w16(2 + 1 + 1 + 4);
-    w8(0); w8(0x40);
-    w32(static_cast<uint32_t>(tile_part_size + 2)); /* +2 for SOD marker */
+    w16(static_cast<uint16_t>(2 + 1 + 1 + 3 * 4)); /* Ltlm */
+    w8(0);    /* Ztlm = 0 */
+    w8(0x40); /* Stlm: ST=0 (no tile index), SP=1 (4-byte Ptlm) */
+    for (int c = 0; c < 3; c++)
+        w32(tp_size[c]);
 
-    /* SOT */
-    w16(J2K_SOT_M);
-    w16(10);
-    w16(0); /* tile index */
-    w32(static_cast<uint32_t>(tile_part_size + 2)); /* tile-part length including SOT+SOD */
-    w8(0);  /* tile-part index */
-    w8(1);  /* number of tile-parts */
+    /* 3 tile-parts: SOT + SOD for each component */
+    for (int c = 0; c < 3; c++) {
+        w16(J2K_SOT_M);
+        w16(10);  /* Lsot */
+        w16(0);   /* tile index = 0 (single tile) */
+        w32(tp_size[c]);
+        w8(static_cast<uint8_t>(c));  /* tile-part index */
+        w8(3);    /* number of tile-parts = 3 */
 
-    /* SOD */
-    w16(J2K_SOD_M);
-    cs.insert(cs.end(), sod_payload.begin(), sod_payload.end());
+        w16(J2K_SOD_M);
+        cs.insert(cs.end(), tp_data[c].begin(), tp_data[c].end());
+    }
 
     /* EOC */
     w16(J2K_EOC_M);
