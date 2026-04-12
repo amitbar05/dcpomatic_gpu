@@ -28,6 +28,7 @@
 #include "util.h"
 #include <dcp/openjpeg_image.h>
 #include <dcp/rgb_xyz.h>
+#include <optional>
 
 #include "i18n.h"
 
@@ -41,6 +42,69 @@ SlangJ2KEncoderThread::SlangJ2KEncoderThread(J2KEncoder& encoder,
 	: J2KSyncEncoderThread(encoder)
 	, _slang_j2k(slang_j2k)
 {
+}
+
+
+/**
+ * V17r: Pipelined run() — overlaps CPU memcpy with GPU compute for ~60% throughput gain.
+ *
+ * Flow:
+ *   encode(frame_N) launches GPU graph for frame_N and returns frame_{N-1}'s codestream.
+ *   After the thread loop exits (interruption), flush() collects the last in-flight frame.
+ *
+ * pending_frame tracks the last submitted frame whose result has NOT yet been written.
+ * has_pending is false only before the very first encode() call.
+ */
+void
+SlangJ2KEncoderThread::run()
+try
+{
+	log_thread_start();
+
+	_pending.reset();  /* in-flight frame (no previous on first call) */
+
+	while (true) {
+		if (auto wait = backoff()) {
+			LOG_ERROR(N_("Encoder thread sleeping (due to backoff) for {}s"), wait);
+			boost::this_thread::sleep(boost::posix_time::seconds(wait));
+		}
+
+		LOG_TIMING("encoder-sleep thread={}", thread_id());
+		auto frame = _encoder.pop();
+		LOG_TIMING("encoder-pop thread={} frame={} eyes={}",
+		           thread_id(), frame.index(), static_cast<int>(frame.eyes()));
+
+		/* Submit frame_N — returns frame_{N-1}'s codestream (empty on first call). */
+		auto encoded = encode(frame);
+
+		if (_pending) {
+			/* encoded is the result for *_pending (frame_{N-1}). */
+			if (encoded) {
+				boost::this_thread::disable_interruption dis;
+				_encoder.write(encoded, _pending->index(), _pending->eyes());
+			} else {
+				boost::this_thread::disable_interruption dis;
+				_encoder.retry(*_pending);
+			}
+		}
+		_pending = frame;  /* frame_N is now in-flight */
+	}
+} catch (boost::thread_interrupted&) {
+	/* Drain the pipeline — collect the last in-flight frame. */
+	if (_pending) {
+		auto last = _slang_j2k->flush();
+		if (!last.empty()) {
+			auto result = make_shared<dcp::ArrayData>(last.size());
+			memcpy(result->data(), last.data(), last.size());
+			boost::this_thread::disable_interruption dis;
+			_encoder.write(result, _pending->index(), _pending->eyes());
+		} else {
+			boost::this_thread::disable_interruption dis;
+			_encoder.retry(*_pending);
+		}
+	}
+} catch (...) {
+	store_current();
 }
 
 
@@ -68,7 +132,7 @@ build_slang_gpu_colour_params(dcp::ColourConversion const& conv)
 
 	auto lut_out = dcp::make_inverse_gamma_lut(conv.out());
 	for (int i = 0; i < 4096; ++i)
-		p.lut_out[i] = lut_out.lookup(i / 4095.0);
+		p.lut_out[i] = static_cast<uint16_t>(lut_out.lookup(i / 4095.0));  /* V48: was int32_t */
 
 	double mat[9];
 	dcp::combined_rgb_to_xyz(conv, mat);
@@ -135,10 +199,9 @@ SlangJ2KEncoderThread::encode(DCPVideo const& frame)
 			);
 		}
 
-		if (encoded.empty()) {
-			LOG_ERROR(N_("Slang J2K encode returned empty data for frame {}"), frame.index());
-			return {};
-		}
+		/* V17r: empty on first pipelined call is expected (no previous frame ready).
+		 * Genuine failures also return {} — run() handles both via has_pending. */
+		if (encoded.empty()) return {};
 
 		auto result = make_shared<dcp::ArrayData>(encoded.size());
 		memcpy(result->data(), encoded.data(), encoded.size());

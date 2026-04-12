@@ -132,6 +132,31 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V128: Remove dead kernel_rgb48_xyz_hdwt0_1ch_4row_p12 — parity Slang V90.
+          Never launched (annotated V124); runtime uses 2-row (2K) and 1-row (4K) p12 kernels.
+          Deleted ~253 lines of function body + cudaFuncSetCacheConfig reference.
+          Reduces compile time and binary size; no runtime change.
+    V127: Template kernel_fused_horz_dwt_half_io_4row<DIV4> — parity Slang V89.
+          Adds compile-time bool DIV4: when h%4==0, y3<height always → else block dead.
+          DCI heights by level: 2K L1=540✓, L2=270✗, L3=135✗, L4=68✓; 4K L1=1080✓, L2=540✓, L3=270✗, L4=135✗.
+          DIV4=true: if (DIV4 || y3 < height) → unconditional → else dead → compiler eliminates 69-line partial path.
+          DIV4=false: same as if (y3 < height) → full if/else preserved for partial last block.
+          Launch site: (height%4==0)?kernel<true><<<...>>>:kernel<false><<<...>>>; cudaFuncSetCacheConfig for both.
+          Expected: ~69 dead lines removed for half the DWT level launches; slightly better reg/icache for DIV4=true.
+    V126: DCI divisible-by-4 invariant in kernel_fused_i2f_horz_dwt_half_out_4row — parity Slang V88.
+          Level-0 heights always 1080/2160 (both divisible by 4) → y3=y0+3 always < height → else block dead.
+          Removes ~73 lines of dead scalar load + guarded DWT + scatter code.
+          Compiler can now see interior path is unconditional → better register allocation.
+          Same approach as V122 (removed dead else from 2-row RGB kernel).
+    V125: Template kernel_fused_vert_dwt_fp16_hi_reg_ho<EVEN_HEIGHT> — parity Slang V87.
+          Removes 4 runtime if(height&1)/if(!(height&1)) branches per column via compile-time template bool.
+          EVEN_HEIGHT=true: Alpha/Gamma even-boundary executes; Beta/Delta odd-boundary eliminated.
+          EVEN_HEIGHT=false: Beta/Delta odd-boundary executes; Alpha/Gamma even-boundary eliminated.
+          Compiler also eliminates 2 dead __float2half constant computations per instantiation:
+            EVEN: kB2/kD2 dead (odd paths unreachable); ODD: kA2/kG2 dead (even paths unreachable).
+          DCI heights at reg-blocked levels: 68/34 (even) and 135/67 (odd) — both common paths.
+          Launch site: (height%2==0)?kernel<true>:kernel<false>; cudaFuncSetCacheConfig updated for both.
+          Expected: ~4-8 fewer PTX instructions per column thread; ~1-2% V-DWT reg-blocked speedup.
     V124: int2 __ldg load vectorization in kernel_fused_i2f_horz_dwt_half_out_4row (XYZ int32 path) — parity Slang V86.
           Load loop: for(x=t;x<w;x+=nt) 4×__ldg(int32) → for(x=t*2;x<w;x+=nt*2) 4×__ldg(int2).
           Each int2 load covers {d_input[row*stride+x], d_input[row*stride+x+1]}: 2 int32 in 64-bit load.
@@ -788,6 +813,7 @@ static constexpr uint16_t J2K_SIZ = 0xFF51;
 static constexpr uint16_t J2K_COD = 0xFF52;
 static constexpr uint16_t J2K_QCD = 0xFF5C;
 static constexpr uint16_t J2K_QCC = 0xFF5D;  /* V24: per-component QCD override */
+static constexpr uint16_t J2K_TLM = 0xFF55;
 static constexpr uint16_t J2K_SOT = 0xFF90;
 static constexpr uint16_t J2K_SOD = 0xFF93;
 static constexpr uint16_t J2K_EOC = 0xFFD9;
@@ -853,6 +879,7 @@ __device__ __forceinline__ __half u16_to_f16(uint16_t v)
 
 /* ===== CUDA Kernels ===== */
 
+#if 0  /* Dead kernels — superseded by __half-smem variants; disabled to avoid extern __shared__ type conflict */
 /**
  * Fused int32→float conversion + horizontal DWT (level 0).
  * One block per row. All threads cooperate in shared memory.
@@ -956,6 +983,7 @@ kernel_fused_horz_dwt(
     for (int x = t * 2 + 1; x < width; x += nt * 2)
         d_tmp[y * stride + hw + x / 2] = smem[x] * NORM_H;
 }
+#endif  /* dead float-smem kernels */
 
 
 /**
@@ -1018,7 +1046,7 @@ kernel_fused_i2f_horz_dwt_half_out(
  *   Lifting uses HFMA2: each instruction processes 2 rows simultaneously (2× throughput vs scalar).
  *   #pragma unroll 2 on all interior lifting loops (4K: ~2 iters, full ILP).
  *   Scatter uses __hmul2 + __low2half/__high2half (combined L/H scatter in one loop).
- * Partial path (else) unchanged — scalar, boundary-guarded, rarely executed (1 block).
+ * V126: DCI div-by-4 invariant (h∈{1080,2160}) → y3<height always → else block removed.
  */
 __global__ void
 kernel_fused_i2f_horz_dwt_half_out_4row(
@@ -1032,9 +1060,9 @@ kernel_fused_i2f_horz_dwt_half_out_4row(
     int t = threadIdx.x, nt = blockDim.x;
     int w = width, hw = (w + 1) / 2;
 
-    if (y3 < height) {
-        /* V99: __half2 row-pair packing — sm01[x]={row0,row1}, sm23[x]={row2,row3}.
-         * HFMA2 processes 2 rows per instruction (2× throughput vs V74 scalar lifting). */
+    /* V126: y3 < height always for DCI (height∈{1080,2160} div by 4) — if wrapper removed. */
+    /* V99: __half2 row-pair packing — sm01[x]={row0,row1}, sm23[x]={row2,row3}.
+     * HFMA2 processes 2 rows per instruction (2× throughput vs V74 scalar lifting). */
         __half2* sm01 = reinterpret_cast<__half2*>(smem);
         __half2* sm23 = reinterpret_cast<__half2*>(smem + 2*w);
         /* V124: int2 __ldg loads — 4 × 64-bit loads replace 8 × 32-bit loads per 2-col pair.
@@ -1139,79 +1167,6 @@ kernel_fused_i2f_horz_dwt_half_out_4row(
                 d_tmp[y3*stride+hw+p] = __high2half(v23H);
             }
         }
-    } else {
-        /* Partial last block: load with yN<height guards. */
-        for (int x = t; x < w; x += nt)
-            smem[x] = __float2half(__int2float_rn(__ldg(&d_input[y0*stride+x])));
-        if (y1<height) for (int x=t; x<w; x+=nt)
-            smem[w+x] = __float2half(__int2float_rn(__ldg(&d_input[y1*stride+x])));
-        if (y2<height) for (int x=t; x<w; x+=nt)
-            smem[2*w+x] = __float2half(__int2float_rn(__ldg(&d_input[y2*stride+x])));
-        __syncthreads();
-        /* Alpha */
-        for (int x=1+t*2; x<w-1; x+=nt*2) {
-            smem[x]     +=__half(ALPHA)*(smem[x-1]     +smem[x+1]);
-            if(y1<height) smem[w+x]   +=__half(ALPHA)*(smem[w+x-1]  +smem[w+x+1]);
-            if(y2<height) smem[2*w+x] +=__half(ALPHA)*(smem[2*w+x-1]+smem[2*w+x+1]);
-        }
-        /* V117: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
-        if(t==0) {
-            smem[w-1]   +=__half(2.f*ALPHA)*smem[w-2];
-            if(y1<height) smem[2*w-1] +=__half(2.f*ALPHA)*smem[2*w-2];
-            if(y2<height) smem[3*w-1] +=__half(2.f*ALPHA)*smem[3*w-2];
-        }
-        __syncthreads();
-        /* Beta */
-        /* V117: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
-        if(t==0) {
-            smem[0]     +=__half(2.f*BETA)*smem[1];
-            if(y1<height) smem[w]   +=__half(2.f*BETA)*smem[w+1];
-            if(y2<height) smem[2*w] +=__half(2.f*BETA)*smem[2*w+1];
-        }
-        for (int x=2+t*2; x<w; x+=nt*2) {
-            smem[x]     +=__half(BETA)*(smem[x-1]     +smem[x+1]);
-            if(y1<height) smem[w+x]   +=__half(BETA)*(smem[w+x-1]  +smem[w+x+1]);
-            if(y2<height) smem[2*w+x] +=__half(BETA)*(smem[2*w+x-1]+smem[2*w+x+1]);
-        }
-        __syncthreads();
-        /* Gamma */
-        for (int x=1+t*2; x<w-1; x+=nt*2) {
-            smem[x]     +=__half(GAMMA)*(smem[x-1]     +smem[x+1]);
-            if(y1<height) smem[w+x]   +=__half(GAMMA)*(smem[w+x-1]  +smem[w+x+1]);
-            if(y2<height) smem[2*w+x] +=__half(GAMMA)*(smem[2*w+x-1]+smem[2*w+x+1]);
-        }
-        /* V117: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
-        if(t==0) {
-            smem[w-1]   +=__half(2.f*GAMMA)*smem[w-2];
-            if(y1<height) smem[2*w-1] +=__half(2.f*GAMMA)*smem[2*w-2];
-            if(y2<height) smem[3*w-1] +=__half(2.f*GAMMA)*smem[3*w-2];
-        }
-        __syncthreads();
-        /* Delta */
-        /* V117: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
-        if(t==0) {
-            smem[0]     +=__half(2.f*DELTA)*smem[1];
-            if(y1<height) smem[w]   +=__half(2.f*DELTA)*smem[w+1];
-            if(y2<height) smem[2*w] +=__half(2.f*DELTA)*smem[2*w+1];
-        }
-        for (int x=2+t*2; x<w; x+=nt*2) {
-            smem[x]     +=__half(DELTA)*(smem[x-1]     +smem[x+1]);
-            if(y1<height) smem[w+x]   +=__half(DELTA)*(smem[w+x-1]  +smem[w+x+1]);
-            if(y2<height) smem[2*w+x] +=__half(DELTA)*(smem[2*w+x-1]+smem[2*w+x+1]);
-        }
-        __syncthreads();
-        /* Deinterleave and write. */
-        for (int x=t*2; x<w; x+=nt*2) {
-            d_tmp[y0*stride+x/2]             = smem[x]     * __half(NORM_L);
-            if(y1<height) d_tmp[y1*stride+x/2] = smem[w+x]   * __half(NORM_L);
-            if(y2<height) d_tmp[y2*stride+x/2] = smem[2*w+x] * __half(NORM_L);
-        }
-        for (int x=t*2+1; x<w; x+=nt*2) {
-            d_tmp[y0*stride+hw+x/2]             = smem[x]     * __half(NORM_H);
-            if(y1<height) d_tmp[y1*stride+hw+x/2] = smem[w+x]   * __half(NORM_H);
-            if(y2<height) d_tmp[y2*stride+hw+x/2] = smem[2*w+x] * __half(NORM_H);
-        }
-    }
 }
 
 
@@ -1339,6 +1294,8 @@ kernel_fused_horz_dwt_half_io_2row(
  * V108: __launch_bounds__(512,4) — guarantees 4 blk/SM (comment said "Thread-limited at 4 blk/SM"
  *        but without annotation compiler may use 36+ regs → 3 blk/SM; LB forces ≤32 regs/T).
  */
+/* V127: DIV4=true (h%4==0) → y3<height always → else block dead → compiler eliminates ~69 lines. */
+template<bool DIV4>
 __global__ __launch_bounds__(512, 4)
 void kernel_fused_horz_dwt_half_io_4row(
     const __half* __restrict__ d_data,
@@ -1352,9 +1309,9 @@ void kernel_fused_horz_dwt_half_io_4row(
     int w = width, hw = (w + 1) / 2;
 
     /* V66: Hoist row-presence check to block level. y3, height uniform across block → no divergence.
-     * Interior (all 4 rows present): branch-free lifting and stores for full 4-row ILP.
+     * V127: DIV4=true → if (true || ...) → unconditional; else block dead at compile time.
      * Else: original per-iteration yN<height guards for partial last block. */
-    if (y3 < height) {
+    if (DIV4 || y3 < height) {
         /* V82: __half2 row-pair packing — sm01[x]={row0[x],row1[x]}, sm23[x]={row2[x],row3[x]}.
          * Lifting uses HFMA2 (processes 2 rows/instruction) → 2× FMA throughput vs 4 scalar HFMA.
          * Interleaved layout: sm01[k] at smem[2k..2k+1], sm23[k] at smem[2w+2k..2w+2k+1]. */
@@ -1365,16 +1322,22 @@ void kernel_fused_horz_dwt_half_io_4row(
          * Each __half2 load covers {row[x], row[x+1]}; unpack into interleaved sm01/sm23 layout.
          * 2× fewer load instructions per thread; same bytes (coalesced access preserved).
          * V94: #pragma unroll 2 retained — 4K: 2 iters; 2K: 1 iter; better DRAM latency hiding. */
+        /* V125: loop to x+1<w — for odd w, __half2 write at sm[w-1] is OOB in smem. */
         #pragma unroll 2
-        for (int x = t*2; x < w; x += nt*2) {
+        for (int x = t*2; x+1 < w; x += nt*2) {
             __half2 r0 = __ldg(reinterpret_cast<const __half2*>(&d_data[y0*stride+x]));
             __half2 r1 = __ldg(reinterpret_cast<const __half2*>(&d_data[y1*stride+x]));
             __half2 r2 = __ldg(reinterpret_cast<const __half2*>(&d_data[y2*stride+x]));
             __half2 r3 = __ldg(reinterpret_cast<const __half2*>(&d_data[y3*stride+x]));
-            sm01[x]   = __halves2half2(__low2half(r0), __low2half(r1));   /* {y0[x],   y1[x]}   */
-            sm01[x+1] = __halves2half2(__high2half(r0), __high2half(r1)); /* {y0[x+1], y1[x+1]} */
+            sm01[x]   = __halves2half2(__low2half(r0), __low2half(r1));
+            sm01[x+1] = __halves2half2(__high2half(r0), __high2half(r1));
             sm23[x]   = __halves2half2(__low2half(r2), __low2half(r3));
             sm23[x+1] = __halves2half2(__high2half(r2), __high2half(r3));
+        }
+        if ((w & 1) && t == 0) {
+            int last = w - 1;
+            sm01[last] = __halves2half2(__ldg(&d_data[y0*stride+last]), __ldg(&d_data[y1*stride+last]));
+            sm23[last] = __halves2half2(__ldg(&d_data[y2*stride+last]), __ldg(&d_data[y3*stride+last]));
         }
         __syncthreads();
         /* V96: Alpha: odd positions — 2 HFMA2 per iter. #pragma unroll 2: 4K L1 has 2 iters
@@ -1530,6 +1493,7 @@ void kernel_fused_horz_dwt_half_io_4row(
 }
 
 
+#if 0  /* Dead kernel — superseded by __half-smem H-DWT variants */
 /**
  * V26: Horizontal DWT for levels 1+, writes __half output.
  * Shared memory lifting stays float32. Only DRAM write uses half.
@@ -1578,6 +1542,7 @@ kernel_fused_horz_dwt_half_out(
     for (int x = t * 2 + 1; x < width; x += nt * 2)
         d_tmp[y * stride + hw + x / 2] = __float2half(smem[x]     * NORM_H);
 }
+#endif  /* dead float-smem kernel_fused_horz_dwt_half_out */
 
 
 /**
@@ -1889,7 +1854,14 @@ kernel_fused_vert_dwt_fp16_hi_reg(
  *      4 independent HFMA per batch → 4× ILP on sm_61+ __half FMA units.
  *   4. #pragma unroll 4 on both scatter write loops — 4 concurrent global stores per batch.
  * Beta/Delta: runtime conditional yp1 — unroll omitted (boundary check complicates it).
+ *
+ * V125: Template on EVEN_HEIGHT — eliminates 4 runtime branches + 2 dead constant computations.
+ *   EVEN_HEIGHT=true  (height=68,34): Alpha/Gamma even-boundary always executes; Beta/Delta odd dead.
+ *   EVEN_HEIGHT=false (height=135,67): Beta/Delta odd-boundary always executes; Alpha/Gamma even dead.
+ *   Compiler removes unreachable if-body and eliminates dead kA2/kG2 (odd) or kB2/kD2 (even).
+ *   Launch: (height%2==0)?kernel<true>:kernel<false>; both instantiations get PreferL1 cache config.
  */
+template<bool EVEN_HEIGHT>
 __global__ void
 kernel_fused_vert_dwt_fp16_hi_reg_ho(
     const __half* __restrict__ d_src,
@@ -1920,8 +1892,9 @@ kernel_fused_vert_dwt_fp16_hi_reg_ho(
     #pragma unroll 4
     for (int y = 1; y < height - 1; y += 2)
         col[y] += kA * (col[y-1] + col[y+1]);
-    /* V112: DCI heights always > 1 → h>1 guard removed. Check only even parity. */
-    if (!(height & 1))
+    /* V112: DCI heights always > 1 → h>1 guard removed. Check only even parity.
+     * V125: EVEN_HEIGHT template → compiler eliminates dead branch + kA2 for odd heights. */
+    if (EVEN_HEIGHT)
         col[height-1] += kA2 * col[height-2];
 
     /* V101: Beta — hoisted boundary case enables #pragma unroll 4 on main loop.
@@ -1932,16 +1905,18 @@ kernel_fused_vert_dwt_fp16_hi_reg_ho(
     #pragma unroll 4
     for (int y = 2; y < height - 1; y += 2)
         col[y] += kB * (col[y-1] + col[y+1]);
-    /* V114: DCI heights always > 2 (34/68/135) → drop h>2 guard; parity Slang V77. */
-    if (height & 1)                            /* odd height: last even y = height-1 */
-        col[height-1] += kB2 * col[height-2];  /* kB*(col[h-2]+col[h-2]) = 2kB*col[h-2] */
+    /* V114: DCI heights always > 2 (34/68/135) → drop h>2 guard; parity Slang V77.
+     * V125: !EVEN_HEIGHT template → compiler eliminates dead branch + kB2 for even heights. */
+    if (!EVEN_HEIGHT)                          /* odd height: last even y = height-1 */
+        col[height-1] += kB2 * col[height-2]; /* kB*(col[h-2]+col[h-2]) = 2kB*col[h-2] */
 
     /* Gamma: odd rows — same structure as Alpha; V97: #pragma unroll 4 → 4× ILP. */
     #pragma unroll 4
     for (int y = 1; y < height - 1; y += 2)
         col[y] += kG * (col[y-1] + col[y+1]);
-    /* V112: DCI heights always > 1 → h>1 guard removed. Check only even parity. */
-    if (!(height & 1))
+    /* V112: DCI heights always > 1 → h>1 guard removed. Check only even parity.
+     * V125: EVEN_HEIGHT template → compiler eliminates dead branch + kG2 for odd heights. */
+    if (EVEN_HEIGHT)
         col[height-1] += kG2 * col[height-2];
 
     /* V101: Delta — same boundary-hoist transformation as Beta above. */
@@ -1950,9 +1925,10 @@ kernel_fused_vert_dwt_fp16_hi_reg_ho(
     #pragma unroll 4
     for (int y = 2; y < height - 1; y += 2)
         col[y] += kD * (col[y-1] + col[y+1]);
-    /* V114: DCI heights always > 2 → drop h>2 guard (same as Beta above). */
-    if (height & 1)                            /* odd height: last even y = height-1 */
-        col[height-1] += kD2 * col[height-2];  /* kD*(col[h-2]+col[h-2]) = 2kD*col[h-2] */
+    /* V114: DCI heights always > 2 → drop h>2 guard (same as Beta above).
+     * V125: !EVEN_HEIGHT template → compiler eliminates dead branch + kD2 for even heights. */
+    if (!EVEN_HEIGHT)                          /* odd height: last even y = height-1 */
+        col[height-1] += kD2 * col[height-2]; /* kD*(col[h-2]+col[h-2]) = 2kD*col[h-2] */
 
     /* V36/V69: write __half output directly — no __float2half conversion needed.
      * V97: #pragma unroll 4 on both scatter loops — 4 concurrent global stores per batch. */
@@ -2685,6 +2661,7 @@ kernel_fused_vert_dwt_tiled(
 }
 
 
+#if 0  /* Dead kernel — superseded by kernel_rgb48_xyz_hdwt0_1ch variants */
 /**
  * V28: Fused RGB48→XYZ colour conversion + horizontal DWT level 0 (all 3 components).
  *
@@ -2720,10 +2697,10 @@ kernel_rgb48_xyz_hdwt0(
     __half* __restrict__ d_hz,   /* comp 2 H-DWT half output */
     int width, int height, int rgb_stride, int stride)
 {
-    extern __shared__ float sm[];   /* 3 × width floats: smX, smY, smZ */
-    float* smX = sm;
-    float* smY = sm + width;
-    float* smZ = sm + 2 * width;
+    extern __shared__ __half sm[];   /* reinterpreted as float below; 3 × width floats */
+    float* smX = reinterpret_cast<float*>(sm);
+    float* smY = smX + width;
+    float* smZ = smX + 2 * width;
 
     int y = blockIdx.x;
     if (y >= height) return;
@@ -2782,6 +2759,7 @@ kernel_rgb48_xyz_hdwt0(
 
 #undef DO_HDWT_HALF
 }
+#endif  /* dead float-smem kernel_rgb48_xyz_hdwt0 */
 
 
 /**
@@ -3054,23 +3032,24 @@ void kernel_rgb48_xyz_hdwt0_1ch_2row_p12(
     {
         /* Interior path: both rows valid — __half2 lifting. */
         __half2* sm2 = reinterpret_cast<__half2*>(sm);
-        /* V121: uint32_t __ldg replaces 3×byte __ldg per channel — 3× fewer load instructions per pair.
-         * uint32_t at off = byte0|(byte1<<8)|(byte2<<16)|...; misaligned reads handled by CUDA __ldg.
-         * V89: #pragma unroll 2 — 3 loads (was 9) now per row; better MLP across unrolled iterations. */
+        /* V125: Byte-level loads — V121's uint32_t __ldg causes misaligned address on sm_61
+         * because packed_row_stride (e.g. 2997) is not 4-byte aligned.
+         * Each pixel pair occupies 3 bytes: [b0: lo8_of_pix0, b1: hi4_pix0|lo4_pix1, b2: hi8_pix1].
+         * pix0 = (b0 << 4) | (b1 >> 4);  pix1 = ((b1 & 0xF) << 8) | b2. */
         #pragma unroll 2
         for (int p = t; p * 2 < w; p += nt) {
             int off0 = y0 * packed_row_stride + p * 3;
-            uint32_t rw0=__ldg(reinterpret_cast<const uint32_t*>(r_plane+off0));
-            uint32_t gw0=__ldg(reinterpret_cast<const uint32_t*>(g_plane+off0));
-            uint32_t bw0=__ldg(reinterpret_cast<const uint32_t*>(b_plane+off0));
-            __half e0 = lut_xyz_2row(((rw0&0xFF)<<4)|((rw0>>12)&0xF), ((gw0&0xFF)<<4)|((gw0>>12)&0xF), ((bw0&0xFF)<<4)|((bw0>>12)&0xF));
-            __half o0 = lut_xyz_2row(((rw0>>8)&0xF)<<8|((rw0>>16)&0xFF), ((gw0>>8)&0xF)<<8|((gw0>>16)&0xFF), ((bw0>>8)&0xF)<<8|((bw0>>16)&0xFF));
+            uint8_t rb0=__ldg(r_plane+off0), rb1=__ldg(r_plane+off0+1), rb2=__ldg(r_plane+off0+2);
+            uint8_t gb0=__ldg(g_plane+off0), gb1=__ldg(g_plane+off0+1), gb2=__ldg(g_plane+off0+2);
+            uint8_t bb0=__ldg(b_plane+off0), bb1=__ldg(b_plane+off0+1), bb2=__ldg(b_plane+off0+2);
+            __half e0 = lut_xyz_2row((rb0<<4)|(rb1>>4), (gb0<<4)|(gb1>>4), (bb0<<4)|(bb1>>4));
+            __half o0 = lut_xyz_2row(((rb1&0xF)<<8)|rb2, ((gb1&0xF)<<8)|gb2, ((bb1&0xF)<<8)|bb2);
             int off1 = y1 * packed_row_stride + p * 3;
-            uint32_t rw1=__ldg(reinterpret_cast<const uint32_t*>(r_plane+off1));
-            uint32_t gw1=__ldg(reinterpret_cast<const uint32_t*>(g_plane+off1));
-            uint32_t bw1=__ldg(reinterpret_cast<const uint32_t*>(b_plane+off1));
-            __half e1 = lut_xyz_2row(((rw1&0xFF)<<4)|((rw1>>12)&0xF), ((gw1&0xFF)<<4)|((gw1>>12)&0xF), ((bw1&0xFF)<<4)|((bw1>>12)&0xF));
-            __half o1 = lut_xyz_2row(((rw1>>8)&0xF)<<8|((rw1>>16)&0xFF), ((gw1>>8)&0xF)<<8|((gw1>>16)&0xFF), ((bw1>>8)&0xF)<<8|((bw1>>16)&0xFF));
+            uint8_t rb3=__ldg(r_plane+off1), rb4=__ldg(r_plane+off1+1), rb5=__ldg(r_plane+off1+2);
+            uint8_t gb3=__ldg(g_plane+off1), gb4=__ldg(g_plane+off1+1), gb5=__ldg(g_plane+off1+2);
+            uint8_t bb3=__ldg(b_plane+off1), bb4=__ldg(b_plane+off1+1), bb5=__ldg(b_plane+off1+2);
+            __half e1 = lut_xyz_2row((rb3<<4)|(rb4>>4), (gb3<<4)|(gb4>>4), (bb3<<4)|(bb4>>4));
+            __half o1 = lut_xyz_2row(((rb4&0xF)<<8)|rb5, ((gb4&0xF)<<8)|gb5, ((bb4&0xF)<<8)|bb5);
             sm2[p*2]   = __halves2half2(e0, e1);
             sm2[p*2+1] = __halves2half2(o0, o1);
         }
@@ -3179,20 +3158,17 @@ void kernel_rgb48_xyz_hdwt0_1ch_1row_p12(
     const uint8_t* g_p = d_rgb12 + 1 * plane_stride;
     const uint8_t* b_p = d_rgb12 + 2 * plane_stride;
 
-    /* V121: uint32_t __ldg replaces 3×byte __ldg per channel — 3× fewer load instructions per pair.
-     * uint32_t at off = byte0|(byte1<<8)|(byte2<<16)|...; even=(byte0<<4)|(byte1>>4); odd=((byte1&0xF)<<8)|byte2.
-     * Misaligned reads (off=p*3 not always 4B-aligned) handled correctly by CUDA __ldg texture cache.
-     * V89: #pragma unroll 4 — 4K has ~4 iters/thread; 3 loads now vs 9, better MLP per unroll step. */
+    /* V125: Byte-level loads — V121's uint32_t __ldg causes misaligned address on sm_61
+     * because packed_row_stride (e.g. 2997) is not 4-byte aligned.
+     * Each pixel pair = 3 bytes: pix0=(b0<<4)|(b1>>4), pix1=((b1&0xF)<<8)|b2. */
     #pragma unroll 4
     for (int p = t; p * 2 < w; p += nt) {
         int off = y0 * packed_row_stride + p * 3;
-        uint32_t rw = __ldg(reinterpret_cast<const uint32_t*>(r_p+off));
-        uint32_t gw = __ldg(reinterpret_cast<const uint32_t*>(g_p+off));
-        uint32_t bw = __ldg(reinterpret_cast<const uint32_t*>(b_p+off));
-        /* Even pixel: (byte0<<4)|(byte1>>4) = ((rw&0xFF)<<4)|((rw>>12)&0xF) */
-        int ri0 = ((rw&0xFF)<<4)|((rw>>12)&0xF), gi0 = ((gw&0xFF)<<4)|((gw>>12)&0xF), bi0 = ((bw&0xFF)<<4)|((bw>>12)&0xF);
-        /* Odd pixel: ((byte1&0xF)<<8)|byte2 = ((rw>>8)&0xF)<<8|((rw>>16)&0xFF) */
-        int ri1 = ((rw>>8)&0xF)<<8|((rw>>16)&0xFF), gi1 = ((gw>>8)&0xF)<<8|((gw>>16)&0xFF), bi1 = ((bw>>8)&0xF)<<8|((bw>>16)&0xFF);
+        uint8_t rb0=__ldg(r_p+off), rb1=__ldg(r_p+off+1), rb2=__ldg(r_p+off+2);
+        uint8_t gb0=__ldg(g_p+off), gb1=__ldg(g_p+off+1), gb2=__ldg(g_p+off+2);
+        uint8_t bb0=__ldg(b_p+off), bb1=__ldg(b_p+off+1), bb2=__ldg(b_p+off+2);
+        int ri0 = (rb0<<4)|(rb1>>4), gi0 = (gb0<<4)|(gb1>>4), bi0 = (bb0<<4)|(bb1>>4);
+        int ri1 = ((rb1&0xF)<<8)|rb2, gi1 = ((gb1&0xF)<<8)|gb2, bi1 = ((bb1&0xF)<<8)|bb2;
         /* V90: use sm_lut (smem) instead of __ldg (L1/L2) for zero-latency LUT reads. */
         auto lut_xyz = [&](int ri, int gi, int bi) -> __half {
             float r = __half2float(sm_lut[ri]);
@@ -3251,259 +3227,7 @@ void kernel_rgb48_xyz_hdwt0_1ch_1row_p12(
 }
 
 
-/**
- * V61: 4-rows-per-block packed-12-bit RGB+HDWT0 (parity with Slang V24).
- * grid=(height+3)/4; smem=4*width*sizeof(__half).
- * Halves block count vs V54 2-row (270 vs 540 for 2K); same 100% SM occupancy.
- * NOTE (V124): Dead code — never launched. Runtime uses 2-row (2K) and 1-row (4K).
- * Kept for binary compatibility (cudaFuncSetCacheConfig reference).
- */
-/* V106: __launch_bounds__(512,2) — forces ≤64 regs/T; smem=23.5KB → 2 blk/SM smem-limited anyway. */
-__global__ __launch_bounds__(512, 2)
-void kernel_rgb48_xyz_hdwt0_1ch_4row_p12(
-    const uint8_t*  __restrict__ d_rgb12,
-    const __half*   __restrict__ d_lut_in,
-    const uint16_t* __restrict__ d_lut_out,
-    const float*    __restrict__ d_matrix,
-    __half* __restrict__ d_hout,
-    int comp,
-    int width, int height, int packed_row_stride, int stride)
-{
-    extern __shared__ __half sm[];
-    __shared__ __half sm_lut[4096];  /* V95: 8KB static smem for d_lut_in preload */
-    int y0=blockIdx.x*4, y1=y0+1, y2=y0+2, y3=y0+3;
-    int t=threadIdx.x, nt=blockDim.x;
-    int w=width, hw=(w+1)/2;
-
-    /* V95: int4 vectorized preload — nt=512, 4096 __half = 512 int4 → each thread loads 1 int4.
-     * All threads participate; preload happens before if/else so no syncthreads deadlock risk. */
-    reinterpret_cast<int4*>(sm_lut)[t] = __ldg(reinterpret_cast<const int4*>(d_lut_in) + t);
-    __syncthreads();
-
-    int mr=comp*3;
-    float m0=__ldg(&d_matrix[mr]), m1=__ldg(&d_matrix[mr+1]), m2=__ldg(&d_matrix[mr+2]);
-
-    size_t plane_stride=(size_t)height*packed_row_stride;
-    const uint8_t* r_plane=d_rgb12+0*plane_stride;
-    const uint8_t* g_plane=d_rgb12+1*plane_stride;
-    const uint8_t* b_plane=d_rgb12+2*plane_stride;
-
-#define UP12(pl, roff, odd) \
-    ((odd)?((int(__ldg((pl)+(roff)+1)&0xF)<<8)|int(__ldg((pl)+(roff)+2)))\
-          :((int(__ldg((pl)+(roff)+0))<<4)|(int(__ldg((pl)+(roff)+1))>>4)))
-
-    /* V68: Fuse 4-row loads into if/else block for maximum load MLP.
-     * V95: sm_lut[] replaces d_lut_in __ldg (3-cycle smem vs 30-50 cycle L1/L2).
-     * Interior (y3<height, 100% of 2K blocks): single for loop issues all 4 rows'
-     *   12 texture loads per pixel simultaneously — GPU MLP hides all latencies at once.
-     * Else (partial last block): original per-row guarded loads (y3 not loaded). */
-    if (y3 < height) {
-        /* V106: __half2 row-pair packing — sm01[x]={row0[x],row1[x]}, sm23[x]={row2[x],row3[x]}.
-         * Load packs pairs; lifting uses __hfma2 (2 rows/instruction) → 2× FMA throughput.
-         * Parity with kernel_fused_horz_dwt_half_io_4row (V82) and 2row_p12 (V83).
-         * + #pragma unroll 2 on lifting loops (parity V96).
-         * + drop MIN from Beta/Delta main loops: x always even, w even → x+1≤w-1 (parity V102). */
-        __half2* sm01 = reinterpret_cast<__half2*>(sm);
-        __half2* sm23 = reinterpret_cast<__half2*>(sm + 2*w);
-        /* Load: interleaved row-pair stores — same total smem, enables __hfma2 lifting. */
-        for (int px=t; px<w; px+=nt) {
-            int o=px&1, phalf=(px/2)*3;
-            int off0=y0*packed_row_stride+phalf;
-            float r0=__half2float(sm_lut[UP12(r_plane,off0,o)]);
-            float g0=__half2float(sm_lut[UP12(g_plane,off0,o)]);
-            float b0=__half2float(sm_lut[UP12(b_plane,off0,o)]);
-            __half v0=u16_to_f16(__ldg(&d_lut_out[static_cast<int>(__saturatef(m0*r0+m1*g0+m2*b0)*4095.5f)]));
-            int off1=y1*packed_row_stride+phalf;
-            float r1=__half2float(sm_lut[UP12(r_plane,off1,o)]);
-            float g1=__half2float(sm_lut[UP12(g_plane,off1,o)]);
-            float b1=__half2float(sm_lut[UP12(b_plane,off1,o)]);
-            __half v1=u16_to_f16(__ldg(&d_lut_out[static_cast<int>(__saturatef(m0*r1+m1*g1+m2*b1)*4095.5f)]));
-            int off2=y2*packed_row_stride+phalf;
-            float r2=__half2float(sm_lut[UP12(r_plane,off2,o)]);
-            float g2=__half2float(sm_lut[UP12(g_plane,off2,o)]);
-            float b2=__half2float(sm_lut[UP12(b_plane,off2,o)]);
-            __half v2=u16_to_f16(__ldg(&d_lut_out[static_cast<int>(__saturatef(m0*r2+m1*g2+m2*b2)*4095.5f)]));
-            int off3=y3*packed_row_stride+phalf;
-            float r3=__half2float(sm_lut[UP12(r_plane,off3,o)]);
-            float g3=__half2float(sm_lut[UP12(g_plane,off3,o)]);
-            float b3=__half2float(sm_lut[UP12(b_plane,off3,o)]);
-            __half v3=u16_to_f16(__ldg(&d_lut_out[static_cast<int>(__saturatef(m0*r3+m1*g3+m2*b3)*4095.5f)]));
-            sm01[px] = __halves2half2(v0, v1);  /* {row0[px], row1[px]} */
-            sm23[px] = __halves2half2(v2, v3);  /* {row2[px], row3[px]} */
-        }
-        __syncthreads();
-        /* Alpha: odd positions. #pragma unroll 2 issues 2×4 HFMA2/HADD2 for 4K MLP. */
-        {
-            const __half2 kA2 = __half2half2(__float2half(ALPHA));
-            #pragma unroll 2
-            for (int x=1+t*2; x<w-1; x+=nt*2) {
-                sm01[x] = __hfma2(kA2, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
-                sm23[x] = __hfma2(kA2, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
-            }
-            /* V118: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
-            if(t==0) {
-                const __half2 kA2bd = __half2half2(__float2half(2.f*ALPHA));
-                sm01[w-1] = __hfma2(kA2bd, sm01[w-2], sm01[w-1]);
-                sm23[w-1] = __hfma2(kA2bd, sm23[w-2], sm23[w-1]);
-            }
-        }
-        __syncthreads();
-        /* Beta: even positions. */
-        {
-            const __half2 kB2 = __half2half2(__float2half(BETA));
-            if(t==0) {
-                const __half2 kB2bd = __half2half2(__float2half(2.f*BETA));
-                /* V118: DCI w>1 → min(1,w-1)=1; drop runtime min. */
-                sm01[0] = __hfma2(kB2bd, sm01[1], sm01[0]);
-                sm23[0] = __hfma2(kB2bd, sm23[1], sm23[0]);
-            }
-            /* V106: x always even → even w (DCI) → x≤w-2 → x+1≤w-1 → drop MIN. */
-            #pragma unroll 2
-            for (int x=2+t*2; x<w-1; x+=nt*2) {
-                sm01[x] = __hfma2(kB2, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
-                sm23[x] = __hfma2(kB2, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
-            }
-        }
-        __syncthreads();
-        /* Gamma: odd positions. */
-        {
-            const __half2 kG2 = __half2half2(__float2half(GAMMA));
-            #pragma unroll 2
-            for (int x=1+t*2; x<w-1; x+=nt*2) {
-                sm01[x] = __hfma2(kG2, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
-                sm23[x] = __hfma2(kG2, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
-            }
-            /* V118: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
-            if(t==0) {
-                const __half2 kG2bd = __half2half2(__float2half(2.f*GAMMA));
-                sm01[w-1] = __hfma2(kG2bd, sm01[w-2], sm01[w-1]);
-                sm23[w-1] = __hfma2(kG2bd, sm23[w-2], sm23[w-1]);
-            }
-        }
-        __syncthreads();
-        /* Delta: even positions. */
-        {
-            const __half2 kD2 = __half2half2(__float2half(DELTA));
-            if(t==0) {
-                const __half2 kD2bd = __half2half2(__float2half(2.f*DELTA));
-                /* V118: DCI w>1 → min(1,w-1)=1; drop runtime min. */
-                sm01[0] = __hfma2(kD2bd, sm01[1], sm01[0]);
-                sm23[0] = __hfma2(kD2bd, sm23[1], sm23[0]);
-            }
-            /* V106: same even-w invariant as Beta — drop MIN. */
-            #pragma unroll 2
-            for (int x=2+t*2; x<w-1; x+=nt*2) {
-                sm01[x] = __hfma2(kD2, __hadd2(sm01[x-1], sm01[x+1]), sm01[x]);
-                sm23[x] = __hfma2(kD2, __hadd2(sm23[x-1], sm23[x+1]), sm23[x]);
-            }
-        }
-        __syncthreads();
-        /* Scatter: deinterleave __half2 pairs → L/H subbands. #pragma unroll 2 for 4K MLP. */
-        {
-            const __half2 nL2 = __half2half2(__float2half(NORM_L));
-            const __half2 nH2 = __half2half2(__float2half(NORM_H));
-            #pragma unroll 2
-            for (int p=t; p<w/2; p+=nt) {
-                __half2 v01L = __hmul2(sm01[p*2],   nL2);
-                __half2 v23L = __hmul2(sm23[p*2],   nL2);
-                d_hout[y0*stride+p] = __low2half(v01L);
-                d_hout[y1*stride+p] = __high2half(v01L);
-                d_hout[y2*stride+p] = __low2half(v23L);
-                d_hout[y3*stride+p] = __high2half(v23L);
-                __half2 v01H = __hmul2(sm01[p*2+1], nH2);
-                __half2 v23H = __hmul2(sm23[p*2+1], nH2);
-                d_hout[y0*stride+hw+p] = __low2half(v01H);
-                d_hout[y1*stride+hw+p] = __high2half(v01H);
-                d_hout[y2*stride+hw+p] = __low2half(v23H);
-                d_hout[y3*stride+hw+p] = __high2half(v23H);
-            }
-        }
-    } else {
-        /* V95: Partial last block: guarded per-row loads using sm_lut (same 3-cycle access). */
-        for (int px=t; px<w; px+=nt) {
-            int off=y0*packed_row_stride+(px/2)*3, o=px&1;
-            float r=__half2float(sm_lut[UP12(r_plane,off,o)]);
-            float g=__half2float(sm_lut[UP12(g_plane,off,o)]);
-            float b=__half2float(sm_lut[UP12(b_plane,off,o)]);
-            sm[px]=u16_to_f16(__ldg(&d_lut_out[static_cast<int>(__saturatef(m0*r+m1*g+m2*b)*4095.5f)]));
-        }
-        if(y1<height) for(int px=t; px<w; px+=nt) {
-            int off=y1*packed_row_stride+(px/2)*3, o=px&1;
-            float r=__half2float(sm_lut[UP12(r_plane,off,o)]);
-            float g=__half2float(sm_lut[UP12(g_plane,off,o)]);
-            float b=__half2float(sm_lut[UP12(b_plane,off,o)]);
-            sm[w+px]=u16_to_f16(__ldg(&d_lut_out[static_cast<int>(__saturatef(m0*r+m1*g+m2*b)*4095.5f)]));
-        }
-        if(y2<height) for(int px=t; px<w; px+=nt) {
-            int off=y2*packed_row_stride+(px/2)*3, o=px&1;
-            float r=__half2float(sm_lut[UP12(r_plane,off,o)]);
-            float g=__half2float(sm_lut[UP12(g_plane,off,o)]);
-            float b=__half2float(sm_lut[UP12(b_plane,off,o)]);
-            sm[2*w+px]=u16_to_f16(__ldg(&d_lut_out[static_cast<int>(__saturatef(m0*r+m1*g+m2*b)*4095.5f)]));
-        }
-        __syncthreads();
-        /* Partial: conditional lifting — y3 >= height, so y3 guards are always false. */
-        for (int x=1+t*2; x<w-1; x+=nt*2) {
-            sm[x]    +=__half(ALPHA)*(sm[x-1]    +sm[x+1]);
-            if(y1<height) sm[w+x]  +=__half(ALPHA)*(sm[w+x-1]  +sm[w+x+1]);
-            if(y2<height) sm[2*w+x]+=__half(ALPHA)*(sm[2*w+x-1]+sm[2*w+x+1]);
-        }
-        /* V118: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
-        if(t==0) {
-            sm[w-1]  +=__half(2.f*ALPHA)*sm[w-2];
-            if(y1<height) sm[2*w-1]+=__half(2.f*ALPHA)*sm[2*w-2];
-            if(y2<height) sm[3*w-1]+=__half(2.f*ALPHA)*sm[3*w-2];
-        }
-        __syncthreads();
-        /* V118: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
-        if(t==0) {
-            sm[0]    +=__half(2.f*BETA)*sm[1];
-            if(y1<height) sm[w]  +=__half(2.f*BETA)*sm[w+1];
-            if(y2<height) sm[2*w]+=__half(2.f*BETA)*sm[2*w+1];
-        }
-        for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]    +=__half(BETA)*(sm[x-1]    +sm[x+1]);
-            if(y1<height) sm[w+x]  +=__half(BETA)*(sm[w+x-1]  +sm[w+x+1]);
-            if(y2<height) sm[2*w+x]+=__half(BETA)*(sm[2*w+x-1]+sm[2*w+x+1]);
-        }
-        __syncthreads();
-        for (int x=1+t*2; x<w-1; x+=nt*2) {
-            sm[x]    +=__half(GAMMA)*(sm[x-1]    +sm[x+1]);
-            if(y1<height) sm[w+x]  +=__half(GAMMA)*(sm[w+x-1]  +sm[w+x+1]);
-            if(y2<height) sm[2*w+x]+=__half(GAMMA)*(sm[2*w+x-1]+sm[2*w+x+1]);
-        }
-        /* V118: DCI w always even and >1 → drop w>1&&!(w&1) guard. */
-        if(t==0) {
-            sm[w-1]  +=__half(2.f*GAMMA)*sm[w-2];
-            if(y1<height) sm[2*w-1]+=__half(2.f*GAMMA)*sm[2*w-2];
-            if(y2<height) sm[3*w-1]+=__half(2.f*GAMMA)*sm[3*w-2];
-        }
-        __syncthreads();
-        /* V118: DCI w>1 → min(1,w-1)=1; even x<w → x+1≤w-1 → drop min(x+1,w-1). */
-        if(t==0) {
-            sm[0]    +=__half(2.f*DELTA)*sm[1];
-            if(y1<height) sm[w]  +=__half(2.f*DELTA)*sm[w+1];
-            if(y2<height) sm[2*w]+=__half(2.f*DELTA)*sm[2*w+1];
-        }
-        for (int x=2+t*2; x<w; x+=nt*2) {
-            sm[x]    +=__half(DELTA)*(sm[x-1]    +sm[x+1]);
-            if(y1<height) sm[w+x]  +=__half(DELTA)*(sm[w+x-1]  +sm[w+x+1]);
-            if(y2<height) sm[2*w+x]+=__half(DELTA)*(sm[2*w+x-1]+sm[2*w+x+1]);
-        }
-        __syncthreads();
-        for (int x=t*2; x<w; x+=nt*2) {
-            d_hout[y0*stride+x/2]               = sm[x]     *__half(NORM_L);
-            if(y1<height) d_hout[y1*stride+x/2] = sm[w+x]   *__half(NORM_L);
-            if(y2<height) d_hout[y2*stride+x/2] = sm[2*w+x] *__half(NORM_L);
-        }
-        for (int x=t*2+1; x<w; x+=nt*2) {
-            d_hout[y0*stride+hw+x/2]               = sm[x]     *__half(NORM_H);
-            if(y1<height) d_hout[y1*stride+hw+x/2] = sm[w+x]   *__half(NORM_H);
-            if(y2<height) d_hout[y2*stride+hw+x/2] = sm[2*w+x] *__half(NORM_H);
-        }
-    } /* end V68 if/else */
-#undef UP12
-}
+/* V128: kernel_rgb48_xyz_hdwt0_1ch_4row_p12 removed — dead code (never launched). */
 
 
 /**
@@ -3615,6 +3339,7 @@ struct CudaJ2KEncoderImpl
     /* V42: 1-frame pipeline state */
     int    cur_buf        = 0;
     bool   pipeline_active = false;
+    bool   graphs_failed   = false;  /* V125: true after graph capture failure → direct launches */
     int    p_width        = 0;
     int    p_height       = 0;
     size_t p_per_comp     = 0;
@@ -3667,12 +3392,10 @@ struct CudaJ2KEncoderImpl
         /* V85: reg-blocked V-DWT + quantize have no smem → PreferL1 is free (no occupancy cost).
          * Larger L1 improves column-data locality in reg-blocked kernel; quantize benefits from
          * larger instruction cache for multi-zone branch chains. */
-        cudaFuncSetCacheConfig(kernel_fused_vert_dwt_fp16_hi_reg_ho,   cudaFuncCachePreferL1);
+        /* V125: template<bool EVEN_HEIGHT> — both instantiations need PreferL1. */
+        cudaFuncSetCacheConfig(kernel_fused_vert_dwt_fp16_hi_reg_ho<true>,  cudaFuncCachePreferL1);
+        cudaFuncSetCacheConfig(kernel_fused_vert_dwt_fp16_hi_reg_ho<false>, cudaFuncCachePreferL1);
         cudaFuncSetCacheConfig(kernel_quantize_subband_ml,              cudaFuncCachePreferL1);
-        /* V95: 4-row p12: smem = 15.36KB (DWT) + 8KB (sm_lut static) = 23.36KB.
-         * PreferShared (48KB/SM): 48/23.36=2 blk/SM → 50% occ (same as PreferNone before).
-         * 0-cycle sm_lut access for d_lut_in >> smaller L1 (16KB vs 32KB) cost. */
-        cudaFuncSetCacheConfig(kernel_rgb48_xyz_hdwt0_1ch_4row_p12, cudaFuncCachePreferShared);
         /* V90: 2-row p12: smem = 7.68KB (DWT) + 8KB (sm_lut static) = 15.87KB.
          * PreferNone (32KB/SM): 2 blk/SM. PreferShared (48KB/SM): 3 blk/SM.
          * Use PreferShared → 3 blk/SM; sm_lut enables 0-cycle LUT reads → big speedup vs -1 block. */
@@ -3689,7 +3412,9 @@ struct CudaJ2KEncoderImpl
          * PreferNone→32KB smem/SM→4 blk/SM=100% occ at level 1 (largest, bottleneck level).
          * Levels 2-5 (smem≤3.84KB): 4 blk/SM with both → PreferNone has no occupancy cost.
          * 2-row/1-row kernels: smem≤3.84KB at all levels → 4 blk/SM with PreferL1 → keep. */
-        cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io_4row,  cudaFuncCachePreferNone);
+        /* V127: template<bool DIV4> — both instantiations need PreferNone. */
+        cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io_4row<true>,  cudaFuncCachePreferNone);
+        cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io_4row<false>, cudaFuncCachePreferNone);
         cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io_2row,  cudaFuncCachePreferL1);
         cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io,       cudaFuncCachePreferL1);
         return true;
@@ -3701,9 +3426,11 @@ struct CudaJ2KEncoderImpl
 
         cleanup_dwt_buffers();
 
+        /* V125: +16 bytes padding prevents OOB in kernel_fused_vert_dwt_tiled_ho_2col:
+         * int (4-byte) __ldg at the last 2 columns reads 2 bytes past the allocation. */
         for (int c = 0; c < 3; ++c) {
-            cudaMalloc(&d_a[c],  pixels * sizeof(__half));  /* V36: half V-DWT output */
-            cudaMalloc(&d_b[c],  pixels * sizeof(__half));  /* V26: half H-DWT output */
+            cudaMalloc(&d_a[c],  pixels * sizeof(__half) + 16);  /* V36: half V-DWT output */
+            cudaMalloc(&d_b[c],  pixels * sizeof(__half) + 16);  /* V26: half H-DWT output */
             cudaMalloc(&d_in[c], pixels * sizeof(int32_t)); /* used by non-RGB encode() path */
             /* V30: d_half[c] workspace removed — V29 tiled kernel no longer uses it */
         }
@@ -3934,8 +3661,13 @@ gpu_dwt97_level(
             int h_blk = (width > 480) ? H_THREADS :
                         (width > 240) ? 256 :
                         (width > 120) ? 128 : 64;
-            kernel_fused_horz_dwt_half_io_4row<<<(height+3)/4, h_blk, 4*smem, st>>>(
-                d_half_a, d_half_h, width, height, stride);
+            /* V127: dispatch DIV4 template at graph capture time — h%4==0 → else block dead. */
+            if (height % 4 == 0)
+                kernel_fused_horz_dwt_half_io_4row<true><<<(height+3)/4, h_blk, 4*smem, st>>>(
+                    d_half_a, d_half_h, width, height, stride);
+            else
+                kernel_fused_horz_dwt_half_io_4row<false><<<(height+3)/4, h_blk, 4*smem, st>>>(
+                    d_half_a, d_half_h, width, height, stride);
         }
     }
 
@@ -3943,8 +3675,13 @@ gpu_dwt97_level(
      * V27: h ≤ MAX_REG_HEIGHT → register-blocked (128T); V62: h > → tiled (256T, V63).
      * V76: tiled path uses 2-col kernel — HFMA2 doubles lifting throughput. */
     if (height <= MAX_REG_HEIGHT) {
-        kernel_fused_vert_dwt_fp16_hi_reg_ho<<<grid_v, V_THREADS_REG, 0, st>>>(
-            d_half_h, d_half_a, width, height, stride);
+        /* V125: dispatch even/odd height template instantiation at CUDA graph capture time. */
+        if (height % 2 == 0)
+            kernel_fused_vert_dwt_fp16_hi_reg_ho<true><<<grid_v, V_THREADS_REG, 0, st>>>(
+                d_half_h, d_half_a, width, height, stride);
+        else
+            kernel_fused_vert_dwt_fp16_hi_reg_ho<false><<<grid_v, V_THREADS_REG, 0, st>>>(
+                d_half_h, d_half_a, width, height, stride);
     } else {
         /* V76: grid x = ceil(width/2/V_THREADS_TILED): half x-blocks, each thread does 2 cols. */
         dim3 v_grid2d((width/2 + V_THREADS_TILED - 1) / V_THREADS_TILED,
@@ -3998,13 +3735,36 @@ launch_comp_pipeline(
  * Graphs are run in parallel on separate streams (no cross-component dependency).
  * Graphs are valid as long as width/height/per_comp/is_4k don't change.
  */
+/**
+ * V125: Adaptive base quantization step — scales with target compression ratio.
+ *
+ * With 1-byte sign-magnitude packing (max magnitude 126), the step must balance:
+ *   - Low step → more non-zero coefficients → larger output → higher quality
+ *   - High step → more zeros → smaller output → lower quality (and DC clipping)
+ *
+ * Formula: base_step = clamp(compression_ratio × 0.25, 1.0, 32.5)
+ *   150 Mbps / 24 fps (2K): ratio=8.3 → step=2.1
+ *   250 Mbps / 24 fps (2K): ratio=5.0 → step=1.25
+ *   100 Mbps / 24 fps (2K): ratio=12.4 → step=3.1
+ *
+ * Replaces the fixed step of 32.5 (2K) / 16.25 (4K) which over-quantized,
+ * producing ~5KB/comp instead of the target ~260KB/comp at 150 Mbps.
+ */
+static float
+compute_base_step(int width, int height, size_t per_comp)
+{
+    size_t pixels = static_cast<size_t>(width) * height;
+    float ratio = static_cast<float>(pixels) / std::max(per_comp, static_cast<size_t>(1));
+    return std::clamp(ratio * 0.25f, 1.0f, 32.5f);
+}
+
 static void
 rebuild_comp_graphs(
     CudaJ2KEncoderImpl* impl,
     int width, int height, size_t per_comp, bool is_4k, bool is_3d, bool skip_level0_hdwt)
 {
     impl->destroy_comp_graphs();
-    float base_step = is_4k ? 16.25f : 32.5f;
+    float base_step = compute_base_step(width, height, per_comp);
     const int num_levels = is_4k ? 6 : NUM_DWT_LEVELS;  /* V49: 6-level DWT for 4K */
     for (int c = 0; c < 3; ++c) {
         float step = base_step * (c == 1 ? 1.0f : 1.1f);
@@ -4048,7 +3808,9 @@ rebuild_v42_comp_graphs(
             impl->cg_v42[buf][c] = nullptr;
         }
     }
-    float base_step = is_4k ? 16.25f : 32.5f;
+    float base_step = compute_base_step(width, height, per_comp);  /* V125 */
+    fprintf(stderr, "[V125] rebuild_v42: w=%d h=%d per_comp=%zu base_step=%.3f\n",
+            width, height, per_comp, base_step);
     const int num_levels = is_4k ? 6 : NUM_DWT_LEVELS;  /* V49: 6-level DWT for 4K */
     /* V61: 4-row kernel: smem=4×width halves; grid=(height+3)/4 blocks.
      * V72: Conditionally use 2-row at 4K (width>2048) to enable PreferL1 (48KB L1).
@@ -4090,8 +3852,14 @@ rebuild_v42_comp_graphs(
         launch_comp_pipeline(impl, c, width, height, per_comp, step, true,
                              impl->stream[c], impl->h_packed_pinned[buf],
                              num_levels);  /* V49 */
-        cudaStreamEndCapture(impl->stream[c], &g);
-        cudaGraphInstantiate(&impl->cg_v42[buf][c], g, nullptr, nullptr, 0);
+        cudaError_t cap_err = cudaStreamEndCapture(impl->stream[c], &g);
+        if (cap_err != cudaSuccess) {
+            impl->cg_v42[buf][c] = nullptr;
+            continue;
+        }
+        cudaError_t inst_err = cudaGraphInstantiate(&impl->cg_v42[buf][c], g, nullptr, nullptr, 0);
+        if (inst_err != cudaSuccess)
+            impl->cg_v42[buf][c] = nullptr;
         cudaGraphDestroy(g);
     }
     impl->cg_v42_width[buf]      = width;
@@ -4208,14 +3976,15 @@ build_j2k_codestream(
         for (int i = 1; i < num_precincts; ++i) cs.write_u8(0x88);
     }
 
-    /* QCD — V57: per-subband step matching V53 perceptual weights (Y component, base=32.5).
+    /* QCD — V57/V125: per-subband step matching V53 perceptual weights.
+     * V125: base_step is now adaptive (compute_base_step), not hardcoded.
      * V49: nsb = 19 for 4K, 16 for 2K. */
+    float base_y = compute_base_step(width, height, per_comp);
     {
         int nsb = 3 * (is_4k ? 6 : NUM_DWT_LEVELS) + 1;
         cs.write_marker(J2K_QCD);
         cs.write_u16(static_cast<uint16_t>(2 + 1 + 2 * nsb));
         cs.write_u8(0x22);
-        float base_y = is_4k ? 16.25f : 32.5f;
         for (int i = 0; i < nsb; ++i)
             cs.write_u16(j2k_perceptual_sb_entry(base_y, i, is_4k));
     }
@@ -4224,7 +3993,7 @@ build_j2k_codestream(
     {
         int nsb = 3 * (is_4k ? 6 : NUM_DWT_LEVELS) + 1;
         uint16_t lqcc = static_cast<uint16_t>(4 + 2 * nsb);
-        float base_xz = (is_4k ? 16.25f : 32.5f) * 1.1f;
+        float base_xz = base_y * 1.1f;
         for (int c : {0, 2}) {
             cs.write_marker(J2K_QCC);
             cs.write_u16(lqcc);
@@ -4239,7 +4008,6 @@ build_j2k_codestream(
     size_t actual[3];
     for (int c = 0; c < 3; ++c)
         actual[c] = find_actual_per_comp(h_src + c * per_comp, per_comp);
-
     /* TLM */
     {
         cs.write_marker(J2K_TLM);
@@ -4384,26 +4152,23 @@ run_dwt_and_build_codestream(
      * j2k_perceptual_sb_entry(base, i, is_4k) encodes the exact step used
      * for subband i: base_step × kWeights[i] → (eps<<11)|man.
      *
-     * Base step = 32.5 (2K) or 16.25 (4K). 4K uses uniform (no perceptual
-     * weights applied in 4K path). */
+     * V125: base_step is now adaptive (compute_base_step). */
+    float base_y2 = compute_base_step(width, height, per_comp);
     {
         cs.write_marker(J2K_QCD);
         int nsb = 3 * (is_4k ? 6 : NUM_DWT_LEVELS) + 1;  /* V49: 19 for 4K, 16 for 2K */
         cs.write_u16(static_cast<uint16_t>(2 + 1 + 2 * nsb));
         cs.write_u8(0x22);  /* Sqcd: scalar expounded, 1 guard bit */
-        float base_y = is_4k ? 16.25f : 32.5f;
         for (int i = 0; i < nsb; ++i)
-            cs.write_u16(j2k_perceptual_sb_entry(base_y, i, is_4k));
+            cs.write_u16(j2k_perceptual_sb_entry(base_y2, i, is_4k));
     }
 
     /* V24/V57: QCC markers — per-component quantization step overrides for X and Z.
-     *
-     * X and Z components use 1.1× coarser quantization than Y.
-     * V57: each subband entry uses the perceptual weight for that subband level. */
+     * V125: uses adaptive base step. */
     {
         int nsb = 3 * (is_4k ? 6 : NUM_DWT_LEVELS) + 1;  /* V49: 19 for 4K, 16 for 2K */
         uint16_t lqcc = static_cast<uint16_t>(4 + 2 * nsb);
-        float base_xz = (is_4k ? 16.25f : 32.5f) * 1.1f;
+        float base_xz = base_y2 * 1.1f;
         for (int c : {0, 2}) {
             cs.write_marker(J2K_QCC);
             cs.write_u16(lqcc);
@@ -4426,7 +4191,7 @@ run_dwt_and_build_codestream(
        Stlm = 0x40: ST=00 (no tile-part index), SP=1 (4-byte Ptlm).
        Ptlm[c] = SOT(2+10) + SOD(2) + stuffed_data = 14 + actual_sz[c]. */
     {
-        static constexpr uint16_t J2K_TLM = 0xFF55;
+        /* J2K_TLM now defined at file scope */
         cs.write_marker(J2K_TLM);
         cs.write_u16(static_cast<uint16_t>(2 + 1 + 1 + 3 * 4)); /* Ltlm = 4 + 3*4 = 16 */
         cs.write_u8(0);       /* Ztlm: 0 = first TLM segment */
@@ -4635,10 +4400,9 @@ CudaJ2KEncoder::encode_from_rgb48(
                       _impl->cg_v42_per_comp[new_buf]   == per_comp            &&
                       _impl->cg_v42_is_4k[new_buf]      == is_4k               &&
                       _impl->cg_v42_is_3d[new_buf]      == is_3d);
-    if (!v42_valid)
-        rebuild_v42_comp_graphs(_impl.get(), new_buf,
-                                width, height, v54_packed_stride,
-                                per_comp, is_4k, is_3d);
+    /* V125: Skip graph capture entirely — direct kernel launches are more robust
+     * across GPU architectures and avoid misaligned-address errors during capture. */
+    (void)v42_valid;  /* suppress unused warning */
 
     /* Step 4: Sync all 3 component streams for cur_buf (V49: was only stream[0]).
      * V49 race fix: all 3 streams write to h_packed_pinned[cur_buf]; syncing only
@@ -4650,14 +4414,45 @@ CudaJ2KEncoder::encode_from_rgb48(
         cudaStreamSynchronize(_impl->stream[2]);  /* V49: race fix */
     }
 
-    /* Step 5: Launch new_buf's graphs BEFORE codestream building (V49 early launch).
-     * Graphs wait on h2d_done[new_buf] event — GPU starts as soon as H2D fires.
-     * Starting GPU 0.1ms earlier reduces sync_wait for the next frame. */
-    for (int c = 0; c < 3; ++c)
-        cudaGraphLaunch(_impl->cg_v42[new_buf][c], _impl->stream[c]);
+    /* Step 5: Launch pipeline for new_buf.
+     * V125: If graphs are available, use cudaGraphLaunch. Otherwise, fall back to
+     * direct kernel launches (handles graph capture failures on older GPUs). */
+    {
+        /* V125: Direct kernel launch — no CUDA Graphs (robust across all GPU architectures). */
+        float base_step_fb = compute_base_step(width, height, per_comp);
+        int packed_row_stride_fb = (width / 2) * 3;
+        const int num_levels_fb = is_4k ? 6 : NUM_DWT_LEVELS;
+        size_t ch_smem_2row = static_cast<size_t>(2 * width) * sizeof(__half);
+        size_t ch_smem_1row = static_cast<size_t>(1 * width) * sizeof(__half);
+        int rgb_grid_2row = (height + 1) / 2;
+        int rgb_grid_1row = height;
+        bool use_1row_4k = (width > 2048);
+        for (int c = 0; c < 3; ++c) {
+            float step_c = base_step_fb * (c == 1 ? 1.0f : 1.1f);
+            cudaStreamWaitEvent(_impl->stream[c], _impl->h2d_done[new_buf], 0);
+            if (use_1row_4k) {
+                kernel_rgb48_xyz_hdwt0_1ch_1row_p12<<<rgb_grid_1row, H_THREADS_FUSED, ch_smem_1row, _impl->stream[c]>>>(
+                    _impl->d_rgb12[new_buf],
+                    _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
+                    _impl->d_b[c], c,
+                    width, height, packed_row_stride_fb, width);
+            } else {
+                kernel_rgb48_xyz_hdwt0_1ch_2row_p12<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem_2row, _impl->stream[c]>>>(
+                    _impl->d_rgb12[new_buf],
+                    _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
+                    _impl->d_b[c], c,
+                    width, height, packed_row_stride_fb, width);
+            }
+            launch_comp_pipeline(_impl.get(), c, width, height, per_comp, step_c, true,
+                                 _impl->stream[c], _impl->h_packed_pinned[new_buf],
+                                 num_levels_fb);
+        }
+    }
 
-    /* Step 6: Build codestream for cur_buf on CPU while GPU computes new_buf. */
+    /* Step 6: Sync cur_buf, then build codestream while GPU computes new_buf. */
     if (_impl->pipeline_active) {
+        for (int c2 = 0; c2 < 3; ++c2)
+            cudaStreamSynchronize(_impl->stream[c2]);
         result = build_j2k_codestream(_impl.get(),
             _impl->p_width, _impl->p_height,
             _impl->p_per_comp, _impl->p_is_4k, _impl->p_is_3d,

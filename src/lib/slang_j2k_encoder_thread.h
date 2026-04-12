@@ -24,11 +24,10 @@
 
 #include "j2k_sync_encoder_thread.h"
 #include "slang_j2k_encoder.h"
+#include "dcp_video.h"
 #include <dcp/data.h>
 #include <memory>
-
-
-class DCPVideo;
+#include <optional>
 
 
 /** @class SlangJ2KEncoderThread
@@ -45,11 +44,13 @@ class SlangJ2KEncoderThread : public J2KSyncEncoderThread
 public:
 	SlangJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<SlangJ2KEncoder> slang_j2k);
 
+	void run() override;  /* V17r: pipelined — overlaps CPU memcpy with GPU compute */
 	void log_thread_start() const override;
 	std::shared_ptr<dcp::ArrayData> encode(DCPVideo const& frame) override;
 
 private:
 	std::shared_ptr<SlangJ2KEncoder> _slang_j2k;
+	std::optional<DCPVideo> _pending;  /* in-flight frame for pipelined run() */
 };
 
 

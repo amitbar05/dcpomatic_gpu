@@ -24,11 +24,10 @@
 
 #include "j2k_sync_encoder_thread.h"
 #include "cuda_j2k_encoder.h"
+#include "dcp_video.h"
 #include <dcp/data.h>
 #include <memory>
-
-
-class DCPVideo;
+#include <optional>
 
 
 /** @class NvjpegJ2KEncoderThread
@@ -42,11 +41,13 @@ class NvjpegJ2KEncoderThread : public J2KSyncEncoderThread
 public:
 	NvjpegJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<CudaJ2KEncoder> cuda_j2k);
 
+	void run() override;  /* V41: pipelined — overlaps CPU memcpy with GPU compute */
 	void log_thread_start() const override;
 	std::shared_ptr<dcp::ArrayData> encode(DCPVideo const& frame) override;
 
 private:
 	std::shared_ptr<CudaJ2KEncoder> _cuda_j2k;
+	std::optional<DCPVideo> _pending;  /* in-flight frame for pipelined run() */
 };
 
 

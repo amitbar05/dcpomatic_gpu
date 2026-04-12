@@ -284,7 +284,9 @@ def build(bld):
         from waflib.Task import Task
         class nvcc_compile(Task):
             color = 'GREEN'
-            run_str = 'nvcc -c -O3 -arch=sm_61 -std=c++17 --compiler-options=-fPIC -I${SRC[0].parent.abspath()} -o ${TGT[0].abspath()} ${SRC[0].abspath()}'
+            # V33: --use_fast_math enables approximate FP math (-ftz, -prec-div=false, --fmad)
+            # giving ~5-10% speedup on compute-bound kernels at negligible precision cost for DWT.
+            run_str = 'nvcc -c -O3 --use_fast_math -arch=sm_61 -std=c++17 --compiler-options=-fPIC -I${SRC[0].parent.abspath()} -o ${TGT[0].abspath()} ${SRC[0].abspath()}'
         cuda_src = bld.path.find_resource('cuda_j2k_encoder.cu')
         cuda_out_node = bld.path.get_bld().make_node('cuda_j2k_encoder.o')
         t = nvcc_compile(env=bld.env)

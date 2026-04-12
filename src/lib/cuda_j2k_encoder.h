@@ -51,8 +51,8 @@ struct CudaJ2KEncoderImpl;
  *  Cached and uploaded to GPU once per film (or when conversion changes). */
 struct GpuColourParams
 {
-    float    lut_in[4096];  /**< Input gamma: 12-bit index → linear float [0,1] */
-    int32_t  lut_out[4096]; /**< Output gamma: 12-bit index → DCP int32 value */
+    float    lut_in[4096];   /**< Input gamma: 12-bit index → linear float [0,1] (host; V55: GPU d_lut_in is __half) */
+    uint16_t lut_out[4096];  /**< V48: Output gamma: 12-bit index → DCP value [0,4095] (was int32_t; saves 8KB GPU LUT cache) */
     float    matrix[9];     /**< Combined RGB→XYZ 3×3 matrix (row-major) */
     bool     valid = false;
 };
@@ -93,6 +93,10 @@ public:
 
 	/** Upload colour conversion LUT+matrix to GPU constant memory. */
 	void set_colour_params(GpuColourParams const& params);
+
+	/** V41: Flush the pipeline — collect the last in-flight frame's codestream.
+	 *  Must be called after the final encode_from_rgb48() to avoid losing the last frame. */
+	std::vector<uint8_t> flush();
 
 	bool is_initialized() const { return _initialized; }
 	bool has_colour_params() const { return _colour_params_valid; }

@@ -45,6 +45,10 @@ public:
     /** Upload colour LUT + matrix to GPU. Call once per film or per colour change. */
     void set_colour_params(GpuColourParams const& params);
 
+    /** V17r: Flush the pipeline — collect the last in-flight frame's codestream.
+     *  Must be called after the final encode_from_rgb48() to avoid losing the last frame. */
+    std::vector<uint8_t> flush();
+
 private:
     std::unique_ptr<SlangJ2KEncoderImpl> _impl;
     bool _initialized          = false;
