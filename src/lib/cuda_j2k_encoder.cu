@@ -4644,7 +4644,7 @@ CudaJ2KEncoder::encode_ebcot(
 {
     if (!_initialized || !_colour_params_valid) return {};
 
-    auto tmark = [](const char*) {}; /* profiling disabled */
+    auto tmark = [](const char*) {};
 
     _impl->ensure_buffers(width, height);
     _impl->ensure_rgb_buffer(width, height);
@@ -4736,7 +4736,7 @@ CudaJ2KEncoder::encode_ebcot(
 
     /* Step 5: Launch EBCOT T1 kernel per component */
     int num_cbs = _impl->ebcot_num_cbs;
-    constexpr int EBCOT_THREADS = 64;
+    constexpr int EBCOT_THREADS = 32; /* 1 warp per block — minimizes local mem pressure per SM */
     int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
     for (int c = 0; c < 3; ++c) {
