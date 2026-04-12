@@ -107,10 +107,9 @@ NvjpegJ2KEncoderThread::encode(DCPVideo const& frame)
 		auto const comment = Config::instance()->dcp_j2k_comment();
 
 		if (_cuda_j2k->has_colour_params()) {
-			/* V127: Hybrid GPU+OpenJPEG path:
-			 *   GPU: RGB48LE → XYZ12 (fast color conversion)
-			 *   CPU: XYZ12 → J2K via OpenJPEG (proper EBCOT encoding)
-			 * This produces identical quality to the CPU path. */
+			/* V127: Full GPU EBCOT path:
+			 *   GPU: RGB48 → XYZ → DWT → EBCOT T1 (per code-block)
+			 *   CPU: T2 packet assembly → J2K codestream */
 			auto image = frame.frame()->image(
 				[](AVPixelFormat) { return AV_PIX_FMT_RGB48LE; },
 				VideoRange::FULL,
@@ -118,42 +117,26 @@ NvjpegJ2KEncoderThread::encode(DCPVideo const& frame)
 			);
 			auto size = image->size();
 			int rgb_stride = image->stride()[0] / static_cast<int>(sizeof(uint16_t));
-			int pixels = size.width * size.height;
 
-			/* GPU color conversion */
-			std::vector<int32_t> xyz_buf(3 * pixels);
-			bool ok = _cuda_j2k->gpu_rgb_to_xyz(
+			auto encoded = _cuda_j2k->encode_ebcot(
 				reinterpret_cast<const uint16_t*>(image->data()[0]),
 				size.width, size.height, rgb_stride,
-				xyz_buf.data()
-			);
-			if (!ok) {
-				LOG_ERROR(N_("GPU RGB→XYZ conversion failed, falling back to CPU"));
-				goto cpu_fallback;
-			}
-
-			/* Build OpenJPEGImage from GPU-computed XYZ planes */
-			auto xyz = make_shared<dcp::OpenJPEGImage>(size);
-			memcpy(xyz->data(0), xyz_buf.data(),              pixels * sizeof(int32_t));
-			memcpy(xyz->data(1), xyz_buf.data() + pixels,     pixels * sizeof(int32_t));
-			memcpy(xyz->data(2), xyz_buf.data() + 2 * pixels, pixels * sizeof(int32_t));
-
-			/* OpenJPEG J2K encoding (proper EBCOT — identical quality to CPU path) */
-			auto enc = dcp::compress_j2k(
-				xyz,
 				frame.video_bit_rate(),
 				frame.frames_per_second(),
 				frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
-				frame.is_4k(),
-				comment.empty() ? "libdcp" : comment
+				frame.is_4k()
 			);
 
-			return make_shared<dcp::ArrayData>(enc);
+			if (!encoded.empty()) {
+				auto result = make_shared<dcp::ArrayData>(encoded.size());
+				memcpy(result->data(), encoded.data(), encoded.size());
+				return result;
+			}
+			LOG_ERROR(N_("GPU EBCOT encode failed, falling back to CPU"));
 		}
 
-	cpu_fallback:
 		{
-			/* Fallback: full CPU path (colour conversion + J2K encoding) */
+			/* Fallback: full CPU path via OpenJPEG */
 			auto xyz = DCPVideo::convert_to_xyz(frame.frame());
 			auto enc = dcp::compress_j2k(
 				xyz,

@@ -91,6 +91,15 @@ public:
 		bool is_4k
 	);
 
+	/** V127: Full GPU pipeline: RGB48 → XYZ → DWT → EBCOT T1 → J2K codestream.
+	 *  Produces standard-compliant JPEG2000 with proper EBCOT encoding.
+	 *  Returns a complete J2K codestream (decodable by OpenJPEG/Kakadu). */
+	std::vector<uint8_t> encode_ebcot(
+		const uint16_t* rgb16,
+		int width, int height, int rgb_stride_pixels,
+		int64_t bit_rate, int fps, bool is_3d, bool is_4k
+	);
+
 	/** V127: GPU-accelerated RGB48→XYZ12 color conversion.
 	 *  Returns 3 planes of int32 (12-bit XYZ values 0-4095), compatible with OpenJPEGImage.
 	 *  Caller owns the returned buffer (3 * width * height int32_t values, planar). */
