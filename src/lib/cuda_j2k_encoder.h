@@ -91,6 +91,17 @@ public:
 		bool is_4k
 	);
 
+	/** V127: GPU-accelerated RGB48→XYZ12 color conversion.
+	 *  Returns 3 planes of int32 (12-bit XYZ values 0-4095), compatible with OpenJPEGImage.
+	 *  Caller owns the returned buffer (3 * width * height int32_t values, planar). */
+	bool gpu_rgb_to_xyz(
+		const uint16_t* rgb16,
+		int width,
+		int height,
+		int rgb_stride_pixels,
+		int32_t* xyz_out   /**< Pre-allocated: 3 * width * height int32_t */
+	);
+
 	/** Upload colour conversion LUT+matrix to GPU constant memory. */
 	void set_colour_params(GpuColourParams const& params);
 

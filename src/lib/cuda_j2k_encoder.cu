@@ -877,6 +877,59 @@ __device__ __forceinline__ __half u16_to_f16(uint16_t v)
     return h;
 }
 
+
+/**
+ * V127: GPU RGB48LE → XYZ12 conversion kernel for hybrid encoding.
+ * Produces 3 planar int32 outputs (compatible with OpenJPEGImage::data()).
+ * Each thread processes one pixel: applies input LUT, 3×3 matrix, output LUT.
+ * Output values are 12-bit (0-4095) stored as int32_t per DCI spec.
+ */
+__global__ void
+kernel_rgb48_to_xyz12_planar(
+    const uint16_t* __restrict__ d_rgb16,
+    const float*    __restrict__ d_lut_in,    /* 4096 float: 12-bit → linear [0,1] */
+    const uint16_t* __restrict__ d_lut_out,   /* 4096 uint16: linear → DCI 12-bit */
+    const float*    __restrict__ d_matrix,     /* 9 floats: combined RGB→XYZ matrix */
+    int32_t* __restrict__ d_xyz_x,
+    int32_t* __restrict__ d_xyz_y,
+    int32_t* __restrict__ d_xyz_z,
+    int width, int height, int rgb_stride)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = width * height;
+    if (idx >= total) return;
+
+    int y = idx / width;
+    int x = idx % width;
+    int base = y * rgb_stride + x * 3;
+
+    /* Read RGB48LE and extract 12-bit indices */
+    int ri = min(static_cast<int>(d_rgb16[base + 0] >> 4), 4095);
+    int gi = min(static_cast<int>(d_rgb16[base + 1] >> 4), 4095);
+    int bi = min(static_cast<int>(d_rgb16[base + 2] >> 4), 4095);
+
+    /* Input LUT: 12-bit → linear float */
+    float r = d_lut_in[ri];
+    float g = d_lut_in[gi];
+    float b = d_lut_in[bi];
+
+    /* 3×3 matrix multiply: RGB linear → XYZ linear */
+    float xv = d_matrix[0]*r + d_matrix[1]*g + d_matrix[2]*b;
+    float yv = d_matrix[3]*r + d_matrix[4]*g + d_matrix[5]*b;
+    float zv = d_matrix[6]*r + d_matrix[7]*g + d_matrix[8]*b;
+
+    /* Clamp to [0,1] */
+    xv = fminf(fmaxf(xv, 0.0f), 1.0f);
+    yv = fminf(fmaxf(yv, 0.0f), 1.0f);
+    zv = fminf(fmaxf(zv, 0.0f), 1.0f);
+
+    /* Output LUT: linear [0,1] → 12-bit DCI value */
+    int out_idx = y * width + x;
+    d_xyz_x[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(xv * 4095.5f)]);
+    d_xyz_y[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(yv * 4095.5f)]);
+    d_xyz_z[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(zv * 4095.5f)]);
+}
+
 /* ===== CUDA Kernels ===== */
 
 #if 0  /* Dead kernels — superseded by __half-smem variants; disabled to avoid extern __shared__ type conflict */
@@ -3353,8 +3406,15 @@ struct CudaJ2KEncoderImpl
     /* V18: colour conversion device buffers */
     uint16_t* d_rgb16[2]   = {nullptr, nullptr};  /* V42: double-buffered GPU RGB48LE input */
     __half*   d_lut_in     = nullptr;  /* V55: 4096-entry input gamma LUT (was float; halves L1 cache 16KB→8KB) */
+    float*    d_lut_in_f32 = nullptr;  /* V127: full-precision input LUT for XYZ conversion */
     uint16_t* d_lut_out    = nullptr;  /* V48: 4096-entry output gamma LUT (was int32_t; saves 8KB GPU texture cache) */
     float*    d_matrix     = nullptr;  /* 9-float Bradford+RGB→XYZ matrix */
+
+    /* V127: GPU RGB→XYZ conversion buffers */
+    int32_t*  d_xyz[3]        = {nullptr, nullptr, nullptr};  /* device XYZ planar output */
+    int32_t*  h_xyz_pinned    = nullptr;  /* pinned host buffer for D2H (3 * pixels int32_t) */
+    uint16_t* d_rgb16_xyz     = nullptr;  /* device RGB input for XYZ conversion */
+    size_t    xyz_buf_pixels  = 0;
     size_t    rgb_buf_pixels = 0;
     bool      colour_loaded  = false;
 
@@ -3507,16 +3567,18 @@ struct CudaJ2KEncoderImpl
     }
 
     void upload_colour_params(GpuColourParams const& p) {
-        if (!d_lut_in)  cudaMalloc(&d_lut_in,  4096 * sizeof(__half));  /* V55: was float (16KB→8KB) */
-        if (!d_lut_out) cudaMalloc(&d_lut_out, 4096 * sizeof(uint16_t));  /* V48: was int32_t */
-        if (!d_matrix)  cudaMalloc(&d_matrix,  9    * sizeof(float));
+        if (!d_lut_in)     cudaMalloc(&d_lut_in,     4096 * sizeof(__half));
+        if (!d_lut_in_f32) cudaMalloc(&d_lut_in_f32, 4096 * sizeof(float));  /* V127: full-precision for XYZ */
+        if (!d_lut_out)    cudaMalloc(&d_lut_out,    4096 * sizeof(uint16_t));
+        if (!d_matrix)     cudaMalloc(&d_matrix,     9    * sizeof(float));
 
         /* V55: convert float→__half before upload; host array stays float for precision */
         __half h_lut_in_tmp[4096];
         for (int i = 0; i < 4096; ++i) h_lut_in_tmp[i] = __float2half(p.lut_in[i]);
-        cudaMemcpy(d_lut_in,  h_lut_in_tmp, 4096 * sizeof(__half),    cudaMemcpyHostToDevice);
-        cudaMemcpy(d_lut_out, p.lut_out, 4096 * sizeof(uint16_t), cudaMemcpyHostToDevice);  /* V48 */
-        cudaMemcpy(d_matrix,  p.matrix,  9    * sizeof(float),   cudaMemcpyHostToDevice);
+        cudaMemcpy(d_lut_in,     h_lut_in_tmp, 4096 * sizeof(__half),    cudaMemcpyHostToDevice);
+        cudaMemcpy(d_lut_in_f32, p.lut_in,     4096 * sizeof(float),     cudaMemcpyHostToDevice);  /* V127 */
+        cudaMemcpy(d_lut_out,    p.lut_out,    4096 * sizeof(uint16_t),  cudaMemcpyHostToDevice);
+        cudaMemcpy(d_matrix,     p.matrix,     9    * sizeof(float),     cudaMemcpyHostToDevice);
         colour_loaded = true;
     }
 
@@ -4485,6 +4547,68 @@ CudaJ2KEncoder::flush()
         _impl->h_packed_pinned[_impl->cur_buf]);
     _impl->pipeline_active = false;
     return result;
+}
+
+
+/**
+ * V127: GPU-accelerated RGB48→XYZ12 conversion.
+ * Returns 3 planar int32 arrays (12-bit XYZ, 0-4095) compatible with OpenJPEGImage.
+ * xyz_out must be pre-allocated: 3 * width * height * sizeof(int32_t).
+ * Layout: xyz_out[0..pixels-1] = X, xyz_out[pixels..2*pixels-1] = Y, xyz_out[2*pixels..3*pixels-1] = Z.
+ */
+bool
+CudaJ2KEncoder::gpu_rgb_to_xyz(
+    const uint16_t* rgb16,
+    int width,
+    int height,
+    int rgb_stride_pixels,
+    int32_t* xyz_out)
+{
+    if (!_initialized || !_colour_params_valid) return false;
+
+    size_t pixels = static_cast<size_t>(width) * height;
+    size_t rgb_bytes = static_cast<size_t>(height) * rgb_stride_pixels * sizeof(uint16_t);
+
+    /* Ensure device buffers */
+    if (pixels > _impl->xyz_buf_pixels) {
+        if (_impl->d_rgb16_xyz) cudaFree(_impl->d_rgb16_xyz);
+        for (int c = 0; c < 3; ++c)
+            if (_impl->d_xyz[c]) { cudaFree(_impl->d_xyz[c]); _impl->d_xyz[c] = nullptr; }
+        if (_impl->h_xyz_pinned) cudaFreeHost(_impl->h_xyz_pinned);
+
+        cudaMalloc(&_impl->d_rgb16_xyz, rgb_bytes);
+        for (int c = 0; c < 3; ++c)
+            cudaMalloc(&_impl->d_xyz[c], pixels * sizeof(int32_t));
+        cudaHostAlloc(&_impl->h_xyz_pinned, 3 * pixels * sizeof(int32_t), cudaHostAllocDefault);
+        _impl->xyz_buf_pixels = pixels;
+    }
+
+    /* H2D: upload RGB48LE to GPU */
+    cudaMemcpy(_impl->d_rgb16_xyz, rgb16, rgb_bytes, cudaMemcpyHostToDevice);
+
+    /* Launch conversion kernel */
+    int threads = 256;
+    int blocks = (static_cast<int>(pixels) + threads - 1) / threads;
+    kernel_rgb48_to_xyz12_planar<<<blocks, threads, 0, _impl->stream[0]>>>(
+        _impl->d_rgb16_xyz,
+        _impl->d_lut_in_f32,
+        _impl->d_lut_out,
+        _impl->d_matrix,
+        _impl->d_xyz[0], _impl->d_xyz[1], _impl->d_xyz[2],
+        width, height, rgb_stride_pixels);
+
+    /* D2H: download XYZ planes */
+    for (int c = 0; c < 3; ++c) {
+        cudaMemcpyAsync(_impl->h_xyz_pinned + c * pixels,
+                        _impl->d_xyz[c],
+                        pixels * sizeof(int32_t),
+                        cudaMemcpyDeviceToHost, _impl->stream[0]);
+    }
+    cudaStreamSynchronize(_impl->stream[0]);
+
+    /* Copy to output */
+    memcpy(xyz_out, _impl->h_xyz_pinned, 3 * pixels * sizeof(int32_t));
+    return true;
 }
 
 

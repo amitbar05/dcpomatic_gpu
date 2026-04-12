@@ -19,6 +19,7 @@
 
 
 #include "nvjpeg_j2k_encoder_thread.h"
+#include "config.h"
 #include "cross.h"
 #include "dcpomatic_log.h"
 #include "dcp_video.h"
@@ -26,9 +27,9 @@
 #include "player_video.h"
 #include "image.h"
 #include "util.h"
+#include <dcp/j2k_transcode.h>
 #include <dcp/openjpeg_image.h>
 #include <dcp/rgb_xyz.h>
-#include <optional>
 
 #include "i18n.h"
 
@@ -45,60 +46,7 @@ NvjpegJ2KEncoderThread::NvjpegJ2KEncoderThread(J2KEncoder& encoder, shared_ptr<C
 }
 
 
-/**
- * V41: Pipelined run() — overlaps CPU memcpy with GPU compute for ~60% throughput gain.
- * encode(frame_N) launches GPU graph for frame_N and returns frame_{N-1}'s codestream.
- * flush() called after thread interruption collects the last in-flight frame.
- */
-void
-NvjpegJ2KEncoderThread::run()
-try
-{
-	log_thread_start();
-
-	_pending.reset();
-
-	while (true) {
-		if (auto wait = backoff()) {
-			LOG_ERROR(N_("Encoder thread sleeping (due to backoff) for {}s"), wait);
-			boost::this_thread::sleep(boost::posix_time::seconds(wait));
-		}
-
-		LOG_TIMING("encoder-sleep thread={}", thread_id());
-		auto frame = _encoder.pop();
-		LOG_TIMING("encoder-pop thread={} frame={} eyes={}",
-		           thread_id(), frame.index(), static_cast<int>(frame.eyes()));
-
-		auto encoded = encode(frame);
-
-		if (_pending) {
-			if (encoded) {
-				boost::this_thread::disable_interruption dis;
-				_encoder.write(encoded, _pending->index(), _pending->eyes());
-			} else {
-				boost::this_thread::disable_interruption dis;
-				_encoder.retry(*_pending);
-			}
-		}
-		_pending = frame;
-	}
-} catch (boost::thread_interrupted&) {
-	if (_pending) {
-		auto last = _cuda_j2k->flush();
-		if (!last.empty()) {
-			auto result = make_shared<dcp::ArrayData>(last.size());
-			memcpy(result->data(), last.data(), last.size());
-			boost::this_thread::disable_interruption dis;
-			_encoder.write(result, _pending->index(), _pending->eyes());
-		} else {
-			boost::this_thread::disable_interruption dis;
-			_encoder.retry(*_pending);
-		}
-	}
-} catch (...) {
-	store_current();
-}
-
+/* V127: Use parent J2KSyncEncoderThread::run() — hybrid GPU+OpenJPEG encoding is synchronous. */
 
 void
 NvjpegJ2KEncoderThread::log_thread_start() const
@@ -147,8 +95,7 @@ shared_ptr<dcp::ArrayData>
 NvjpegJ2KEncoderThread::encode(DCPVideo const& frame)
 {
 	try {
-		/* On first frame (or if colour params not yet uploaded), extract
-		   colour conversion params and upload LUT+matrix to GPU. */
+		/* On first frame, extract colour conversion params and upload to GPU. */
 		if (!_cuda_j2k->has_colour_params()) {
 			auto const& colour_conv = frame.frame()->colour_conversion();
 			if (colour_conv) {
@@ -157,55 +104,67 @@ NvjpegJ2KEncoderThread::encode(DCPVideo const& frame)
 			}
 		}
 
-		std::vector<uint8_t> encoded;
+		auto const comment = Config::instance()->dcp_j2k_comment();
 
 		if (_cuda_j2k->has_colour_params()) {
-			/* V18 path: get raw RGB48LE and do colour conversion on GPU */
+			/* V127: Hybrid GPU+OpenJPEG path:
+			 *   GPU: RGB48LE → XYZ12 (fast color conversion)
+			 *   CPU: XYZ12 → J2K via OpenJPEG (proper EBCOT encoding)
+			 * This produces identical quality to the CPU path. */
 			auto image = frame.frame()->image(
 				[](AVPixelFormat) { return AV_PIX_FMT_RGB48LE; },
 				VideoRange::FULL,
 				false
 			);
 			auto size = image->size();
-			/* stride()[0] is in bytes; divide by sizeof(uint16_t) to get uint16_t stride */
 			int rgb_stride = image->stride()[0] / static_cast<int>(sizeof(uint16_t));
+			int pixels = size.width * size.height;
 
-			encoded = _cuda_j2k->encode_from_rgb48(
+			/* GPU color conversion */
+			std::vector<int32_t> xyz_buf(3 * pixels);
+			bool ok = _cuda_j2k->gpu_rgb_to_xyz(
 				reinterpret_cast<const uint16_t*>(image->data()[0]),
-				size.width,
-				size.height,
-				rgb_stride,
+				size.width, size.height, rgb_stride,
+				xyz_buf.data()
+			);
+			if (!ok) {
+				LOG_ERROR(N_("GPU RGB→XYZ conversion failed, falling back to CPU"));
+				goto cpu_fallback;
+			}
+
+			/* Build OpenJPEGImage from GPU-computed XYZ planes */
+			auto xyz = make_shared<dcp::OpenJPEGImage>(size);
+			memcpy(xyz->data(0), xyz_buf.data(),              pixels * sizeof(int32_t));
+			memcpy(xyz->data(1), xyz_buf.data() + pixels,     pixels * sizeof(int32_t));
+			memcpy(xyz->data(2), xyz_buf.data() + 2 * pixels, pixels * sizeof(int32_t));
+
+			/* OpenJPEG J2K encoding (proper EBCOT — identical quality to CPU path) */
+			auto enc = dcp::compress_j2k(
+				xyz,
 				frame.video_bit_rate(),
 				frame.frames_per_second(),
 				frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
-				frame.is_4k()
+				frame.is_4k(),
+				comment.empty() ? "libdcp" : comment
 			);
-		} else {
-			/* Fallback: CPU colour conversion (V17 path) */
-			auto xyz = DCPVideo::convert_to_xyz(frame.frame());
-			auto size = xyz->size();
-			const int32_t* planes[3] = {
-				xyz->data(0),
-				xyz->data(1),
-				xyz->data(2)
-			};
-			encoded = _cuda_j2k->encode(
-				planes,
-				size.width,
-				size.height,
-				frame.video_bit_rate(),
-				frame.frames_per_second(),
-				frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
-				frame.is_4k()
-			);
+
+			return make_shared<dcp::ArrayData>(enc);
 		}
 
-		/* V41: empty on first pipelined call is expected (no previous frame ready). */
-		if (encoded.empty()) return {};
-
-		auto result = make_shared<dcp::ArrayData>(encoded.size());
-		memcpy(result->data(), encoded.data(), encoded.size());
-		return result;
+	cpu_fallback:
+		{
+			/* Fallback: full CPU path (colour conversion + J2K encoding) */
+			auto xyz = DCPVideo::convert_to_xyz(frame.frame());
+			auto enc = dcp::compress_j2k(
+				xyz,
+				frame.video_bit_rate(),
+				frame.frames_per_second(),
+				frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
+				frame.is_4k(),
+				comment.empty() ? "libdcp" : comment
+			);
+			return make_shared<dcp::ArrayData>(enc);
+		}
 
 	} catch (std::exception& e) {
 		LOG_ERROR(N_("CUDA J2K GPU encode failed ({})"), e.what());
