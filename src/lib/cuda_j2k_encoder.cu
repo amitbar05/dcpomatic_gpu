@@ -2445,19 +2445,20 @@ void kernel_quantize_subband_ml(
      * L1 rows: 1 zone. L2: 2 zones. L3: 3 zones. L4: 4 zones. L5: 5 zones. DC: 6 zones.
      */
     auto vq8 = [row_src, row_dst](int col_start, int col_end, float inv, int nt) {
-        /* V98: 2×int2 __ldg (ld.global.b64) instead of 4×__half2 __ldg (ld.global.b32).
-         * int2 at row_src+c: byte offset c*2; c always multiple of 8 → 16-byte aligned → valid.
-         * V100: uint2 store for aligned zones: row_dst+c is 8-byte aligned when col_start%8==0.
-         * Branch is loop-invariant (col_start fixed per call) → compiler hoists outside loop.
-         * Aligned: st.global.v2.b32 (1 instr) vs unaligned 2×st.global.b32 (2 instrs).
-         * V100: #pragma unroll 2 — 4K L1: 2 iters fully inlined; 2K: 1 iter (no bloat). */
-        const bool vec_store = (col_start & 7) == 0;
+        /* V125: Use 4-byte (__half2) loads — int2 (8-byte) loads are misaligned on odd rows
+         * because stride=1998 → row byte offset=row*3996 (3996%8=4). */
         #pragma unroll 2
         for (int c = col_start + threadIdx.x * 8; c + 7 < col_end; c += nt * 8) {
-            const int2* p2 = reinterpret_cast<const int2*>(
-                reinterpret_cast<const __half2*>(row_src) + c / 2);
-            int2 r01 = __ldg(p2);     /* 8 bytes = hv0 + hv1 */
-            int2 r23 = __ldg(p2 + 1); /* 8 bytes = hv2 + hv3 */
+            const __half2* hp = reinterpret_cast<const __half2*>(row_src) + c / 2;
+            __half2 hv0_raw = __ldg(hp);
+            __half2 hv1_raw = __ldg(hp + 1);
+            __half2 hv2_raw = __ldg(hp + 2);
+            __half2 hv3_raw = __ldg(hp + 3);
+            int2 r01, r23;
+            __builtin_memcpy(&r01.x, &hv0_raw, 4);
+            __builtin_memcpy(&r01.y, &hv1_raw, 4);
+            __builtin_memcpy(&r23.x, &hv2_raw, 4);
+            __builtin_memcpy(&r23.y, &hv3_raw, 4);
             /* V103: Sign extraction via __byte_perm on raw int2 loads.
              * IEEE 754 half-float: sign bit = bit 15 = byte-index 1 of the 16-bit value.
              * r01.x layout: hv0.x in bits[15:0], hv0.y in bits[31:16].
@@ -2495,14 +2496,9 @@ void kernel_quantize_subband_ml(
             /* Pack magnitudes (≤126, safe in bits[6:0]) then OR in sign bits (bit 7 each byte). */
             const uint32_t lo = lo_signs | (uint32_t(min(aq0,126)) | (uint32_t(min(aq1,126))<<8) | (uint32_t(min(aq2,126))<<16) | (uint32_t(min(aq3,126))<<24));
             const uint32_t hi = hi_signs | (uint32_t(min(aq4,126)) | (uint32_t(min(aq5,126))<<8) | (uint32_t(min(aq6,126))<<16) | (uint32_t(min(aq7,126))<<24));
-            if (vec_store) {
-                /* V100: single uint2 store (st.global.v2.b32) — halves store instruction count. */
-                *reinterpret_cast<uint2*>(row_dst + c) = uint2{lo, hi};
-            } else {
-                /* Unaligned fallback (2K DC zone 2: col_start=60, ~0.5% of work). */
-                *reinterpret_cast<uint32_t*>(row_dst + c)     = lo;
-                *reinterpret_cast<uint32_t*>(row_dst + c + 4) = hi;
-            }
+            /* V126: memcpy stores — stride=1998 makes odd-row addresses only 2-byte aligned. */
+            __builtin_memcpy(row_dst + c,     &lo, 4);
+            __builtin_memcpy(row_dst + c + 4, &hi, 4);
         }
         /* vq4 tail: handles residual elements when zone width % 8 != 0.
          * Only occurs for 2K DC rows (ll5_c=60, 60%8=4 → 4 tail elements per small zone).
@@ -2524,9 +2520,10 @@ void kernel_quantize_subband_ml(
             int aq1 = __float2int_rn(__half2float(hv0.y) * inv);
             int aq2 = __float2int_rn(__half2float(hv1.x) * inv);
             int aq3 = __float2int_rn(__half2float(hv1.y) * inv);
-            *reinterpret_cast<uint32_t*>(row_dst + c) = signs |
+            { uint32_t packed = signs |
                 (uint32_t(min(126,aq0)) | (uint32_t(min(126,aq1))<<8)
                 | (uint32_t(min(126,aq2))<<16) | (uint32_t(min(126,aq3))<<24));
+              __builtin_memcpy(row_dst + c, &packed, 4); }
         }
     };
 
@@ -3426,11 +3423,13 @@ struct CudaJ2KEncoderImpl
 
         cleanup_dwt_buffers();
 
-        /* V125: +16 bytes padding prevents OOB in kernel_fused_vert_dwt_tiled_ho_2col:
-         * int (4-byte) __ldg at the last 2 columns reads 2 bytes past the allocation. */
+        /* V126: generous padding — V-DWT tiled kernel reads up to V_TILE_FL rows past
+         * the last valid tile, and int __ldg reads 2 extra bytes at row ends.
+         * Padding = stride * V_OVERLAP * sizeof(__half) + 64 to cover worst-case overshoot. */
+        size_t pad = static_cast<size_t>(width) * 8 * sizeof(__half) + 64;
         for (int c = 0; c < 3; ++c) {
-            cudaMalloc(&d_a[c],  pixels * sizeof(__half) + 16);  /* V36: half V-DWT output */
-            cudaMalloc(&d_b[c],  pixels * sizeof(__half) + 16);  /* V26: half H-DWT output */
+            cudaMalloc(&d_a[c],  pixels * sizeof(__half) + pad);
+            cudaMalloc(&d_b[c],  pixels * sizeof(__half) + pad);
             cudaMalloc(&d_in[c], pixels * sizeof(int32_t)); /* used by non-RGB encode() path */
             /* V30: d_half[c] workspace removed — V29 tiled kernel no longer uses it */
         }
