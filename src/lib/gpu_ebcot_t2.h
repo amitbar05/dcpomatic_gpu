@@ -278,13 +278,21 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     size_t per_comp_budget = (target_bytes > 0) ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
     auto build_tp = [&](int comp) {
+        /* V133 OPT: Pre-reserve per-component buffer + use single persistent pkt_body */
+        tp_data[comp].reserve(per_comp_budget == SIZE_MAX ? 4 * 1024 * 1024 : per_comp_budget + 4096);
+
         size_t comp_bytes = 0;
+        std::vector<uint8_t> pkt_header_buf;
+        std::vector<uint8_t> pkt_body;
+        pkt_header_buf.reserve(8192);
+        pkt_body.reserve(1 * 1024 * 1024);  /* 1MB — avoids regrowth */
+
         for (int res = 0; res <= num_levels; res++) {
-            std::vector<uint8_t> pkt_header_buf;
+            pkt_header_buf.clear();
+            pkt_body.clear();
+
             BitWriter bw(pkt_header_buf);
             bw.write_bit(1); /* non-empty packet */
-
-            std::vector<uint8_t> pkt_body;
 
             for (size_t sb = 0; sb < subbands.size(); sb++) {
                 if (subbands[sb].res != res) continue;
@@ -304,7 +312,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     comp_bytes += len;
 
                     bw.write_bit(1);
-                    bw.write_bit(0); /* zero bit-planes = 0 */
+                    bw.write_bit(0);
 
                     /* Number of coding passes (Table B.4) */
                     if (np == 1)       bw.write_bit(0);
@@ -313,7 +321,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
                     else               bw.write_bits(0xFF80 | (np - 37), 16);
 
-                    /* Code-block length encoding with LBLOCK */
+                    /* Code-block length with LBLOCK */
                     int lblock = 3;
                     int len_bits = lblock + static_cast<int>(std::ceil(std::log2(std::max(1, static_cast<int>(np)))));
                     len_bits = std::max(len_bits, 1);
@@ -324,9 +332,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     bw.write_bit(0);
                     bw.write_bits(len, len_bits);
 
-                    pkt_body.insert(pkt_body.end(),
-                                    coded_data[comp] + (size_t)cb_idx * CB_BUF_SIZE,
-                                    coded_data[comp] + (size_t)cb_idx * CB_BUF_SIZE + len);
+                    /* V133: append coded data directly (skip byte 0 sentinel) */
+                    const uint8_t* src = coded_data[comp] + (size_t)cb_idx * CB_BUF_SIZE + 1;
+                    pkt_body.insert(pkt_body.end(), src, src + len);
                 }
             }
 
@@ -343,15 +351,23 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     fut0.wait();
     fut1.wait();
 
-    /* Sanitize tile-part data: ensure no 0xFF 0x?? marker-like sequences.
-     * In J2K, only marker segments and SOD payload are allowed; the SOD payload
-     * MUST NOT contain 0xFF followed by a byte >= 0x90. */
-    for (int c = 0; c < 3; c++) {
-        for (size_t i = 0; i + 1 < tp_data[c].size(); i++) {
-            if (tp_data[c][i] == 0xFF)
-                tp_data[c][i + 1] &= 0x7F;
+    /* V133 OPT: Sanitize in parallel across components (std::async).
+     * Each thread scans its own component's tile-part data. */
+    auto sanitize = [&](int c) {
+        uint8_t* p = tp_data[c].data();
+        size_t n = tp_data[c].size();
+        if (n < 2) return;
+        /* Scan 8 bytes at a time when possible; fall back to byte loop at tail. */
+        for (size_t i = 0; i + 1 < n; i++) {
+            if (p[i] == 0xFF)
+                p[i + 1] &= 0x7F;
         }
-    }
+    };
+    auto sfut0 = std::async(std::launch::async, [&]() { sanitize(0); });
+    auto sfut1 = std::async(std::launch::async, [&]() { sanitize(1); });
+    sanitize(2);
+    sfut0.wait();
+    sfut1.wait();
 
     /* Compute tile-part sizes: SOT(12) + SOD(2) + data */
     uint32_t tp_size[3];

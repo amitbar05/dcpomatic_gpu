@@ -624,31 +624,24 @@ __global__ __launch_bounds__(128, 8) void kernel_ebcot_t1(
     /* 5. MQ flush */
     mq_flush(&mq);
 
-    /* Coded data starts at buf[1] (buf[0] is sentinel).
-     * Length = bp - start; the data to include in packet is start[1..bp]. */
+    /* V133 OPT: No byte shift — T2 will read starting at buf[1] (skip sentinel byte).
+     * This eliminates the per-CB byte-by-byte copy (up to 2KB/CB × 7500 CBs = 15MB/frame). */
     int coded_len = static_cast<int>(mq.bp - mq.start);
     if (coded_len < 0) coded_len = 0;
     if (coded_len > CB_BUF_SIZE - 1) coded_len = CB_BUF_SIZE - 1;
 
-    /* Shift data: move buf[1..coded_len] to buf[0..coded_len-1] so T2 reads from offset 0. */
-    for (int i = 0; i < coded_len; i++)
-        out_buf[i] = out_buf[i + 1];
-
-    /* Safety: enforce J2K byte-stuffing rule — after 0xFF, next byte must have bit 7 = 0.
-     * Fix violations by clearing MSB of the byte following any 0xFF. This preserves
-     * the data (with minor quality loss) rather than truncating. */
-    for (int i = 0; i < coded_len - 1; i++) {
-        if (out_buf[i] == 0xFF) {
-            out_buf[i + 1] &= 0x7F;  /* clear MSB — ensures < 0x80, well below 0x90 */
-        }
+    /* Byte-stuffing safety: scan starting at buf[1] (actual coded data start).
+     * Combined with length trim if last byte is 0xFF. */
+    for (int i = 1; i < coded_len; i++) {
+        if (out_buf[i] == 0xFF && i + 1 <= coded_len)
+            out_buf[i + 1] &= 0x7F;
     }
-    /* Also ensure last byte is not 0xFF (would be ambiguous) */
-    while (coded_len > 0 && out_buf[coded_len - 1] == 0xFF)
+    while (coded_len > 0 && out_buf[coded_len] == 0xFF)
         coded_len--;
 
     d_coded_len[cb_idx] = static_cast<uint16_t>(coded_len);
     d_num_passes[cb_idx] = static_cast<uint8_t>(total_passes);
-    /* Update all pass lengths to exclude sentinel byte and respect truncation */
+    /* Pass lengths unchanged (still relative to buf[1..coded_len]) */
     for (int p = 0; p < total_passes; p++) {
         int pl = (pass_lens[p] > 0) ? (pass_lens[p] - 1) : 0;
         pass_lens[p] = static_cast<uint16_t>(min(pl, coded_len));
