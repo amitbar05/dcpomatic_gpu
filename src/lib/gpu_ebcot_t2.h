@@ -15,6 +15,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <future>
 
 /* J2K marker constants */
 static constexpr uint16_t J2K_SOC_M = 0xFF4F;
@@ -271,11 +272,12 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
     /* Build 3 tile-parts (one per component) — required by DCI Bv2.1.
      * CPRL order: for each component, iterate resolution levels.
-     * Simple rate control: limit each component to target_bytes/3. */
-    std::vector<uint8_t> tp_data[3]; /* payload for each tile-part */
+     * Simple rate control: limit each component to target_bytes/3.
+     * OPTIMIZATION: Parallelize per-component tile-part generation. */
+    std::vector<uint8_t> tp_data[3];
     size_t per_comp_budget = (target_bytes > 0) ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
-    for (int comp = 0; comp < 3; comp++) {
+    auto build_tp = [&](int comp) {
         size_t comp_bytes = 0;
         for (int res = 0; res <= num_levels; res++) {
             std::vector<uint8_t> pkt_header_buf;
@@ -332,7 +334,14 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             tp_data[comp].insert(tp_data[comp].end(), pkt_header_buf.begin(), pkt_header_buf.end());
             tp_data[comp].insert(tp_data[comp].end(), pkt_body.begin(), pkt_body.end());
         }
-    }
+    }; /* end lambda build_tp */
+
+    /* Run 3 tile-part builds in parallel (comp 0/1 async, comp 2 on main thread) */
+    auto fut0 = std::async(std::launch::async, [&]() { build_tp(0); });
+    auto fut1 = std::async(std::launch::async, [&]() { build_tp(1); });
+    build_tp(2);
+    fut0.wait();
+    fut1.wait();
 
     /* Sanitize tile-part data: ensure no 0xFF 0x?? marker-like sequences.
      * In J2K, only marker segments and SOD payload are allowed; the SOD payload

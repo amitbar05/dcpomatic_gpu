@@ -502,23 +502,17 @@ __global__ __launch_bounds__(32, 8) void kernel_ebcot_t1(
 
         /* --- Significance Propagation Pass (SPP) — skip for first bit-plane --- */
         if (!first_bp) {
-        /* OPTIMIZATION D: Skip SPP entirely if no coefficient is significant yet.
-         * SPP only propagates to neighbors of significant coefficients. */
         if (any_significant) {
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
             for (int c = 0; c < cbw; c++) {
-                uint32_t cmask_pad = 1u << (c + 1);  /* padded column mask */
+                uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
                 for (int r = stripe_y; r < stripe_end; r++) {
-                    /* Already significant? skip */
                     if (sigma_pad[r + 1] & cmask_pad) continue;
-
-                    /* OPTIMIZATION A: Bitwise neighbor check — no bounds checks, no function calls */
                     if (!has_sig_neighbor(sigma_pad, r, c)) continue;
 
                     int bit = (mag[r * cbw + c] >> bp) & 1;
-                    /* OPTIMIZATION B: LUT-based zero context — eliminates switch + 8 sig_bit calls */
                     int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                     mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
 
@@ -532,7 +526,7 @@ __global__ __launch_bounds__(32, 8) void kernel_ebcot_t1(
                 }
             }
         }
-        } /* end any_significant guard */
+        }
         pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
         } /* end SPP */
 
