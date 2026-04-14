@@ -4736,7 +4736,7 @@ CudaJ2KEncoder::encode_ebcot(
 
     /* Step 5: Launch EBCOT T1 kernel per component */
     int num_cbs = _impl->ebcot_num_cbs;
-    constexpr int EBCOT_THREADS = 32; /* 1 warp per block — minimizes local mem pressure per SM */
+    constexpr int EBCOT_THREADS = 128; /* 4 warps per block */
     int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
     for (int c = 0; c < 3; ++c) {
@@ -4762,8 +4762,7 @@ CudaJ2KEncoder::encode_ebcot(
                         num_cbs * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
         cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
                         num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
-                        (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        /* V132: pass_lengths not used by T2 (single-layer CPRL) — skip D2H */
     }
 
     for (int c = 0; c < 3; ++c)

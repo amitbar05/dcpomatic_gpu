@@ -26,7 +26,7 @@ static constexpr int CB_PIXELS   = CB_DIM * CB_DIM;  /* 1024 */
 static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
 static constexpr int MAX_BPLANES = 16;   /* max bit-planes for 12-bit + guard */
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
-static constexpr int CB_BUF_SIZE = 4096; /* max coded bytes per code-block (32×32 × ~3 bytes avg) */
+static constexpr int CB_BUF_SIZE = 2048; /* max coded bytes per code-block — ~avg 500 bytes at 150Mbps */
 
 /* Subband types */
 static constexpr int SUBBAND_LL = 0;
@@ -402,7 +402,7 @@ struct CodeBlockInfo {
 
 /* ===== EBCOT T1 Kernel: one code-block per thread ===== */
 
-__global__ __launch_bounds__(32, 8) void kernel_ebcot_t1(
+__global__ __launch_bounds__(128, 8) void kernel_ebcot_t1(
     const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
     int dwt_stride,                      /* row stride of DWT array (= image width) */
     const CodeBlockInfo* __restrict__ d_cb_info,  /* code-block metadata */
