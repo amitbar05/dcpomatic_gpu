@@ -4697,9 +4697,10 @@ CudaJ2KEncoder::encode_ebcot(
         }
     }
 
-    /* Sync DWT completion */
-    for (int c = 0; c < 3; ++c)
-        cudaStreamSynchronize(_impl->stream[c]);
+    /* V136: drop the unconditional DWT→T1 sync.
+     * T1 is launched on the same stream[c] as DWT, so the intra-stream
+     * ordering is automatic. We only need to sync if we're about to do
+     * CPU-side work that modifies the CB table (step 4). */
     tmark("DWT");
 
     /* Step 4: Build code-block table if needed */
@@ -4766,9 +4767,9 @@ CudaJ2KEncoder::encode_ebcot(
             _impl->d_ebcot_passlens[c]);
     }
 
-    /* Sync EBCOT T1 */
-    for (int c = 0; c < 3; ++c)
-        cudaStreamSynchronize(_impl->stream[c]);
+    /* V136: drop the T1→D2H sync. D2H is cudaMemcpyAsync on the same
+     * stream[c] as T1, so intra-stream ordering handles it automatically.
+     * Only one final sync is needed after the D2H batch. */
     tmark("EBCOT_T1");
 
     /* Step 6: D2H transfer of coded data — only transfer actual lengths, not full CB_BUF_SIZE */

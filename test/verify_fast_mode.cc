@@ -108,22 +108,28 @@ int main()
 
     /* Warmup: first frame pays GPU buffer init cost. */
     (void) enc.encode_ebcot(rgb.data(), W, H, W * 3, BITRATE, FPS, false, false, false);
+    (void) enc.encode_ebcot(rgb.data(), W, H, W * 3, BITRATE, FPS, false, false, true);
 
-    /* Correct / verifiable path. */
+    /* Correct / verifiable path (average over N frames). */
+    const int N = 10;
     auto t0 = Clock::now();
-    auto cs_correct = enc.encode_ebcot(rgb.data(), W, H, W * 3,
-                                        BITRATE, FPS, false, false, /*fast_mode=*/false);
+    std::vector<uint8_t> cs_correct;
+    for (int i = 0; i < N; ++i)
+        cs_correct = enc.encode_ebcot(rgb.data(), W, H, W * 3,
+                                       BITRATE, FPS, false, false, /*fast_mode=*/false);
     auto t1 = Clock::now();
     bool ok_correct = is_valid_j2k(cs_correct, "correct/verifiable");
 
     auto t2 = Clock::now();
-    auto cs_fast = enc.encode_ebcot(rgb.data(), W, H, W * 3,
-                                     BITRATE, FPS, false, false, /*fast_mode=*/true);
+    std::vector<uint8_t> cs_fast;
+    for (int i = 0; i < N; ++i)
+        cs_fast = enc.encode_ebcot(rgb.data(), W, H, W * 3,
+                                    BITRATE, FPS, false, false, /*fast_mode=*/true);
     auto t3 = Clock::now();
     bool ok_fast = is_valid_j2k(cs_fast, "fast/lossy     ");
 
-    double ms_correct = duration_cast<microseconds>(t1 - t0).count() / 1000.0;
-    double ms_fast    = duration_cast<microseconds>(t3 - t2).count() / 1000.0;
+    double ms_correct = duration_cast<microseconds>(t1 - t0).count() / 1000.0 / N;
+    double ms_fast    = duration_cast<microseconds>(t3 - t2).count() / 1000.0 / N;
 
     std::cout << "\nTiming:\n";
     std::cout << "  correct/verifiable: " << ms_correct << " ms, "
