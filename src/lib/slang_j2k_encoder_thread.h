@@ -40,13 +40,14 @@
 class SlangJ2KEncoderThread : public J2KSyncEncoderThread
 {
 public:
-	SlangJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<SlangJ2KEncoder> slang_j2k);
+	SlangJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<SlangJ2KEncoder> slang_j2k, bool fast_mode = false);
 
 	void log_thread_start() const override;
 	std::shared_ptr<dcp::ArrayData> encode(DCPVideo const& frame) override;
 
 private:
 	std::shared_ptr<SlangJ2KEncoder> _slang_j2k;
+	bool _fast_mode;
 };
 
 

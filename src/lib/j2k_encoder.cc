@@ -96,7 +96,7 @@ grk_plugin::IMessengerLogger* getMessengerLogger(void)
 /** @param film Film that we are encoding.
  *  @param writer Writer that we are using.
  */
-J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer, bool use_nvjpeg_gpu)
+J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer, bool use_nvjpeg_gpu, bool gpu_fast_export)
 	: VideoEncoder(film, writer)
 	, _waker(Waker::Reason::ENCODING)
 #ifdef DCPOMATIC_GROK
@@ -112,6 +112,7 @@ J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer, bool use_nvj
 #endif
 #ifdef DCPOMATIC_NVJPEG
 	_use_nvjpeg_gpu = use_nvjpeg_gpu;
+	_gpu_fast_export = gpu_fast_export;
 	if (_use_nvjpeg_gpu) {
 		_cuda_j2k_encoder = cuda_j2k_encoder_instance();
 		if (!_cuda_j2k_encoder->is_initialized()) {
@@ -121,6 +122,7 @@ J2KEncoder::J2KEncoder(shared_ptr<const Film> film, Writer& writer, bool use_nvj
 	}
 #else
 	(void) use_nvjpeg_gpu;
+	(void) gpu_fast_export;
 #endif
 }
 
@@ -472,7 +474,7 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 				LOG_ERROR_NC("Could not initialize per-thread CUDA J2K encoder");
 				break;
 			}
-			auto thread = make_shared<NvjpegJ2KEncoderThread>(*this, per_thread_encoder);
+			auto thread = make_shared<NvjpegJ2KEncoderThread>(*this, per_thread_encoder, _gpu_fast_export);
 			thread->start();
 			_threads.push_back(thread);
 		}
@@ -494,7 +496,7 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 				LOG_ERROR_NC("Could not initialize per-thread Slang J2K encoder");
 				break;
 			}
-			auto thread = make_shared<SlangJ2KEncoderThread>(*this, per_thread_encoder);
+			auto thread = make_shared<SlangJ2KEncoderThread>(*this, per_thread_encoder, _gpu_fast_export);
 			thread->start();
 			_threads.push_back(thread);
 		}

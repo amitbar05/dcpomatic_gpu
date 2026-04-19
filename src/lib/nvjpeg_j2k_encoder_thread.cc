@@ -38,9 +38,10 @@ using std::make_shared;
 using std::shared_ptr;
 
 
-NvjpegJ2KEncoderThread::NvjpegJ2KEncoderThread(J2KEncoder& encoder, shared_ptr<CudaJ2KEncoder> cuda_j2k)
+NvjpegJ2KEncoderThread::NvjpegJ2KEncoderThread(J2KEncoder& encoder, shared_ptr<CudaJ2KEncoder> cuda_j2k, bool fast_mode)
 	: J2KSyncEncoderThread(encoder)
 	, _cuda_j2k(cuda_j2k)
+	, _fast_mode(fast_mode)
 {
 
 }
@@ -124,7 +125,8 @@ NvjpegJ2KEncoderThread::encode(DCPVideo const& frame)
 				frame.video_bit_rate(),
 				frame.frames_per_second(),
 				frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
-				frame.is_4k()
+				frame.is_4k(),
+				_fast_mode
 			);
 
 			if (!encoded.empty()) {

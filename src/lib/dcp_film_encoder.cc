@@ -100,7 +100,7 @@ DCPFilmEncoder::go()
 
 	switch (_film->video_encoding()) {
 	case VideoEncoding::JPEG2000:
-		_encoder.reset(new J2KEncoder(_film, *_writer, _use_gpu));
+		_encoder.reset(new J2KEncoder(_film, *_writer, _use_gpu, _film->gpu_fast_export()));
 		break;
 	case VideoEncoding::MPEG2:
 		_encoder.reset(new MPEG2Encoder(_film, *_writer));

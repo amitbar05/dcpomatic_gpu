@@ -4640,9 +4640,20 @@ std::vector<uint8_t>
 CudaJ2KEncoder::encode_ebcot(
     const uint16_t* rgb16,
     int width, int height, int rgb_stride_pixels,
-    int64_t bit_rate, int fps, bool is_3d, bool is_4k)
+    int64_t bit_rate, int fps, bool is_3d, bool is_4k,
+    bool fast_mode)
 {
     if (!_initialized || !_colour_params_valid) return {};
+
+    /* V134: fast_mode quality knobs.
+     * - fast_step_mult: multiplies base_step → coarser quantization → more
+     *   zero coefficients → fewer significant bit-planes → fewer T1 passes
+     *   per code-block → faster EBCOT T1. Output remains standard J2K
+     *   because QCD markers are derived from the same step.
+     * - fast_bitrate_mult: target_bytes scaled down so T2 truncates earlier.
+     */
+    const float fast_step_mult    = fast_mode ? 2.5f : 1.0f;
+    const float fast_bitrate_mult = fast_mode ? 0.5f : 1.0f;
 
     auto tmark = [](const char*) {};
 
@@ -4689,10 +4700,11 @@ CudaJ2KEncoder::encode_ebcot(
     /* Step 4: Build code-block table if needed */
     int64_t frame_bits = bit_rate / fps;
     if (is_3d) frame_bits /= 2;
-    int64_t target_bytes = frame_bits / 8;
+    int64_t target_bytes = static_cast<int64_t>(
+        static_cast<double>(frame_bits / 8) * fast_bitrate_mult);
 
     float base_step = compute_base_step(width, height,
-        static_cast<size_t>(target_bytes / 3));
+        static_cast<size_t>(target_bytes / 3)) * fast_step_mult;
 
     if (_impl->ebcot_cb_table.empty() || _impl->ebcot_cb_table[0].quant_step != base_step) {
         build_codeblock_table(width, height, stride, num_levels, base_step, is_4k,

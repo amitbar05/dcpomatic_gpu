@@ -488,6 +488,9 @@ DCPPanel::film_changed(FilmProperty p)
 	case FilmProperty::REENCODE_J2K:
 		checked_set(_reencode_j2k, _film->reencode_j2k());
 		break;
+	case FilmProperty::GPU_FAST_EXPORT:
+		checked_set(_gpu_fast_export, _film->gpu_fast_export());
+		break;
 	case FilmProperty::INTEROP:
 		update_standards();
 		set_standard();
@@ -682,6 +685,7 @@ DCPPanel::set_film(shared_ptr<Film> film)
 	film_changed(FilmProperty::REEL_TYPE);
 	film_changed(FilmProperty::REEL_LENGTH);
 	film_changed(FilmProperty::REENCODE_J2K);
+	film_changed(FilmProperty::GPU_FAST_EXPORT);
 	film_changed(FilmProperty::AUDIO_LANGUAGE);
 	film_changed(FilmProperty::AUDIO_FRAME_RATE);
 	film_changed(FilmProperty::LIMIT_TO_SMPTE_BV20);
@@ -738,6 +742,7 @@ DCPPanel::setup_sensitivity()
 	);
 
 	_reencode_j2k->Enable          (_generally_sensitive && _film);
+	_gpu_fast_export->Enable       (_generally_sensitive && _film);
 	_show_audio->Enable            (_generally_sensitive && _film);
 }
 
@@ -805,6 +810,17 @@ DCPPanel::reencode_j2k_changed()
 	}
 
 	_film->set_reencode_j2k(_reencode_j2k->GetValue());
+}
+
+
+void
+DCPPanel::gpu_fast_export_changed()
+{
+	if (!_film) {
+		return;
+	}
+
+	_film->set_gpu_fast_export(_gpu_fast_export->GetValue());
 }
 
 
@@ -877,6 +893,8 @@ DCPPanel::make_video_panel()
 	_mbits_label = create_label(panel, _("Mbit/s"), false);
 
 	_reencode_j2k = new CheckBox(panel, _("Re-encode JPEG2000 data from input"));
+	_gpu_fast_export = new CheckBox(panel, _("Fast GPU export (lower quality)"));
+	_gpu_fast_export->SetToolTip(_("When GPU encoding, use coarser quantization for faster export at the cost of visible quality loss."));
 
 	_container->Bind	(wxEVT_CHOICE,	  boost::bind(&DCPPanel::container_changed, this));
 	_frame_rate_choice->Bind(wxEVT_CHOICE,	  boost::bind(&DCPPanel::frame_rate_choice_changed, this));
@@ -888,6 +906,7 @@ DCPPanel::make_video_panel()
 	_resolution->Bind       (wxEVT_CHOICE,   boost::bind(&DCPPanel::resolution_changed, this));
 	_three_d->bind(&DCPPanel::three_d_changed, this);
 	_reencode_j2k->bind(&DCPPanel::reencode_j2k_changed, this);
+	_gpu_fast_export->bind(&DCPPanel::gpu_fast_export_changed, this);
 
 	for (auto i: Config::instance()->allowed_dcp_frame_rates()) {
 		_frame_rate_choice->add_entry(boost::lexical_cast<string>(i));
@@ -945,6 +964,8 @@ DCPPanel::add_video_panel_to_grid()
 	_video_grid->Add(s, wxGBPosition(r, 1), wxDefaultSpan);
 	++r;
 	_video_grid->Add(_reencode_j2k, wxGBPosition(r, 0), wxGBSpan(1, 2));
+	++r;
+	_video_grid->Add(_gpu_fast_export, wxGBPosition(r, 0), wxGBSpan(1, 2));
 }
 
 

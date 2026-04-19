@@ -72,7 +72,7 @@ struct frames_not_lost_when_threads_disappear;
 class J2KEncoder : public VideoEncoder, public ExceptionStore
 {
 public:
-	J2KEncoder(std::shared_ptr<const Film> film, Writer& writer, bool use_nvjpeg_gpu = false);
+	J2KEncoder(std::shared_ptr<const Film> film, Writer& writer, bool use_nvjpeg_gpu = false, bool gpu_fast_export = false);
 	~J2KEncoder();
 
 	J2KEncoder(J2KEncoder const&) = delete;
@@ -128,6 +128,7 @@ private:
 
 #ifdef DCPOMATIC_NVJPEG
 	bool _use_nvjpeg_gpu = false;
+	bool _gpu_fast_export = false;
 	std::shared_ptr<CudaJ2KEncoder> _cuda_j2k_encoder;
 #endif
 

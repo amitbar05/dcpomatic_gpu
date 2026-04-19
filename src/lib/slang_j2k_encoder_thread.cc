@@ -39,9 +39,11 @@ using std::shared_ptr;
 
 
 SlangJ2KEncoderThread::SlangJ2KEncoderThread(J2KEncoder& encoder,
-                                               shared_ptr<SlangJ2KEncoder> slang_j2k)
+                                               shared_ptr<SlangJ2KEncoder> slang_j2k,
+                                               bool fast_mode)
 	: J2KSyncEncoderThread(encoder)
 	, _slang_j2k(slang_j2k)
+	, _fast_mode(fast_mode)
 {
 }
 
@@ -90,12 +92,19 @@ SlangJ2KEncoderThread::encode(DCPVideo const& frame)
 {
 	try {
 		/* V127: Use CPU color conversion + OpenJPEG for proper J2K output.
-		 * The Slang GPU encoder is kept for potential future EBCOT implementation. */
+		 * The Slang GPU encoder is kept for potential future EBCOT implementation.
+		 *
+		 * V134: fast_mode halves the target bitrate. OpenJPEG truncates the
+		 * codestream earlier, producing smaller, visibly lossier frames faster. */
 		auto const comment = Config::instance()->dcp_j2k_comment();
 		auto xyz = DCPVideo::convert_to_xyz(frame.frame());
+		int64_t bit_rate = frame.video_bit_rate();
+		if (_fast_mode) {
+			bit_rate /= 2;
+		}
 		auto enc = dcp::compress_j2k(
 			xyz,
-			frame.video_bit_rate(),
+			bit_rate,
 			frame.frames_per_second(),
 			frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT,
 			frame.is_4k(),

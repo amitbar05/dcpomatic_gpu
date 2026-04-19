@@ -183,6 +183,7 @@ Film::Film(optional<boost::filesystem::path> dir)
 	, _reel_type(ReelType::SINGLE)
 	, _reel_length(2000000000)
 	, _reencode_j2k(false)
+	, _gpu_fast_export(false)
 	, _user_explicit_video_frame_rate(false)
 	, _user_explicit_container(false)
 	, _user_explicit_resolution(false)
@@ -436,6 +437,7 @@ Film::metadata(bool with_content_paths) const
 		cxml::add_text_child(root, "CustomReelBoundary", fmt::to_string(boundary.get()));
 	}
 	cxml::add_text_child(root, "ReencodeJ2K", _reencode_j2k ? "1" : "0");
+	cxml::add_text_child(root, "GPUFastExport", _gpu_fast_export ? "1" : "0");
 	cxml::add_text_child(root, "UserExplicitVideoFrameRate", _user_explicit_video_frame_rate ? "1" : "0");
 	for (auto const& marker: _markers) {
 		auto m = cxml::add_child(root, "Marker");
@@ -650,6 +652,7 @@ Film::read_metadata(optional<boost::filesystem::path> path)
 		_custom_reel_boundaries.push_back(DCPTime(raw_convert<int64_t>(boundary->content())));
 	}
 	_reencode_j2k = f.optional_bool_child("ReencodeJ2K").get_value_or(false);
+	_gpu_fast_export = f.optional_bool_child("GPUFastExport").get_value_or(false);
 	_user_explicit_video_frame_rate = f.optional_bool_child("UserExplicitVideoFrameRate").get_value_or(false);
 
 	for (auto i: f.node_children("Marker")) {
@@ -1349,6 +1352,13 @@ Film::set_reencode_j2k(bool r)
 {
 	FilmChangeSignaller ch(this, FilmProperty::REENCODE_J2K);
 	_reencode_j2k = r;
+}
+
+void
+Film::set_gpu_fast_export(bool f)
+{
+	FilmChangeSignaller ch(this, FilmProperty::GPU_FAST_EXPORT);
+	_gpu_fast_export = f;
 }
 
 void

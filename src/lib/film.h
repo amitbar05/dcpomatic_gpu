@@ -304,6 +304,10 @@ public:
 		return _reencode_j2k;
 	}
 
+	bool gpu_fast_export() const {
+		return _gpu_fast_export;
+	}
+
 	typedef std::map<dcp::Marker, dcpomatic::DCPTime> Markers;
 
 	boost::optional<dcpomatic::DCPTime> marker(dcp::Marker type) const;
@@ -419,6 +423,7 @@ public:
 	void set_reel_length(int64_t);
 	void set_custom_reel_boundaries(std::vector<dcpomatic::DCPTime> boundaries);
 	void set_reencode_j2k(bool);
+	void set_gpu_fast_export(bool);
 	void set_marker(dcp::Marker type, dcpomatic::DCPTime time);
 	void unset_marker(dcp::Marker type);
 	void clear_markers();
@@ -559,6 +564,7 @@ private:
 	/** Reel boundaries (excluding those at the start and end, sorted in ascending order) if _reel_type == CUSTOM */
 	std::vector<dcpomatic::DCPTime> _custom_reel_boundaries;
 	bool _reencode_j2k;
+	bool _gpu_fast_export;
 	/** true if the user has ever explicitly set the video frame rate of this film */
 	bool _user_explicit_video_frame_rate;
 	bool _user_explicit_container;

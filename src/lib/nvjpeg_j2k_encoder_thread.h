@@ -37,13 +37,14 @@
 class NvjpegJ2KEncoderThread : public J2KSyncEncoderThread
 {
 public:
-	NvjpegJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<CudaJ2KEncoder> cuda_j2k);
+	NvjpegJ2KEncoderThread(J2KEncoder& encoder, std::shared_ptr<CudaJ2KEncoder> cuda_j2k, bool fast_mode = false);
 
 	void log_thread_start() const override;
 	std::shared_ptr<dcp::ArrayData> encode(DCPVideo const& frame) override;
 
 private:
 	std::shared_ptr<CudaJ2KEncoder> _cuda_j2k;
+	bool _fast_mode;
 };
 
 

@@ -93,11 +93,18 @@ public:
 
 	/** V127: Full GPU pipeline: RGB48 → XYZ → DWT → EBCOT T1 → J2K codestream.
 	 *  Produces standard-compliant JPEG2000 with proper EBCOT encoding.
-	 *  Returns a complete J2K codestream (decodable by OpenJPEG/Kakadu). */
+	 *  Returns a complete J2K codestream (decodable by OpenJPEG/Kakadu).
+	 *
+	 *  V134: fast_mode — coarser quantization step (step × ~2.5) and reduced
+	 *  target bitrate (× 0.5). Output is still a standard J2K codestream (QCD
+	 *  markers reflect the coarser step), but with visibly reduced quality.
+	 *  Faster because EBCOT T1 skips more bit-plane passes per code-block and
+	 *  T2 assembles less data. */
 	std::vector<uint8_t> encode_ebcot(
 		const uint16_t* rgb16,
 		int width, int height, int rgb_stride_pixels,
-		int64_t bit_rate, int fps, bool is_3d, bool is_4k
+		int64_t bit_rate, int fps, bool is_3d, bool is_4k,
+		bool fast_mode = false
 	);
 
 	/** V127: GPU-accelerated RGB48→XYZ12 color conversion.

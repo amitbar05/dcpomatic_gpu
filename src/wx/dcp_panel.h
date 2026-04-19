@@ -88,6 +88,7 @@ private:
 	void metadata_clicked();
 	void reels_clicked();
 	void reencode_j2k_changed();
+	void gpu_fast_export_changed();
 	void enable_audio_language_toggled();
 	void edit_audio_language_clicked();
 	void audio_sample_rate_changed();
@@ -149,6 +150,7 @@ private:
 	wxButton* _best_frame_rate;
 	CheckBox* _three_d;
 	CheckBox* _reencode_j2k;
+	CheckBox* _gpu_fast_export;
 	wxStaticText* _resolution_label;
 	Choice* _resolution;
 	wxStaticText* _standard_label;
