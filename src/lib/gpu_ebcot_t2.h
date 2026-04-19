@@ -326,10 +326,14 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
                     else               bw.write_bits(0xFF80 | (np - 37), 16);
 
-                    /* Code-block length with LBLOCK */
+                    /* Code-block length with LBLOCK.
+                     * V138: ceil(log2(np)) via __builtin_clz — avoids fp log2 in the
+                     * inner loop. ceil(log2(n)) = bits to represent (n-1). */
                     int lblock = 3;
-                    int len_bits = lblock + static_cast<int>(std::ceil(std::log2(std::max(1, static_cast<int>(np)))));
-                    len_bits = std::max(len_bits, 1);
+                    int npm1 = (np > 0) ? (np - 1) : 0;
+                    int ceil_log2_np = (npm1 == 0) ? 0 : (32 - __builtin_clz(static_cast<unsigned>(npm1)));
+                    int len_bits = lblock + ceil_log2_np;
+                    if (len_bits < 1) len_bits = 1;
                     while ((1 << len_bits) <= len) {
                         bw.write_bit(1);
                         lblock++; len_bits++;
