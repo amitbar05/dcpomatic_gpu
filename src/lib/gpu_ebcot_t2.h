@@ -148,31 +148,46 @@ inline void build_codeblock_table(
  * - Empty-packet flag (1 bit = 1 for non-empty)
  * - For each code-block: inclusion (1 bit), zero bit-planes (tag tree), npasses, lengths
  */
+/* V144: batched MSB-first bit writer.
+ *   - acc holds up to 56 pending bits (high bits first).
+ *   - write_bits appends up to 32 bits in one shift/OR; flushes whole bytes.
+ *   - write_bit is a one-bit specialisation of write_bits.
+ * Output is byte-identical to the prior bit-at-a-time implementation:
+ *   bit order within each output byte is MSB first, matching the previous
+ *   (bit_pos: 7→0) convention. */
 struct BitWriter {
     std::vector<uint8_t>& buf;
-    int bit_pos;
-    uint8_t cur_byte;
+    uint64_t acc;    /* high bits are the oldest pending bits */
+    int      acc_n;  /* number of valid bits currently in acc */
 
-    BitWriter(std::vector<uint8_t>& b) : buf(b), bit_pos(7), cur_byte(0) {}
+    BitWriter(std::vector<uint8_t>& b) : buf(b), acc(0), acc_n(0) {}
 
-    void write_bit(int b) {
-        cur_byte |= ((b & 1) << bit_pos);
-        bit_pos--;
-        if (bit_pos < 0) {
-            buf.push_back(cur_byte);
-            cur_byte = 0;
-            bit_pos = 7;
+    void write_bits(uint32_t val, int nbits) {
+        if (nbits < 32) val &= (1u << nbits) - 1u;
+        acc = (acc << nbits) | static_cast<uint64_t>(val);
+        acc_n += nbits;
+        while (acc_n >= 8) {
+            acc_n -= 8;
+            buf.push_back(static_cast<uint8_t>((acc >> acc_n) & 0xFFu));
         }
     }
 
-    void write_bits(int val, int nbits) {
-        for (int i = nbits - 1; i >= 0; i--)
-            write_bit((val >> i) & 1);
+    void write_bit(int b) {
+        acc = (acc << 1) | static_cast<uint64_t>(b & 1);
+        if (++acc_n == 8) {
+            buf.push_back(static_cast<uint8_t>(acc & 0xFFu));
+            acc_n = 0;
+            acc = 0;
+        }
     }
 
     void flush() {
-        if (bit_pos < 7)
-            buf.push_back(cur_byte);
+        if (acc_n > 0) {
+            /* pad low bits with zero to align to byte boundary */
+            buf.push_back(static_cast<uint8_t>((acc << (8 - acc_n)) & 0xFFu));
+            acc_n = 0;
+            acc = 0;
+        }
     }
 };
 
