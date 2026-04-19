@@ -4680,7 +4680,11 @@ CudaJ2KEncoder::encode_ebcot(
 
     tmark("setup");
 
-    /* Step 1: H2D — upload RGB48 to GPU */
+    /* Step 1: H2D — upload RGB48 to GPU.
+     * V147 (reverted): staging into pinned + async cudaMemcpy on a dedicated
+     * DMA stream made bench_phases 0.6 ms slower.  The caller buffer is
+     * already fast-path for sync cudaMemcpy, and the extra CPU→pinned memcpy
+     * dominated any async win in the single-thread synchronous path. */
     size_t rgb_bytes = static_cast<size_t>(height) * rgb_stride_pixels * sizeof(uint16_t);
     cudaMemcpy(_impl->d_rgb16[0], rgb16, rgb_bytes, cudaMemcpyHostToDevice);
     tmark("H2D");
