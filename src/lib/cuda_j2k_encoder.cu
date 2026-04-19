@@ -4766,7 +4766,8 @@ CudaJ2KEncoder::encode_ebcot(
     int num_cbs = _impl->ebcot_num_cbs;
     /* V141: 64 threads/block matches kernel's __launch_bounds__(64, 16).
      * Each thread uses ~2KB local memory (mag[1024]), so smaller blocks
-     * reduce L1 pressure and increase occupancy. */
+     * reduce L1 pressure and increase occupancy.
+     * V145: re-tested (128, 8) and (32, 32) — both ~1% slower than (64, 16). */
     constexpr int EBCOT_THREADS = 64;
     int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 

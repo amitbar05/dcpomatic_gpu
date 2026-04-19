@@ -149,12 +149,18 @@ inline void build_codeblock_table(
  * - For each code-block: inclusion (1 bit), zero bit-planes (tag tree), npasses, lengths
  */
 /* V144: batched MSB-first bit writer.
- *   - acc holds up to 56 pending bits (high bits first).
+ *   - acc holds up to 56 pending bits (high bits are the oldest pending bits).
  *   - write_bits appends up to 32 bits in one shift/OR; flushes whole bytes.
  *   - write_bit is a one-bit specialisation of write_bits.
  * Output is byte-identical to the prior bit-at-a-time implementation:
  *   bit order within each output byte is MSB first, matching the previous
- *   (bit_pos: 7→0) convention. */
+ *   (bit_pos: 7→0) convention.
+ *
+ * V145 experiment (reverted): inline JPEG 2000 B.10.1 bit-stuffing (insert 0
+ * bit after every 0xFF emission) instead of the post-pass sanitize.  It
+ * preserved more header bits on 0xFF boundaries but empirically still required
+ * the sanitize backstop to cover body/header boundary cases, and didn't help
+ * the one lingering OpenJPEG "segment too long" failure — no net win. */
 struct BitWriter {
     std::vector<uint8_t>& buf;
     uint64_t acc;    /* high bits are the oldest pending bits */

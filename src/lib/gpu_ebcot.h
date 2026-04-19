@@ -404,6 +404,9 @@ struct CodeBlockInfo {
 
 /* V141: launch_bounds(64, 16) — 64 threads/block, 16 blocks/SM (1024/SM).
  * With 2KB mag[] per thread, smaller blocks cut L1 pressure.
+ * V143: kept at (64, 16) after experiments — (64, 8) with larger per-thread
+ * register budget hurt more than it helped (less occupancy, more latency).
+ * V145: re-tested (128, 8) and (32, 32) — both ~1% slower than (64, 16).
  * Caller must launch with exactly 64 threads/block. */
 __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
