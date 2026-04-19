@@ -319,20 +319,30 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     bw.write_bit(1);
                     bw.write_bit(0);
 
-                    /* Number of coding passes (Table B.4) */
+                    /* Number of coding passes (ITU-T T.800 Table B.4).
+                     *   1     : "0"                         (1 bit)
+                     *   2     : "10"                        (2 bits)
+                     *   3..5  : "1100".."1110"              (4 bits: 0xC..0xE)
+                     *   6..36 : "11110" + 4 bits (n-6)      (9 bits: 0x1E0..0x1FE)
+                     *   37..164: "11111" + 7 bits (n-37)    (12 bits: 0xF80..0xFFF)
+                     * V140 FIX: the 37+ branch was emitting 16 bits (0xFF80|...),
+                     * mis-aligning every subsequent CB's length field and breaking
+                     * decode on high-contrast frames. Correct encoding is 12 bits. */
                     if (np == 1)       bw.write_bit(0);
                     else if (np == 2)  bw.write_bits(2, 2);
                     else if (np <= 5)  bw.write_bits(0xC | (np - 3), 4);
                     else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
-                    else               bw.write_bits(0xFF80 | (np - 37), 16);
+                    else               bw.write_bits(0xF80 | ((np - 37) & 0x7F), 12);
 
-                    /* Code-block length with LBLOCK.
-                     * V138: ceil(log2(np)) via __builtin_clz — avoids fp log2 in the
-                     * inner loop. ceil(log2(n)) = bits to represent (n-1). */
+                    /* Code-block length (ITU-T T.800 B.10.7).
+                     * len_bits = Lblock + floor(log2(np)).
+                     * V140 FIX: was ceil(log2(np)) — OpenJPEG's reference decoder
+                     * uses floor, so for non-power-of-2 np (3, 5, 6, 7, 9..) we
+                     * emitted one extra length bit, mis-aligning every subsequent
+                     * CB in the packet. floor(log2(np)) == 31 - clz(np) for np>=1. */
                     int lblock = 3;
-                    int npm1 = (np > 0) ? (np - 1) : 0;
-                    int ceil_log2_np = (npm1 == 0) ? 0 : (32 - __builtin_clz(static_cast<unsigned>(npm1)));
-                    int len_bits = lblock + ceil_log2_np;
+                    int floor_log2_np = (np <= 1) ? 0 : (31 - __builtin_clz(static_cast<unsigned>(np)));
+                    int len_bits = lblock + floor_log2_np;
                     if (len_bits < 1) len_bits = 1;
                     while ((1 << len_bits) <= len) {
                         bw.write_bit(1);
@@ -393,13 +403,18 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     for (int c = 0; c < 3; c++)
         tp_size[c] = static_cast<uint32_t>(12 + 2 + tp_data[c].size());
 
-    /* TLM — tile length marker (3 tile-parts) */
+    /* TLM — tile length marker (3 tile-parts, all of tile 0).
+     * V140 FIX: use ST=1 (1-byte Ttlm) so decoders know each Ptlm refers to
+     * tile 0 — a tile-part of a single tile, not 3 separate tiles.  With ST=0
+     * OpenJPEG assumes tile 0,1,2 and warns "invalid tile number 1". */
     w16(J2K_TLM_M);
-    w16(static_cast<uint16_t>(2 + 1 + 1 + 3 * 4)); /* Ltlm */
+    w16(static_cast<uint16_t>(2 + 1 + 1 + 3 * (1 + 4))); /* Ltlm */
     w8(0);    /* Ztlm = 0 */
-    w8(0x40); /* Stlm: ST=0 (no tile index), SP=1 (4-byte Ptlm) */
-    for (int c = 0; c < 3; c++)
-        w32(tp_size[c]);
+    w8(0x50); /* Stlm: ST=1 (1-byte Ttlm), SP=1 (4-byte Ptlm) */
+    for (int c = 0; c < 3; c++) {
+        w8(0);              /* Ttlm = tile index (single tile) */
+        w32(tp_size[c]);    /* Ptlm = tile-part length */
+    }
 
     /* 3 tile-parts: SOT + SOD for each component. */
     for (int c = 0; c < 3; c++) {
