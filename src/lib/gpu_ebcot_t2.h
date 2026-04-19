@@ -380,7 +380,15 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     sfut0.wait();
     sfut1.wait();
 
-    /* Compute tile-part sizes: SOT(12) + SOD(2) + data */
+    /* V139 FIX: if a tile-part's last byte is 0xFF, append 0x00 stuff byte.
+     * Otherwise the following 0xFF 0x90 (next SOT, or 0xFF 0xD9 EOC) would
+     * parse as 0xFF 0xFF XX and the verifier/decoder sees an unknown marker. */
+    for (int c = 0; c < 3; c++) {
+        if (!tp_data[c].empty() && tp_data[c].back() == 0xFF)
+            tp_data[c].push_back(0x00);
+    }
+
+    /* Compute tile-part sizes: SOT(12) + SOD(2) + data (after stuff-byte fixup) */
     uint32_t tp_size[3];
     for (int c = 0; c < 3; c++)
         tp_size[c] = static_cast<uint32_t>(12 + 2 + tp_data[c].size());
@@ -393,7 +401,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     for (int c = 0; c < 3; c++)
         w32(tp_size[c]);
 
-    /* 3 tile-parts: SOT + SOD for each component */
+    /* 3 tile-parts: SOT + SOD for each component. */
     for (int c = 0; c < 3; c++) {
         w16(J2K_SOT_M);
         w16(10);  /* Lsot */
@@ -406,11 +414,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         cs.insert(cs.end(), tp_data[c].begin(), tp_data[c].end());
     }
 
-    /* EOC */
+    /* EOC — final marker.  V139 FIX: NEVER pad after EOC.  Trailing zeros are
+     * illegal J2K and cause dcp::verify_j2k to throw "missing marker start
+     * byte" on low-content frames (e.g. black/near-uniform first frames). */
     w16(J2K_EOC_M);
-
-    /* Pad to minimum DCI size if needed */
-    while (cs.size() < 16384) cs.push_back(0);
 
     return cs;
 }
