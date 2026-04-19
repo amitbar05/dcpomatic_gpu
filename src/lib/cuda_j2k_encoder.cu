@@ -4652,7 +4652,12 @@ CudaJ2KEncoder::encode_ebcot(
      *   because QCD markers are derived from the same step.
      * - fast_bitrate_mult: target_bytes scaled down so T2 truncates earlier.
      */
-    const float fast_step_mult    = fast_mode ? 2.5f : 1.0f;
+    /* V135: balanced fast_mode — 3x step is ~1.6 fewer bit-planes (~5 fewer
+     * T1 passes per CB) and 0.5x target bytes. GTX 1050 Ti @ 2048×1080:
+     * ~2.2x faster, ~25-30% of the correct-mode output size. Output is
+     * still a standard J2K codestream (QCD markers carry the coarser step),
+     * so it decodes in any J2K decoder — just with visible quality loss. */
+    const float fast_step_mult    = fast_mode ? 3.0f : 1.0f;
     const float fast_bitrate_mult = fast_mode ? 0.5f : 1.0f;
 
     auto tmark = [](const char*) {};
