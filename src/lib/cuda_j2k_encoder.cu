@@ -4685,10 +4685,17 @@ CudaJ2KEncoder::encode_ebcot(
     cudaMemcpy(_impl->d_rgb16[0], rgb16, rgb_bytes, cudaMemcpyHostToDevice);
     tmark("H2D");
 
-    /* Step 2: GPU colour conversion + H-DWT level 0 (fused kernel) */
-    size_t ch_smem = static_cast<size_t>(width) * sizeof(__half);
+    /* Step 2: GPU colour conversion + H-DWT level 0 (fused kernel).
+     * V146: switch from 1-row to 2-row kernel when height is even (always true
+     * for DCI 1080/2160).  Grid halves: 1080→540 blocks for 2K, 2160→1080 for
+     * 4K.  smem doubles (2·w·sizeof(__half)) but still fits PreferL1 at 2K and
+     * PreferNone at 4K.  Matrix/lut register state amortised over 2× the work;
+     * adjacent-row L2 locality improves.  encode_from_rgb48's p12 path used
+     * this pattern for years; encode_ebcot simply never caught up. */
+    size_t ch_smem = static_cast<size_t>(2 * width) * sizeof(__half);
+    int rgb_grid_2row = (height + 1) / 2;
     for (int c = 0; c < 3; ++c) {
-        kernel_rgb48_xyz_hdwt0_1ch<<<height, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
+        kernel_rgb48_xyz_hdwt0_1ch_2row<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
             _impl->d_rgb16[0],
             _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
             _impl->d_b[c], c,
