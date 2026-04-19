@@ -633,12 +633,12 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     if (coded_len < 0) coded_len = 0;
     if (coded_len > CB_BUF_SIZE - 1) coded_len = CB_BUF_SIZE - 1;
 
-    /* Byte-stuffing safety: scan starting at buf[1] (actual coded data start).
-     * Combined with length trim if last byte is 0xFF. */
-    for (int i = 1; i < coded_len; i++) {
-        if (out_buf[i] == 0xFF && i + 1 <= coded_len)
-            out_buf[i + 1] &= 0x7F;
-    }
+    /* V142: Dropped the per-byte "0xFF XX" sanitize scan.  The MQ coder
+     * already guarantees the byte after 0xFF has MSB=0 (mq_byteout sets
+     * CT=7 after emitting 0xFF, so the next byteout fits into 7 bits).
+     * T2's per-tile-part sanitize remains as a backstop for packet-header
+     * bits which do NOT bit-stuff.
+     * Still trim trailing 0xFF so the last byte can't merge with a marker. */
     while (coded_len > 0 && out_buf[coded_len] == 0xFF)
         coded_len--;
 
