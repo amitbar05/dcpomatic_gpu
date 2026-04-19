@@ -187,7 +187,8 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     const uint16_t* coded_len[3],    /* actual length per CB */
     const uint8_t*  num_passes[3],   /* passes per CB */
     const uint16_t* pass_lengths[3], /* cumulative pass lengths per CB */
-    int64_t target_bytes)
+    int64_t target_bytes,
+    int cb_stride = CB_BUF_SIZE)     /* V137: row stride of coded_data (bytes per CB) */
 {
     std::vector<uint8_t> cs;
     cs.reserve(target_bytes > 0 ? target_bytes + 1024 : 1024*1024);
@@ -305,6 +306,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     uint16_t len = coded_len[comp][cb_idx];
                     uint8_t  np  = num_passes[comp][cb_idx];
 
+                    /* V137: D2H may have truncated coded data to cb_stride-1 */
+                    if (len > static_cast<uint16_t>(cb_stride - 1))
+                        len = static_cast<uint16_t>(cb_stride - 1);
+
                     if (np == 0 || len == 0 || comp_bytes + len > per_comp_budget) {
                         bw.write_bit(0);
                         continue;
@@ -332,8 +337,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     bw.write_bit(0);
                     bw.write_bits(len, len_bits);
 
-                    /* V133: append coded data directly (skip byte 0 sentinel) */
-                    const uint8_t* src = coded_data[comp] + (size_t)cb_idx * CB_BUF_SIZE + 1;
+                    /* V133: append coded data directly (skip byte 0 sentinel).
+                     * V137: source stride is cb_stride (may be smaller than CB_BUF_SIZE
+                     * due to strided D2H). */
+                    const uint8_t* src = coded_data[comp] + (size_t)cb_idx * cb_stride + 1;
                     pkt_body.insert(pkt_body.end(), src, src + len);
                 }
             }

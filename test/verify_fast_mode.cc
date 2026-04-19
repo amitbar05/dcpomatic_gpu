@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <vector>
 
@@ -141,6 +142,17 @@ int main()
                   << (ms_correct / std::max(ms_fast, 0.001)) << "x faster, "
                   << (100.0 * cs_fast.size() / cs_correct.size()) << "% of the size\n";
     }
+
+    /* Write files so we can opj_decompress them separately. */
+    {
+        std::ofstream o("/tmp/gpu_correct.j2c", std::ios::binary);
+        o.write(reinterpret_cast<const char*>(cs_correct.data()), cs_correct.size());
+    }
+    {
+        std::ofstream o("/tmp/gpu_fast.j2c", std::ios::binary);
+        o.write(reinterpret_cast<const char*>(cs_fast.data()), cs_fast.size());
+    }
+    std::cout << "Wrote /tmp/gpu_correct.j2c and /tmp/gpu_fast.j2c\n";
 
     int rc = 0;
     if (!ok_correct) { std::cerr << "CORRECT path produced invalid J2K\n"; rc = 2; }

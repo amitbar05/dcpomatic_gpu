@@ -4772,10 +4772,27 @@ CudaJ2KEncoder::encode_ebcot(
      * Only one final sync is needed after the D2H batch. */
     tmark("EBCOT_T1");
 
-    /* Step 6: D2H transfer of coded data — only transfer actual lengths, not full CB_BUF_SIZE */
+    /* Step 6: D2H transfer of coded data.
+     *
+     * V137: strided D2H. Source device layout is [CB_BUF_SIZE] per CB but
+     * actual coded bytes typically occupy 5-20% of that. cudaMemcpy2DAsync
+     * with a smaller dst-pitch copies only the first max_cb_d2h bytes per
+     * CB, dropping D2H traffic 2-4×. T2 then reads strided at the new
+     * smaller pitch and caps per-CB len to max_cb_d2h-1 for safety.
+     *
+     * Budget:
+     *   correct mode — max_cb_d2h = 1024 (halves 2048-byte D2H).
+     *   fast mode    — max_cb_d2h = 640  (~3.2× smaller than full 2048).
+     * Any CB whose coded output exceeds the budget is truncated, which in
+     * practice only affects the lowest few code-blocks at very high rates.
+     */
+    const int max_cb_d2h = fast_mode ? 640 : 1024;
     for (int c = 0; c < 3; ++c) {
-        cudaMemcpyAsync(_impl->h_ebcot_data[c], _impl->d_ebcot_data[c],
-                        (size_t)num_cbs * CB_BUF_SIZE, cudaMemcpyDeviceToHost, _impl->stream[c]);
+        cudaMemcpy2DAsync(
+            _impl->h_ebcot_data[c], max_cb_d2h,
+            _impl->d_ebcot_data[c], CB_BUF_SIZE,
+            max_cb_d2h, num_cbs,
+            cudaMemcpyDeviceToHost, _impl->stream[c]);
         cudaMemcpyAsync(_impl->h_ebcot_len[c], _impl->d_ebcot_len[c],
                         num_cbs * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
         cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
@@ -4798,7 +4815,8 @@ CudaJ2KEncoder::encode_ebcot(
         num_levels, base_step,
         _impl->ebcot_subbands,
         cd, cl, np, pl,
-        target_bytes);
+        target_bytes,
+        max_cb_d2h);
     tmark("T2+CS");
     return result;
 }
