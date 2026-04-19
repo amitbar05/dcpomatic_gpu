@@ -365,30 +365,23 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         }
     }; /* end lambda build_tp */
 
-    /* Run 3 tile-part builds in parallel (comp 0/1 async, comp 2 on main thread) */
-    auto fut0 = std::async(std::launch::async, [&]() { build_tp(0); });
-    auto fut1 = std::async(std::launch::async, [&]() { build_tp(1); });
-    build_tp(2);
+    /* V143: Combine build_tp and sanitize into one async job per component so
+     * we spawn 2 async threads total instead of 4.  std::async(launch::async)
+     * creates a real OS thread each time (~50-100us); for ~1ms of T2 work,
+     * halving the thread spawns is a measurable saving. */
+    auto sanitize = [](uint8_t* p, size_t n) {
+        for (size_t i = 0; i + 1 < n; i++)
+            if (p[i] == 0xFF) p[i + 1] &= 0x7F;
+    };
+    auto build_and_clean = [&](int c) {
+        build_tp(c);
+        sanitize(tp_data[c].data(), tp_data[c].size());
+    };
+    auto fut0 = std::async(std::launch::async, [&]() { build_and_clean(0); });
+    auto fut1 = std::async(std::launch::async, [&]() { build_and_clean(1); });
+    build_and_clean(2);
     fut0.wait();
     fut1.wait();
-
-    /* V133 OPT: Sanitize in parallel across components (std::async).
-     * Each thread scans its own component's tile-part data. */
-    auto sanitize = [&](int c) {
-        uint8_t* p = tp_data[c].data();
-        size_t n = tp_data[c].size();
-        if (n < 2) return;
-        /* Scan 8 bytes at a time when possible; fall back to byte loop at tail. */
-        for (size_t i = 0; i + 1 < n; i++) {
-            if (p[i] == 0xFF)
-                p[i + 1] &= 0x7F;
-        }
-    };
-    auto sfut0 = std::async(std::launch::async, [&]() { sanitize(0); });
-    auto sfut1 = std::async(std::launch::async, [&]() { sanitize(1); });
-    sanitize(2);
-    sfut0.wait();
-    sfut1.wait();
 
     /* V139 FIX: if a tile-part's last byte is 0xFF, append 0x00 stuff byte.
      * Otherwise the following 0xFF 0x90 (next SOT, or 0xFF 0xD9 EOC) would

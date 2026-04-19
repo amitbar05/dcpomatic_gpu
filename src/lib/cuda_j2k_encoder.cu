@@ -4770,6 +4770,11 @@ CudaJ2KEncoder::encode_ebcot(
     constexpr int EBCOT_THREADS = 64;
     int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
+    /* V143: fast-mode also skips the 1 LSB bit-plane inside T1, dropping
+     * up to 3 coding passes per CB (SPP+MRP+CUP of the final bit-plane).
+     * Effective quantization on those coefficients ≈ step × 2; combined
+     * with step_mult=3.0 → effective step × 6 on the LSB. */
+    int bp_skip = fast_mode ? 1 : 0;
     for (int c = 0; c < 3; ++c) {
         kernel_ebcot_t1<<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
             _impl->d_a[c], stride,
@@ -4777,7 +4782,8 @@ CudaJ2KEncoder::encode_ebcot(
             _impl->d_ebcot_data[c],
             _impl->d_ebcot_len[c],
             _impl->d_ebcot_npasses[c],
-            _impl->d_ebcot_passlens[c]);
+            _impl->d_ebcot_passlens[c],
+            bp_skip);
     }
 
     /* V136: drop the T1→D2H sync. D2H is cudaMemcpyAsync on the same

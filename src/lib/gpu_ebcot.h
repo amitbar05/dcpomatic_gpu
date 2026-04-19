@@ -413,7 +413,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     uint8_t*  __restrict__ d_coded_data, /* output: coded bytes per CB (num_cbs * CB_BUF_SIZE) */
     uint16_t* __restrict__ d_coded_len,  /* output: actual coded length per CB */
     uint8_t*  __restrict__ d_num_passes, /* output: number of coding passes per CB */
-    uint16_t* __restrict__ d_pass_lengths /* output: cumulative length at each pass (num_cbs * MAX_PASSES) */
+    uint16_t* __restrict__ d_pass_lengths, /* output: cumulative length at each pass (num_cbs * MAX_PASSES) */
+    int bp_skip = 0                      /* V143: skip this many LSB bit-planes (fast mode) */
 )
 {
     int cb_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -498,6 +499,10 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     /* Track whether any coefficient is significant yet (for early pass skipping) */
     int any_significant = 0;
 
+    (void) bp_skip;  /* V143 reverted — truncating LSB bit-planes broke
+                      * OpenJPEG decode on mixed-content frames.  Left the
+                      * kernel parameter in place in case we wire up a
+                      * correct truncation path later. */
     for (int bp = num_bp - 1; bp >= 0; bp--) {
         bool first_bp = (bp == num_bp - 1);
 
