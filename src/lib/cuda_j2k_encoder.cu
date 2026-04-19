@@ -4660,7 +4660,17 @@ CudaJ2KEncoder::encode_ebcot(
     const float fast_step_mult    = fast_mode ? 3.0f : 1.0f;
     const float fast_bitrate_mult = fast_mode ? 0.5f : 1.0f;
 
-    auto tmark = [](const char*) {};
+    static const bool s_bench = (getenv("DCP_GPU_BENCH") != nullptr);
+    using Clk = std::chrono::high_resolution_clock;
+    auto t_prev = Clk::now();
+    auto tmark = [&](const char* label) {
+        if (!s_bench) return;
+        cudaDeviceSynchronize();
+        auto now = Clk::now();
+        double ms = std::chrono::duration_cast<std::chrono::microseconds>(now - t_prev).count() / 1000.0;
+        fprintf(stderr, "[bench] %-10s %.3f ms\n", label, ms);
+        t_prev = now;
+    };
 
     _impl->ensure_buffers(width, height);
     _impl->ensure_rgb_buffer(width, height);
@@ -4754,7 +4764,10 @@ CudaJ2KEncoder::encode_ebcot(
 
     /* Step 5: Launch EBCOT T1 kernel per component */
     int num_cbs = _impl->ebcot_num_cbs;
-    constexpr int EBCOT_THREADS = 128; /* 4 warps per block */
+    /* V141: 64 threads/block matches kernel's __launch_bounds__(64, 16).
+     * Each thread uses ~2KB local memory (mag[1024]), so smaller blocks
+     * reduce L1 pressure and increase occupancy. */
+    constexpr int EBCOT_THREADS = 64;
     int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
     for (int c = 0; c < 3; ++c) {

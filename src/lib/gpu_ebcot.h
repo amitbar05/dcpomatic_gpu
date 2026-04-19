@@ -402,7 +402,10 @@ struct CodeBlockInfo {
 
 /* ===== EBCOT T1 Kernel: one code-block per thread ===== */
 
-__global__ __launch_bounds__(128, 8) void kernel_ebcot_t1(
+/* V141: launch_bounds(64, 16) — 64 threads/block, 16 blocks/SM (1024/SM).
+ * With 2KB mag[] per thread, smaller blocks cut L1 pressure.
+ * Caller must launch with exactly 64 threads/block. */
+__global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
     int dwt_stride,                      /* row stride of DWT array (= image width) */
     const CodeBlockInfo* __restrict__ d_cb_info,  /* code-block metadata */
