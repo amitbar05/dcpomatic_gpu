@@ -312,16 +312,17 @@ __device__ __constant__ static const uint8_t ZC_LUT[180] = {
     /* sh=2, sv=0, sd=0..4 */ 5, 5, 5, 5, 5,
     /* sh=2, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,
     /* sh=2, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
-    /* HH subband: sd primary, hv=sh+sv secondary. */
-    /* sh=0, sv=0, sd=0..4 */ 0, 3, 6, 8, 8,
-    /* sh=0, sv=1, sd=0..4 */ 1, 4, 7, 8, 8,
-    /* sh=0, sv=2, sd=0..4 */ 2, 5, 7, 8, 8,
-    /* sh=1, sv=0, sd=0..4 */ 1, 4, 7, 8, 8,
-    /* sh=1, sv=1, sd=0..4 */ 2, 5, 7, 8, 8,
-    /* sh=1, sv=2, sd=0..4 */ 2, 5, 7, 8, 8,
-    /* sh=2, sv=0, sd=0..4 */ 2, 5, 7, 8, 8,
-    /* sh=2, sv=1, sd=0..4 */ 2, 5, 7, 8, 8,
-    /* sh=2, sv=2, sd=0..4 */ 2, 5, 7, 8, 8
+    /* HH subband: sd primary, hv=sh+sv secondary (ITU-T T.800 Table D.1).
+     * hv=0: d=0→0, d=1→3, d≥2→6.  hv=1: d=0→1, d=1→4, d≥2→7.  hv≥2: d=0→2, d=1→5, d≥2→8. */
+    /* sh=0, sv=0, sd=0..4 */ 0, 3, 6, 6, 6,
+    /* sh=0, sv=1, sd=0..4 */ 1, 4, 7, 7, 7,
+    /* sh=0, sv=2, sd=0..4 */ 2, 5, 8, 8, 8,
+    /* sh=1, sv=0, sd=0..4 */ 1, 4, 7, 7, 7,
+    /* sh=1, sv=1, sd=0..4 */ 2, 5, 8, 8, 8,
+    /* sh=1, sv=2, sd=0..4 */ 2, 5, 8, 8, 8,
+    /* sh=2, sv=0, sd=0..4 */ 2, 5, 8, 8, 8,
+    /* sh=2, sv=1, sd=0..4 */ 2, 5, 8, 8, 8,
+    /* sh=2, sv=2, sd=0..4 */ 2, 5, 8, 8, 8
 };
 
 /* Zero-coding context via LUT — replaces t1_zero_context with a single table lookup.
@@ -417,6 +418,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     uint16_t* __restrict__ d_coded_len,  /* output: actual coded length per CB */
     uint8_t*  __restrict__ d_num_passes, /* output: number of coding passes per CB */
     uint16_t* __restrict__ d_pass_lengths, /* output: cumulative length at each pass (num_cbs * MAX_PASSES) */
+    uint8_t*  __restrict__ d_num_bp,    /* output: number of coded bit-planes per CB (for T2 z-field) */
     int bp_skip = 0                      /* V143: skip this many LSB bit-planes (fast mode) */
 )
 {
@@ -471,6 +473,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     if (num_bp == 0) {
         d_coded_len[cb_idx] = 0;
         d_num_passes[cb_idx] = 0;
+        d_num_bp[cb_idx] = 0;
         return;
     }
 
@@ -652,6 +655,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     d_coded_len[cb_idx] = static_cast<uint16_t>(coded_len);
     d_num_passes[cb_idx] = static_cast<uint8_t>(total_passes);
+    d_num_bp[cb_idx]    = static_cast<uint8_t>(num_bp);
     /* Pass lengths unchanged (still relative to buf[1..coded_len]) */
     for (int p = 0; p < total_passes; p++) {
         int pl = (pass_lens[p] > 0) ? (pass_lens[p] - 1) : 0;

@@ -1221,8 +1221,9 @@ kernel_fused_i2f_horz_dwt_half_out_4row(
                 d_tmp[y1*stride+hw+p] = __high2half(v01H);
                 d_tmp[y2*stride+hw+p] = __low2half(v23H);
                 d_tmp[y3*stride+hw+p] = __high2half(v23H);
-            }
         }
+    }
+
 }
 
 
@@ -3008,6 +3009,8 @@ kernel_rgb48_xyz_hdwt0_1ch_2row(
         d_hout[y0*stride + hw + x/2]      = sm[x]   * __half(NORM_H);
         if (y1 < height) d_hout[y1*stride + hw + x/2] = sm[w+x] * __half(NORM_H);
     }
+
+    if (threadIdx.x == 0 && blockIdx.x == 0) printf("Color kernel done for comp %d\n", comp);
 }
 
 
@@ -3442,10 +3445,12 @@ struct CudaJ2KEncoderImpl
     uint16_t* d_ebcot_len[3]     = {nullptr, nullptr, nullptr};
     uint8_t*  d_ebcot_npasses[3] = {nullptr, nullptr, nullptr};
     uint16_t* d_ebcot_passlens[3]= {nullptr, nullptr, nullptr};
+    uint8_t*  d_ebcot_numbp[3]   = {nullptr, nullptr, nullptr};
     uint8_t*  h_ebcot_data[3]    = {nullptr, nullptr, nullptr};
     uint16_t* h_ebcot_len[3]     = {nullptr, nullptr, nullptr};
     uint8_t*  h_ebcot_npasses[3] = {nullptr, nullptr, nullptr};
     uint16_t* h_ebcot_passlens[3]= {nullptr, nullptr, nullptr};
+    uint8_t*  h_ebcot_numbp[3]   = {nullptr, nullptr, nullptr};
     int       ebcot_num_cbs      = 0;
     std::vector<SubbandGeom> ebcot_subbands;
     std::vector<CodeBlockInfo> ebcot_cb_table;
@@ -4698,12 +4703,19 @@ CudaJ2KEncoder::encode_ebcot(
      * this pattern for years; encode_ebcot simply never caught up. */
     size_t ch_smem = static_cast<size_t>(2 * width) * sizeof(__half);
     int rgb_grid_2row = (height + 1) / 2;
+
     for (int c = 0; c < 3; ++c) {
         kernel_rgb48_xyz_hdwt0_1ch_2row<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
             _impl->d_rgb16[0],
             _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
             _impl->d_b[c], c,
             width, height, rgb_stride_pixels, stride);
+    }
+
+    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Color kernel error: %s\n", cudaGetErrorString(err));
     }
 
     /* Step 3: DWT levels 1+ (H-DWT + V-DWT per level per component) */
@@ -4716,6 +4728,12 @@ CudaJ2KEncoder::encode_ebcot(
             w = (w + 1) / 2;
             h = (h + 1) / 2;
         }
+    }
+
+    cudaDeviceSynchronize();
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "DWT kernel error: %s\n", cudaGetErrorString(err));
     }
 
     /* V136: drop the unconditional DWT→T1 sync.
@@ -4747,10 +4765,12 @@ CudaJ2KEncoder::encode_ebcot(
                 if (_impl->d_ebcot_len[c])      cudaFree(_impl->d_ebcot_len[c]);
                 if (_impl->d_ebcot_npasses[c])   cudaFree(_impl->d_ebcot_npasses[c]);
                 if (_impl->d_ebcot_passlens[c])  cudaFree(_impl->d_ebcot_passlens[c]);
+                if (_impl->d_ebcot_numbp[c])    cudaFree(_impl->d_ebcot_numbp[c]);
                 if (_impl->h_ebcot_data[c])     cudaFreeHost(_impl->h_ebcot_data[c]);
                 if (_impl->h_ebcot_len[c])      cudaFreeHost(_impl->h_ebcot_len[c]);
                 if (_impl->h_ebcot_npasses[c])   cudaFreeHost(_impl->h_ebcot_npasses[c]);
                 if (_impl->h_ebcot_passlens[c])  cudaFreeHost(_impl->h_ebcot_passlens[c]);
+                if (_impl->h_ebcot_numbp[c])    cudaFreeHost(_impl->h_ebcot_numbp[c]);
             }
 
             /* Allocate new */
@@ -4760,10 +4780,12 @@ CudaJ2KEncoder::encode_ebcot(
                 cudaMalloc(&_impl->d_ebcot_len[c],     num_cbs * sizeof(uint16_t));
                 cudaMalloc(&_impl->d_ebcot_npasses[c],  num_cbs * sizeof(uint8_t));
                 cudaMalloc(&_impl->d_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t));
+                cudaMalloc(&_impl->d_ebcot_numbp[c],   num_cbs * sizeof(uint8_t));
                 cudaHostAlloc(&_impl->h_ebcot_data[c],    (size_t)num_cbs * CB_BUF_SIZE, cudaHostAllocDefault);
                 cudaHostAlloc(&_impl->h_ebcot_len[c],     num_cbs * sizeof(uint16_t), cudaHostAllocDefault);
                 cudaHostAlloc(&_impl->h_ebcot_npasses[c],  num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
                 cudaHostAlloc(&_impl->h_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t), cudaHostAllocDefault);
+                cudaHostAlloc(&_impl->h_ebcot_numbp[c],   num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
             }
             _impl->ebcot_num_cbs = num_cbs;
         }
@@ -4795,7 +4817,14 @@ CudaJ2KEncoder::encode_ebcot(
             _impl->d_ebcot_len[c],
             _impl->d_ebcot_npasses[c],
             _impl->d_ebcot_passlens[c],
+            _impl->d_ebcot_numbp[c],
             bp_skip);
+    }
+
+    cudaDeviceSynchronize();
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "EBCOT kernel error: %s\n", cudaGetErrorString(err));
     }
 
     /* V136: drop the T1→D2H sync. D2H is cudaMemcpyAsync on the same
@@ -4828,6 +4857,8 @@ CudaJ2KEncoder::encode_ebcot(
                         num_cbs * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
         cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
                         num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
+                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
         /* V132: pass_lengths not used by T2 (single-layer CPRL) — skip D2H */
     }
 
@@ -4840,12 +4871,13 @@ CudaJ2KEncoder::encode_ebcot(
     const uint16_t* cl[3] = { _impl->h_ebcot_len[0],  _impl->h_ebcot_len[1],  _impl->h_ebcot_len[2] };
     const uint8_t*  np[3] = { _impl->h_ebcot_npasses[0], _impl->h_ebcot_npasses[1], _impl->h_ebcot_npasses[2] };
     const uint16_t* pl[3] = { _impl->h_ebcot_passlens[0], _impl->h_ebcot_passlens[1], _impl->h_ebcot_passlens[2] };
+    const uint8_t*  nb[3] = { _impl->h_ebcot_numbp[0], _impl->h_ebcot_numbp[1], _impl->h_ebcot_numbp[2] };
 
     auto result = build_ebcot_codestream(
         width, height, is_4k, is_3d,
         num_levels, base_step,
         _impl->ebcot_subbands,
-        cd, cl, np, pl,
+        cd, cl, np, pl, nb,
         target_bytes,
         max_cb_d2h);
     tmark("T2+CS");

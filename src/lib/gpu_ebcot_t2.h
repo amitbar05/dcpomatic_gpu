@@ -208,6 +208,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     const uint16_t* coded_len[3],    /* actual length per CB */
     const uint8_t*  num_passes[3],   /* passes per CB */
     const uint16_t* pass_lengths[3], /* cumulative pass lengths per CB */
+    const uint8_t*  cb_num_bp[3],    /* coded bit-planes per CB (from T1 kernel) */
     int64_t target_bytes,
     int cb_stride = CB_BUF_SIZE)     /* V137: row stride of coded_data (bytes per CB) */
 {
@@ -299,6 +300,19 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     std::vector<uint8_t> tp_data[3];
     size_t per_comp_budget = (target_bytes > 0) ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
+    /* Compute per-subband, per-component p_max matching the QCD/QCC marker encoding.
+     * p_max = eps + Nguard (Nguard=1).  eps = 13 - floor(log2(effective_step)).
+     * Must use the SAME step clamping and per-component step as the QCD/QCC markers:
+     *   comp 1     → QCD step:       clamp(subbands[sb].step,       0.001)
+     *   comp 0,2   → QCC step×1.1:   clamp(subbands[sb].step*1.1,   0.001)
+     * Any mismatch shifts z by ±1, causing a 2× magnitude error in decoded coefficients. */
+    auto sb_pmax_for_comp = [&](size_t sb, int comp) -> int {
+        float step = (comp == 1) ? subbands[sb].step : subbands[sb].step * 1.1f;
+        step = std::max(step, 0.001f);   /* same clamp as QCD/QCC encoding */
+        int log2s = static_cast<int>(std::floor(std::log2f(step)));
+        return 13 - log2s + 1;   /* eps + 1 guard bit */
+    };
+
     auto build_tp = [&](int comp) {
         /* V133 OPT: Pre-reserve per-component buffer + use single persistent pkt_body */
         tp_data[comp].reserve(per_comp_budget == SIZE_MAX ? 4 * 1024 * 1024 : per_comp_budget + 4096);
@@ -321,6 +335,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
                 int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
                 int cb_start = subbands[sb].cb_start_idx;
+                int pmax = sb_pmax_for_comp(sb, comp);
 
                 for (int cbi = 0; cbi < ncbs; cbi++) {
                     int cb_idx = cb_start + cbi;
@@ -337,8 +352,19 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     }
                     comp_bytes += len;
 
+                    /* Inclusion tag tree: 1 = included in this layer. */
                     bw.write_bit(1);
-                    bw.write_bit(0);
+
+                    /* Zero bit-planes tag tree (ITU-T T.800 B.10.7).
+                     * z = p_max - cb_num_bp.  Encoded as z zero-bits then one 1-bit.
+                     * Per the standard: bit=0 means threshold < value (not yet reached),
+                     * bit=1 means threshold >= value (reached).  For value z, the decoder
+                     * reads until it gets a 1-bit; the count of 0s before it equals z. */
+                    int nb = (cb_num_bp != nullptr) ? static_cast<int>(cb_num_bp[comp][cb_idx]) : 0;
+                    int z  = pmax - nb;
+                    if (z < 0) z = 0;
+                    for (int zi = 0; zi < z; zi++) bw.write_bit(0);
+                    bw.write_bit(1);
 
                     /* Number of coding passes (ITU-T T.800 Table B.4).
                      *   1     : "0"                         (1 bit)
