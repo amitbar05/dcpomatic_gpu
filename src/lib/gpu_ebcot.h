@@ -444,6 +444,7 @@ struct CodeBlockInfo {
  * V143: kept after experiments with (64, 8).
  * V145: (128, 8) and (32, 32) both ~1% slower than (64, 16).
  * V155: tried (64, 32) for 32 blocks/SM — forced 32 regs, reduced ILP → +3ms. Reverted.
+ * V156: bp_skip re-enabled with correct edge-case guard (always code >= 1 bit-plane).
  * Caller must launch with exactly 64 threads/block. */
 __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
@@ -575,10 +576,12 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     /* Track whether any coefficient is significant yet (for early pass skipping) */
     int any_significant = 0;
 
-    (void) bp_skip;  /* V143 reverted — truncating LSB bit-planes broke
-                      * OpenJPEG decode on mixed-content frames.  Left the
-                      * kernel parameter in place in case we wire up a
-                      * correct truncation path later. */
+    /* V156: cap bp_skip so we always code at least 1 bit-plane.
+     * V143 failure root cause: when num_bp=1 and bp_skip=1, effective_num_bp=0
+     * produced an inconsistent codestream (z=pmax but np>0) that OpenJPEG rejected.
+     * Guard: actual_bp_skip = min(bp_skip, num_bp - 1) → effective_num_bp >= 1. */
+    int actual_bp_skip = (bp_skip > 0) ? (bp_skip < num_bp ? bp_skip : num_bp - 1) : 0;
+
     for (int bp = num_bp - 1; bp >= 0; bp--) {
         bool first_bp = (bp == num_bp - 1);
         /* V149: bp_idx=0 is MSB plane; coded loop iterates bp from MSB down */
@@ -706,6 +709,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             }
         }
         pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
+
+        /* V156: exit after coding the last wanted bit-plane (bp == actual_bp_skip). */
+        if (actual_bp_skip > 0 && bp == actual_bp_skip) break;
     }
 
     /* 5. MQ flush */
@@ -728,6 +734,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     d_coded_len[cb_idx] = static_cast<uint16_t>(coded_len);
     d_num_passes[cb_idx] = static_cast<uint8_t>(total_passes);
+    /* V156: d_num_bp stays = num_bp (z = pmax - num_bp in T2 packet header).
+     * z describes the coefficient bit-depth (content + quant step), NOT how many
+     * passes were included.  Changing z breaks the decoder's CB-header parsing. */
     d_num_bp[cb_idx]    = static_cast<uint8_t>(num_bp);
     /* Pass lengths unchanged (still relative to buf[1..coded_len]) */
     for (int p = 0; p < total_passes; p++) {
