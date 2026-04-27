@@ -3010,7 +3010,6 @@ kernel_rgb48_xyz_hdwt0_1ch_2row(
         if (y1 < height) d_hout[y1*stride + hw + x/2] = sm[w+x] * __half(NORM_H);
     }
 
-    if (threadIdx.x == 0 && blockIdx.x == 0) printf("Color kernel done for comp %d\n", comp);
 }
 
 
@@ -4712,12 +4711,6 @@ CudaJ2KEncoder::encode_ebcot(
             width, height, rgb_stride_pixels, stride);
     }
 
-    cudaDeviceSynchronize();
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Color kernel error: %s\n", cudaGetErrorString(err));
-    }
-
     /* Step 3: DWT levels 1+ (H-DWT + V-DWT per level per component) */
     for (int c = 0; c < 3; ++c) {
         int w = width, h = height;
@@ -4729,12 +4722,9 @@ CudaJ2KEncoder::encode_ebcot(
             h = (h + 1) / 2;
         }
     }
-
-    cudaDeviceSynchronize();
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "DWT kernel error: %s\n", cudaGetErrorString(err));
-    }
+    /* V148: removed intermediate cudaDeviceSynchronize() after color and DWT
+     * kernels — intra-stream ordering on stream[c] makes them redundant.
+     * Error check is deferred to the single stream sync before T2. */
 
     /* V136: drop the unconditional DWT→T1 sync.
      * T1 is launched on the same stream[c] as DWT, so the intra-stream
@@ -4821,15 +4811,7 @@ CudaJ2KEncoder::encode_ebcot(
             bp_skip);
     }
 
-    cudaDeviceSynchronize();
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "EBCOT kernel error: %s\n", cudaGetErrorString(err));
-    }
-
-    /* V136: drop the T1→D2H sync. D2H is cudaMemcpyAsync on the same
-     * stream[c] as T1, so intra-stream ordering handles it automatically.
-     * Only one final sync is needed after the D2H batch. */
+    /* V148: T1 error is checked after the stream syncs at the end of D2H. */
     tmark("EBCOT_T1");
 
     /* Step 6: D2H transfer of coded data.
@@ -4864,6 +4846,11 @@ CudaJ2KEncoder::encode_ebcot(
 
     for (int c = 0; c < 3; ++c)
         cudaStreamSynchronize(_impl->stream[c]);
+    {
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess)
+            fprintf(stderr, "GPU pipeline error: %s\n", cudaGetErrorString(err));
+    }
     tmark("D2H");
 
     /* Step 7: CPU T2 assembly + codestream construction */

@@ -438,8 +438,15 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      *
      * OPTIMIZATION: sigma_pad[] has sentinel rows at [0] and [cbh+1] (all zeros)
      * and columns shifted by +1 (bit 0 and bit cbw+1 are sentinel zeros).
-     * This eliminates ALL boundary checks from neighbor significance lookups. */
+     * This eliminates ALL boundary checks from neighbor significance lookups.
+     *
+     * V149: mag_bp[c][bp_idx] replaces mag[r*cbw+c] in the coding loop.
+     * Layout: mag_bp[c][bp_idx] = uint32 with bit r set if coefficient (r,c)
+     * has bit bp_idx set.  In the hot coding loop we load ONE uint32 per column
+     * per bit-plane (replacing 4 strided int16 LMEM loads), then extract row
+     * bits with register shifts — 32× fewer LMEM load instructions. */
     int16_t mag[CB_DIM * CB_DIM];
+    uint32_t mag_bp[CB_DIM][MAX_BPLANES]; /* V149: col-major bitplane array */
     uint32_t sigma_pad[CB_DIM + 2]; /* padded: sigma_pad[0]=sentinel, [1..cbh]=real, [cbh+1]=sentinel */
     uint32_t sign_bits[CB_DIM];     /* sign: bit c = negative (real indexing, not padded) */
     uint32_t firstref_bits[CB_DIM]; /* first refinement: bit c = first time */
@@ -477,6 +484,25 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         return;
     }
 
+    /* V149: pack mag[] into col-major bitplane array mag_bp[c][bp_idx].
+     * Read mag[] row-by-row (sequential) and write mag_bp column planes.
+     * bp_idx=0 is the MSB plane (bit num_bp-1 of the magnitude). */
+    for (int c = 0; c < cbw; c++)
+        for (int bp_idx = 0; bp_idx < num_bp; bp_idx++)
+            mag_bp[c][bp_idx] = 0;
+
+    for (int r = 0; r < cbh; r++) {
+        uint32_t rmask = 1u << r;
+        for (int c = 0; c < cbw; c++) {
+            int16_t q = mag[r * cbw + c];
+            if (q == 0) continue;
+            for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
+                if ((q >> (num_bp - 1 - bp_idx)) & 1)
+                    mag_bp[c][bp_idx] |= rmask;
+            }
+        }
+    }
+
     /* 3. Initialize MQ coder */
     uint8_t* out_buf = d_coded_data + (size_t)cb_idx * CB_BUF_SIZE;
     out_buf[0] = 0;  /* sentinel for MQ byte stuffing */
@@ -511,6 +537,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                       * correct truncation path later. */
     for (int bp = num_bp - 1; bp >= 0; bp--) {
         bool first_bp = (bp == num_bp - 1);
+        /* V149: bp_idx=0 is MSB plane; coded loop iterates bp from MSB down */
+        int bp_idx = num_bp - 1 - bp;
 
         for (int r2 = 0; r2 < cbh; r2++) coded_bits[r2] = 0;
 
@@ -522,11 +550,13 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
+                /* V149: load column bit-plane word once; extract per-row bits from register */
+                uint32_t col_mag = mag_bp[c][bp_idx];
                 for (int r = stripe_y; r < stripe_end; r++) {
                     if (sigma_pad[r + 1] & cmask_pad) continue;
                     if (!has_sig_neighbor(sigma_pad, r, c)) continue;
 
-                    int bit = (mag[r * cbw + c] >> bp) & 1;
+                    int bit = (col_mag >> r) & 1;
                     int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                     mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
 
@@ -546,15 +576,16 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
         /* --- Magnitude Refinement Pass (MRP) — skip for first bit-plane --- */
         if (!first_bp) {
-        /* OPTIMIZATION D: Skip MRP entirely if no coefficient is significant yet */
         if (any_significant) {
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
+                uint32_t cmask = 1u << c;
+                uint32_t col_mag = mag_bp[c][bp_idx];
                 for (int r = stripe_y; r < stripe_end; r++) {
-                    if (!(sigma_pad[r + 1] & cmask_pad) || ((coded_bits[r] >> c) & 1)) continue;
-                    int bit = (mag[r * cbw + c] >> bp) & 1;
+                    if (!(sigma_pad[r + 1] & cmask_pad) || ((coded_bits[r] & cmask))) continue;
+                    int bit = (col_mag >> r) & 1;
                     int mr = t1_mr_context_fast(sigma_pad, firstref_bits, r, c);
                     mq_encode(&mq, T1_CTXNO_MR + mr, bit);
                     firstref_bits[r] &= ~(1u << c);
@@ -576,22 +607,20 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 if (stripe_len == 4) {
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) { all_zero = 0; break; }
-                        /* OPTIMIZATION A: Bitwise neighbor check */
                         if (has_sig_neighbor(sigma_pad, r, c)) { all_zero = 0; break; }
                     }
                 } else { all_zero = 0; }
 
+                /* V149: load column bit-plane word once per column per pass */
+                uint32_t col_mag = mag_bp[c][bp_idx];
+
                 if (all_zero) {
-                    int any_sig = 0;
-                    for (int r = stripe_y; r < stripe_end; r++)
-                        if ((mag[r * cbw + c] >> bp) & 1) { any_sig = 1; break; }
+                    /* V149: extract stripe bits in one mask op; use __ffs for run-length */
+                    uint32_t stripe_bits = (col_mag >> stripe_y) & 0xFu;
+                    int any_sig = (stripe_bits != 0);
                     mq_encode(&mq, T1_CTXNO_AGG, any_sig);
                     if (!any_sig) continue;
-                    int run_len = 0;
-                    for (int r = stripe_y; r < stripe_end; r++) {
-                        if ((mag[r * cbw + c] >> bp) & 1) break;
-                        run_len++;
-                    }
+                    int run_len = __ffs(stripe_bits) - 1;  /* __ffs returns 1-indexed LSB pos */
                     mq_encode(&mq, T1_CTXNO_UNI, (run_len >> 1) & 1);
                     mq_encode(&mq, T1_CTXNO_UNI, run_len & 1);
                     int r = stripe_y + run_len;
@@ -603,7 +632,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     coded_bits[r] |= cmask;
                     for (r = stripe_y + run_len + 1; r < stripe_end; r++) {
                         if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) continue;
-                        int bit = (mag[r * cbw + c] >> bp) & 1;
+                        int bit = (col_mag >> r) & 1;
                         int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
                         if (bit) {
@@ -617,7 +646,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 } else {
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) continue;
-                        int bit = (mag[r * cbw + c] >> bp) & 1;
+                        int bit = (col_mag >> r) & 1;
                         int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
                         if (bit) {
