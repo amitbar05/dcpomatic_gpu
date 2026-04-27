@@ -334,6 +334,32 @@ __device__ static int t1_zero_context_fast(const uint32_t* sigma_pad, int r, int
     return ZC_LUT[subband * 45 + sh * 15 + sv * 5 + sd_clamp];
 }
 
+/* V150: fused neighbor-check + ZC context.
+ * Reads sigma_pad north/cur/south ONCE, checks for any significant neighbor,
+ * and if found computes the ZC context in the same pass.  Returns -1 when
+ * there is no significant neighbor (caller should skip the coefficient).
+ * Saves 3 LMEM reads vs calling has_sig_neighbor() + t1_zero_context_fast(). */
+__device__ static int t1_zc_if_neighbor(const uint32_t* sigma_pad, int r, int c, int subband) {
+    int pc = c + 1, pr = r + 1;
+    uint32_t north = sigma_pad[pr - 1];
+    uint32_t cur   = sigma_pad[pr];
+    uint32_t south = sigma_pad[pr + 1];
+
+    /* Check any significant neighbor (same logic as has_sig_neighbor) */
+    if (!(((north >> (pc-1)) | (north >> pc) | (north >> (pc+1)) |
+           (cur >> (pc-1)) | (cur >> (pc+1)) |
+           (south >> (pc-1)) | (south >> pc) | (south >> (pc+1))) & 1))
+        return -1;  /* no significant neighbor */
+
+    /* Compute neighbor counts for ZC context (reusing already-loaded rows) */
+    int sh = ((north >> pc) & 1) + ((south >> pc) & 1);
+    int sv = ((cur >> (pc-1)) & 1) + ((cur >> (pc+1)) & 1);
+    int sd = ((north >> (pc-1)) & 1) + ((north >> (pc+1)) & 1)
+           + ((south >> (pc-1)) & 1) + ((south >> (pc+1)) & 1);
+    int sd_clamp = (sd < 4) ? sd : 4;
+    return ZC_LUT[subband * 45 + sh * 15 + sv * 5 + sd_clamp];
+}
+
 /* Sign coding context (Table D.2) — returns context label offset (0-4) + XOR bit.
  * Optimized: uses padded sigma to eliminate bounds checks. Branchless where possible. */
 __device__ static void t1_sign_context_fast(const uint32_t* sigma_pad, const uint32_t* sign_bits,
@@ -440,13 +466,15 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      * and columns shifted by +1 (bit 0 and bit cbw+1 are sentinel zeros).
      * This eliminates ALL boundary checks from neighbor significance lookups.
      *
-     * V149: mag_bp[c][bp_idx] replaces mag[r*cbw+c] in the coding loop.
-     * Layout: mag_bp[c][bp_idx] = uint32 with bit r set if coefficient (r,c)
+     * V149: mag_bp[bp_idx][c] replaces mag[r*cbw+c] in the coding loop.
+     * Layout: mag_bp[bp_idx][c] = uint32 with bit r set if coefficient (r,c)
      * has bit bp_idx set.  In the hot coding loop we load ONE uint32 per column
      * per bit-plane (replacing 4 strided int16 LMEM loads), then extract row
-     * bits with register shifts — 32× fewer LMEM load instructions. */
+     * bits with register shifts — 32× fewer LMEM load instructions.
+     * V151: plane-first layout mag_bp[bp_idx][c] so the coding loop reads
+     * 32 contiguous uint32 columns per cache line instead of strided 64B. */
     int16_t mag[CB_DIM * CB_DIM];
-    uint32_t mag_bp[CB_DIM][MAX_BPLANES]; /* V149: col-major bitplane array */
+    uint32_t mag_bp[MAX_BPLANES][CB_DIM]; /* V151: plane-first: mag_bp[bp_idx][c] */
     uint32_t sigma_pad[CB_DIM + 2]; /* padded: sigma_pad[0]=sentinel, [1..cbh]=real, [cbh+1]=sentinel */
     uint32_t sign_bits[CB_DIM];     /* sign: bit c = negative (real indexing, not padded) */
     uint32_t firstref_bits[CB_DIM]; /* first refinement: bit c = first time */
@@ -484,12 +512,13 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         return;
     }
 
-    /* V149: pack mag[] into col-major bitplane array mag_bp[c][bp_idx].
-     * Read mag[] row-by-row (sequential) and write mag_bp column planes.
-     * bp_idx=0 is the MSB plane (bit num_bp-1 of the magnitude). */
-    for (int c = 0; c < cbw; c++)
-        for (int bp_idx = 0; bp_idx < num_bp; bp_idx++)
-            mag_bp[c][bp_idx] = 0;
+    /* V149/V151: pack mag[] into bitplane array mag_bp[bp_idx][c] (plane-first).
+     * bp_idx=0 is the MSB plane (bit num_bp-1 of the magnitude).
+     * Plane-first layout: 32 contiguous uint32 values per bit-plane row —
+     * the coding loop loads the full plane in 1 cache line instead of 16. */
+    for (int bp_idx = 0; bp_idx < num_bp; bp_idx++)
+        for (int c = 0; c < cbw; c++)
+            mag_bp[bp_idx][c] = 0;
 
     for (int r = 0; r < cbh; r++) {
         uint32_t rmask = 1u << r;
@@ -498,7 +527,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             if (q == 0) continue;
             for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
                 if ((q >> (num_bp - 1 - bp_idx)) & 1)
-                    mag_bp[c][bp_idx] |= rmask;
+                    mag_bp[bp_idx][c] |= rmask;
             }
         }
     }
@@ -551,7 +580,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
                 /* V149: load column bit-plane word once; extract per-row bits from register */
-                uint32_t col_mag = mag_bp[c][bp_idx];
+                uint32_t col_mag = mag_bp[bp_idx][c];
                 for (int r = stripe_y; r < stripe_end; r++) {
                     if (sigma_pad[r + 1] & cmask_pad) continue;
                     if (!has_sig_neighbor(sigma_pad, r, c)) continue;
@@ -582,7 +611,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
-                uint32_t col_mag = mag_bp[c][bp_idx];
+                uint32_t col_mag = mag_bp[bp_idx][c];
                 for (int r = stripe_y; r < stripe_end; r++) {
                     if (!(sigma_pad[r + 1] & cmask_pad) || ((coded_bits[r] & cmask))) continue;
                     int bit = (col_mag >> r) & 1;
@@ -612,7 +641,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 } else { all_zero = 0; }
 
                 /* V149: load column bit-plane word once per column per pass */
-                uint32_t col_mag = mag_bp[c][bp_idx];
+                uint32_t col_mag = mag_bp[bp_idx][c];
 
                 if (all_zero) {
                     /* V149: extract stripe bits in one mask op; use __ffs for run-length */
