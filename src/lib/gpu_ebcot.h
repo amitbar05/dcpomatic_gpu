@@ -232,15 +232,17 @@ __device__ static void mq_flush(MQCoder* mq) {
  * This computes the result for ALL columns in ~6 bitwise ops vs 8*32 function calls. */
 __device__ static uint32_t has_sig_neighbor_mask(const uint32_t* sigma_pad, int r) {
     /* sigma_pad[r+1] = current row, sigma_pad[r] = north, sigma_pad[r+2] = south.
-     * V152: algebraic simplification — ns | (ncs<<1) | (ncs>>1) covers all 8 neighbors:
-     *   ns = N|S (direct), ncs<<1 = W|NW|SW (west column), ncs>>1 = E|NE|SE (east column).
-     * 5 ops vs the original 10 ops (6 ORs + 4 shifts). */
-    uint32_t north = sigma_pad[r];
-    uint32_t cur   = sigma_pad[r + 1];
-    uint32_t south = sigma_pad[r + 2];
-    uint32_t ns    = north | south;
-    uint32_t ncs   = ns | cur;
-    return ns | (ncs << 1) | (ncs >> 1);
+     * Real column c is at bit (c+1). Shift left = west neighbor, shift right = east neighbor. */
+    uint32_t north = sigma_pad[r];      /* row above (r-1 in real coords) */
+    uint32_t cur   = sigma_pad[r + 1];  /* current row */
+    uint32_t south = sigma_pad[r + 2];  /* row below (r+1 in real coords) */
+
+    /* OR of all 8 neighbors for each column position */
+    uint32_t nbr = north | south                   /* N, S */
+                 | (cur << 1) | (cur >> 1)          /* W, E */
+                 | (north << 1) | (north >> 1)      /* NW, NE */
+                 | (south << 1) | (south >> 1);     /* SW, SE */
+    return nbr;
 }
 
 /* Compute sh (vertical=N+S), sv (horizontal=W+E), sd (diagonal=NW+NE+SW+SE)
@@ -261,17 +263,27 @@ __device__ static void neighbor_counts(const uint32_t* sigma_pad, int r, int c,
 }
 
 /* Bitwise any-significant-neighbor test for a single coefficient.
- * V152: 6 ops vs the original 16 ops (7 ORs + 8 shifts + 1 AND).
- * ns = N|S covers direct vertical; ncs<<1/>>1 covers west/east columns. */
+ * Faster than OR-ing 8 sig_bit calls; no bounds checks.
+ *
+ * IMPORTANT — cbw=32 / pc=32 UB contract:
+ * When c=31 (rightmost column of a full 32-wide CB), pc=32. Shifting a uint32_t by 32
+ * is undefined behaviour, but on CUDA sm_6x the shift count is masked to 5 bits, so
+ * `x >> 32 = x >> 0 = x` and `1u << 32 = 1u << 0 = 1`. Column 31's significance is
+ * stored at bit 0 of sigma_pad rows (because `sigma |= (1u << 32) = sigma |= 1`).
+ * This formula exploits that: `north >> 32 = north`, so `(north >> 32) & 1 = north[0]`
+ * correctly returns the N-neighbour significance for column 31.
+ * DO NOT replace these individual shifts with a single algebraic expression (ns >> pc)
+ * — that shifts the combined result by 32→0, which extracts the WRONG bit (bit 0 of
+ * the combined OR instead of each individual word's bit-32 value). (V152 regression.) */
 __device__ static int has_sig_neighbor(const uint32_t* sigma_pad, int r, int c) {
     int pc = c + 1;
     int pr = r + 1;
     uint32_t north = sigma_pad[pr - 1];
     uint32_t south = sigma_pad[pr + 1];
     uint32_t cur   = sigma_pad[pr];
-    uint32_t ns    = north | south;
-    uint32_t ncs   = ns | cur;
-    return ((ns | (ncs << 1) | (ncs >> 1)) >> pc) & 1;
+    return (((north >> (pc - 1)) | (north >> pc) | (north >> (pc + 1)) |
+             (cur >> (pc - 1)) | (cur >> (pc + 1)) |
+             (south >> (pc - 1)) | (south >> pc) | (south >> (pc + 1))) & 1);
 }
 
 /* Zero-coding context LUT (Table D.1).
@@ -427,11 +439,11 @@ struct CodeBlockInfo {
 
 /* ===== EBCOT T1 Kernel: one code-block per thread ===== */
 
-/* V141: launch_bounds(64, 16) — 64 threads/block, 16 blocks/SM (1024/SM).
- * With 2KB mag[] per thread, smaller blocks cut L1 pressure.
- * V143: kept at (64, 16) after experiments — (64, 8) with larger per-thread
- * register budget hurt more than it helped (less occupancy, more latency).
- * V145: re-tested (128, 8) and (32, 32) — both ~1% slower than (64, 16).
+/* V154: launch_bounds(64, 16); mag[] eliminated (LMEM 4704→2656 bytes).
+ * V141: (64, 16) set after finding smaller blocks cut L1 pressure with 2KB mag[].
+ * V143: kept after experiments with (64, 8).
+ * V145: (128, 8) and (32, 32) both ~1% slower than (64, 16).
+ * V155: tried (64, 32) for 32 blocks/SM — forced 32 regs, reduced ILP → +3ms. Reverted.
  * Caller must launch with exactly 64 threads/block. */
 __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
@@ -458,7 +470,11 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     }
 
     /* 1. Load and quantize DWT coefficients.
-     * Pack sigma/sign/firstref/coded as uint32 bitfields (1 bit per column per row).
+     * V154: Two-pass over d_dwt to eliminate mag[] (saves 2048 bytes LMEM/thread).
+     * Pass 1: compute sign_bits[], max_mag (→ num_bp).
+     * Pass 2: re-read d_dwt, pack directly into mag_bp[].
+     * d_dwt re-read is coalesced (global mem) and L2-cached; cheaper than
+     * keeping a 2048-byte mag[] intermediary in LMEM.
      *
      * OPTIMIZATION: sigma_pad[] has sentinel rows at [0] and [cbh+1] (all zeros)
      * and columns shifted by +1 (bit 0 and bit cbw+1 are sentinel zeros).
@@ -471,7 +487,6 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      * bits with register shifts — 32× fewer LMEM load instructions.
      * V151: plane-first layout mag_bp[bp_idx][c] so the coding loop reads
      * 32 contiguous uint32 columns per cache line instead of strided 64B. */
-    int16_t mag[CB_DIM * CB_DIM];
     uint32_t mag_bp[MAX_BPLANES][CB_DIM]; /* V151: plane-first: mag_bp[bp_idx][c] */
     uint32_t sigma_pad[CB_DIM + 2]; /* padded: sigma_pad[0]=sentinel, [1..cbh]=real, [cbh+1]=sentinel */
     uint32_t sign_bits[CB_DIM];     /* sign: bit c = negative (real indexing, not padded) */
@@ -486,6 +501,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     }
 
     float inv_step = __frcp_rn(cbi.quant_step);  /* fast reciprocal */
+
+    /* Pass 1: compute sign_bits[], max_mag */
     int max_mag = 0;
     for (int r = 0; r < cbh; r++) {
         uint32_t sb = 0;
@@ -493,9 +510,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         for (int c = 0; c < cbw; c++) {
             float val = __half2float(__ldg(row_ptr + c));
             int q = __float2int_rn(fabsf(val) * inv_step);
-            mag[r * cbw + c] = static_cast<int16_t>(q);
             if (val < 0.0f) sb |= (1u << c);
-            max_mag |= q;  /* bitwise OR instead of branch — captures all bits */
+            max_mag |= q;  /* bitwise OR — captures all bits for num_bp */
         }
         sign_bits[r] = sb;
     }
@@ -510,7 +526,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         return;
     }
 
-    /* V149/V151: pack mag[] into bitplane array mag_bp[bp_idx][c] (plane-first).
+    /* V154: pack mag_bp[] directly from d_dwt (two-pass, no mag[] intermediary).
      * bp_idx=0 is the MSB plane (bit num_bp-1 of the magnitude).
      * Plane-first layout: 32 contiguous uint32 values per bit-plane row —
      * the coding loop loads the full plane in 1 cache line instead of 16. */
@@ -520,8 +536,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     for (int r = 0; r < cbh; r++) {
         uint32_t rmask = 1u << r;
+        const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
         for (int c = 0; c < cbw; c++) {
-            int16_t q = mag[r * cbw + c];
+            int q = __float2int_rn(fabsf(__half2float(__ldg(row_ptr + c))) * inv_step);
             if (q == 0) continue;
             for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
                 if ((q >> (num_bp - 1 - bp_idx)) & 1)
