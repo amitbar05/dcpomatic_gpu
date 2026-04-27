@@ -232,17 +232,15 @@ __device__ static void mq_flush(MQCoder* mq) {
  * This computes the result for ALL columns in ~6 bitwise ops vs 8*32 function calls. */
 __device__ static uint32_t has_sig_neighbor_mask(const uint32_t* sigma_pad, int r) {
     /* sigma_pad[r+1] = current row, sigma_pad[r] = north, sigma_pad[r+2] = south.
-     * Real column c is at bit (c+1). Shift left = west neighbor, shift right = east neighbor. */
-    uint32_t north = sigma_pad[r];      /* row above (r-1 in real coords) */
-    uint32_t cur   = sigma_pad[r + 1];  /* current row */
-    uint32_t south = sigma_pad[r + 2];  /* row below (r+1 in real coords) */
-
-    /* OR of all 8 neighbors for each column position */
-    uint32_t nbr = north | south                   /* N, S */
-                 | (cur << 1) | (cur >> 1)          /* W, E */
-                 | (north << 1) | (north >> 1)      /* NW, NE */
-                 | (south << 1) | (south >> 1);     /* SW, SE */
-    return nbr;
+     * V152: algebraic simplification — ns | (ncs<<1) | (ncs>>1) covers all 8 neighbors:
+     *   ns = N|S (direct), ncs<<1 = W|NW|SW (west column), ncs>>1 = E|NE|SE (east column).
+     * 5 ops vs the original 10 ops (6 ORs + 4 shifts). */
+    uint32_t north = sigma_pad[r];
+    uint32_t cur   = sigma_pad[r + 1];
+    uint32_t south = sigma_pad[r + 2];
+    uint32_t ns    = north | south;
+    uint32_t ncs   = ns | cur;
+    return ns | (ncs << 1) | (ncs >> 1);
 }
 
 /* Compute sh (vertical=N+S), sv (horizontal=W+E), sd (diagonal=NW+NE+SW+SE)
@@ -263,17 +261,17 @@ __device__ static void neighbor_counts(const uint32_t* sigma_pad, int r, int c,
 }
 
 /* Bitwise any-significant-neighbor test for a single coefficient.
- * Faster than OR-ing 8 sig_bit calls; no bounds checks. */
+ * V152: 6 ops vs the original 16 ops (7 ORs + 8 shifts + 1 AND).
+ * ns = N|S covers direct vertical; ncs<<1/>>1 covers west/east columns. */
 __device__ static int has_sig_neighbor(const uint32_t* sigma_pad, int r, int c) {
     int pc = c + 1;
     int pr = r + 1;
     uint32_t north = sigma_pad[pr - 1];
     uint32_t south = sigma_pad[pr + 1];
     uint32_t cur   = sigma_pad[pr];
-    /* Check all 8 neighbors with bitwise ops — single expression, no branches */
-    return (((north >> (pc - 1)) | (north >> pc) | (north >> (pc + 1)) |
-             (cur >> (pc - 1)) | (cur >> (pc + 1)) |
-             (south >> (pc - 1)) | (south >> pc) | (south >> (pc + 1))) & 1);
+    uint32_t ns    = north | south;
+    uint32_t ncs   = ns | cur;
+    return ((ns | (ncs << 1) | (ncs >> 1)) >> pc) & 1;
 }
 
 /* Zero-coding context LUT (Table D.1).
