@@ -58,9 +58,9 @@ int main() {
     if (!enc.is_initialized()) { fprintf(stderr,"GPU init failed\n"); return 1; }
     GpuColourParams p; build_params(p); enc.set_colour_params(p);
 
-    /* checker_64: 2D 64-pixel checker */
+    /* v_bars_8: vertical bars (rows) 135 pixels tall - tests V-DWT only */
     auto bar_val = [](int x, int y) -> uint16_t {
-        return uint16_t((((x/64)+(y/64))&1) ? 50000 : 10000);
+        return uint16_t(((y/135) % 2) ? 50000 : 10000);
     };
 
     std::vector<uint16_t> rgb((size_t)W * H * 3);
@@ -129,7 +129,7 @@ int main() {
     int hist[200] = {0}; /* err magnitude histogram, 0..199+ */
     for (int y = 0; y < dH; ++y) {
         for (int x = 0; x < dW; ++x) {
-            int ref = (((x/64)+(y/64))&1) ? y_hi : y_lo;
+            int ref = ((y/135) % 2) ? y_hi : y_lo;
             int err = std::abs(get_y(x, y) - ref);
             if (err > max_err) { max_err = err; max_x = x; max_y = y; }
             total_sq_err += (long long)err * err;

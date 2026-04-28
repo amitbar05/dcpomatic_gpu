@@ -4088,7 +4088,9 @@ compute_base_step(int width, int height, size_t per_comp)
     /* V186: 0.06 multiplier (was 0.25 pre-V185) gives ~4× finer base quantization.
      * Combined with V185 step×2/×4 compensation, final T1 step matches OPJ encoder
      * roughly.  Tried 0.04 and 0.025 — 0.04 cost 27 dB on fast flat_30000 (lossless
-     * lost when step gets near DWT FP16 noise); 0.025 hurts checker_64 worse. */
+     * lost when step gets near DWT FP16 noise); 0.025 hurts checker_64 worse.
+     * V191: tried 0.04 with MAX_BP=16 (correct) and MAX_BP=14 (fast) — correct mode
+     * gains ~1 dB but fast mode loses lossless on flat_30000. */
     return std::clamp(ratio * 0.06f, 0.25f, 32.5f);
 }
 
