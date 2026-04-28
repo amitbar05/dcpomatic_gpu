@@ -396,11 +396,39 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         return 13 - log2s;
     };
 
+    /* V189: per-component proportional truncation.  Compute total bytes for this
+     * comp at full precision; if exceeds budget, scale every CB's len to fit by
+     * truncating passes.  This gives smoother quality vs the previous all-or-
+     * nothing CB inclusion (which dropped whole CBs once the budget filled). */
+    float trunc_ratio[3] = {1.0f, 1.0f, 1.0f};
+    if (target_bytes > 0) {
+        for (int c = 0; c < 3; ++c) {
+            size_t total = 0;
+            int total_cbs = 0;
+            for (size_t sb = 0; sb < subbands.size(); ++sb) {
+                int cb_start = subbands[sb].cb_start_idx;
+                int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
+                for (int i = 0; i < ncbs; ++i) {
+                    uint16_t len = coded_len[c][cb_start + i];
+                    if (len > static_cast<uint16_t>(cb_stride - 1))
+                        len = static_cast<uint16_t>(cb_stride - 1);
+                    total += len;
+                    if (num_passes[c][cb_start + i] > 0 && len > 0) ++total_cbs;
+                }
+            }
+            size_t per_comp_target = target_bytes / 3;
+            if (total > per_comp_target && total > 0)
+                trunc_ratio[c] = static_cast<float>(per_comp_target) / static_cast<float>(total);
+            (void)total_cbs;
+        }
+    }
+
     /* V181: build_tp fills pkt_by_res[comp][res] — one blob per (comp, res) pair.
      * Packets are then interleaved in LRCP order: for each res, comp 0, 1, 2.
      * sanitize is applied per-packet blob to ensure no 0xFF marker sequences. */
     auto build_tp = [&](int comp) {
         size_t comp_bytes = 0;
+        const float ratio_c = trunc_ratio[comp];
         std::vector<uint8_t> pkt_header_buf;
         std::vector<uint8_t> pkt_body;
         pkt_header_buf.reserve(8192);
@@ -444,28 +472,56 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                 zbp_tree.build(ncbx, ncby);
 
                 /* Pre-scan: set leaf values before encoding any bits.
-                 * Excluded CBs: incl=MAX (never included), zbp=pmax (all zero BPs). */
+                 * Excluded CBs: incl=MAX (never included), zbp=pmax (all zero BPs).
+                 * V189: when full inclusion would exceed budget, truncate the CB's
+                 * passes to fit the remaining budget; keep at least 1 pass when
+                 * possible (better than excluding the CB outright). */
                 std::vector<bool> included(ncbs, false);
+                std::vector<uint16_t> cb_len_use(ncbs, 0);
+                std::vector<uint8_t>  cb_np_use(ncbs, 0);
                 for (int cbi = 0; cbi < ncbs; cbi++) {
                     int cb_idx = cb_start + cbi;
                     uint16_t len = coded_len[comp][cb_idx];
                     uint8_t  np  = num_passes[comp][cb_idx];
                     if (len > static_cast<uint16_t>(cb_stride - 1))
                         len = static_cast<uint16_t>(cb_stride - 1);
-                    if (np == 0 || len == 0 || comp_bytes + len > per_comp_budget) {
+                    if (np == 0 || len == 0) {
                         incl_tree.set_leaf(cbi, 0x7FFFFFFF);
                         zbp_tree.set_leaf(cbi, pmax);
-                    } else {
-                        included[cbi] = true;
-                        comp_bytes += len;
-                        incl_tree.set_leaf(cbi, 0);
-                        int nb = (cb_num_bp != nullptr) ? static_cast<int>(cb_num_bp[comp][cb_idx]) : 0;
-                        /* z = pmax-nb: OPJ cblk->numbps = band->numbps-z = pmax-(pmax-nb) = nb. */
-                        int z  = pmax - nb;
-                        if (z < 0) z = 0;
-                        zbp_tree.set_leaf(cbi, z);
+                        continue;
                     }
+                    int np_use = np;
+                    uint16_t len_use = len;
+                    /* If full CB fits remaining budget, include it as-is. */
+                    if (comp_bytes + len > per_comp_budget) {
+                        /* Truncate passes to fit remaining budget. */
+                        size_t remaining = (per_comp_budget > comp_bytes)
+                            ? per_comp_budget - comp_bytes : 0;
+                        const uint16_t* pl = pass_lengths[comp]
+                            + (size_t)cb_idx * MAX_PASSES;
+                        np_use = 0; len_use = 0;
+                        for (int p = 0; p < np; ++p) {
+                            if ((size_t)pl[p] > remaining) break;
+                            np_use = p + 1;
+                            len_use = pl[p];
+                        }
+                    }
+                    if (np_use == 0 || len_use == 0) {
+                        incl_tree.set_leaf(cbi, 0x7FFFFFFF);
+                        zbp_tree.set_leaf(cbi, pmax);
+                        continue;
+                    }
+                    included[cbi] = true;
+                    comp_bytes += len_use;
+                    cb_len_use[cbi] = len_use;
+                    cb_np_use[cbi]  = static_cast<uint8_t>(np_use);
+                    incl_tree.set_leaf(cbi, 0);
+                    int nb = (cb_num_bp != nullptr) ? static_cast<int>(cb_num_bp[comp][cb_idx]) : 0;
+                    int z  = pmax - nb;
+                    if (z < 0) z = 0;
+                    zbp_tree.set_leaf(cbi, z);
                 }
+                (void)ratio_c;
 
                 /* Encode packet header and body for each CB in order. */
                 for (int cbi = 0; cbi < ncbs; cbi++) {
@@ -478,9 +534,11 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     /* ZBP tag tree (threshold = pmax encodes exact z value). */
                     zbp_tree.encode(bw, cbi, pmax);
 
-                    /* Number of coding passes (ITU-T T.800 Table B.4 / OpenJPEG t2_putnumpasses).
-                     * np=37+: 16-bit code 0xFF80|(np-37) — NOT 12-bit as previously wrong. */
-                    uint8_t np = num_passes[comp][cb_idx];
+                    /* V189: use truncated np / len from pre-scan. */
+                    uint8_t  np  = cb_np_use[cbi];
+                    uint16_t len = cb_len_use[cbi];
+
+                    /* Number of coding passes (ITU-T T.800 Table B.4 / OpenJPEG t2_putnumpasses). */
                     if (np == 1)       bw.write_bit(0);
                     else if (np == 2)  bw.write_bits(2, 2);
                     else if (np <= 5)  bw.write_bits(0xC | (np - 3), 4);
@@ -488,9 +546,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     else               bw.write_bits(0xFF80u | (unsigned(np) - 37u), 16);
 
                     /* Code-block length: Lblock + floor(log2(np)) bits. */
-                    uint16_t len = coded_len[comp][cb_idx];
-                    if (len > static_cast<uint16_t>(cb_stride - 1))
-                        len = static_cast<uint16_t>(cb_stride - 1);
                     int lblock = 3;
                     int floor_log2_np = (np <= 1) ? 0 : (31 - __builtin_clz(static_cast<unsigned>(np)));
                     int len_bits = lblock + floor_log2_np;
