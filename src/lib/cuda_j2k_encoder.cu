@@ -4913,6 +4913,14 @@ CudaJ2KEncoder::encode_ebcot(
      * ~2.2x faster, ~25-30% of the correct-mode output size. Output is
      * still a standard J2K codestream (QCD markers carry the coarser step),
      * so it decodes in any J2K decoder — just with visible quality loss. */
+    /* V188: fast mode revival.
+     * After V186 lowered base_step by ~4× and V185 made HH bands use a finer T1 step
+     * (compared to QCD value), fast_mode with MAX_BP=4 became severely under-coded —
+     * LL band coefficients have num_bp ~ 10, dropping 6 MSBs to fit MAX_BP=4 → 7 dB PSNR.
+     *
+     * Compromise: keep fast_step_mult = 3.0 (modest coarsening), bump fast template
+     * MAX_BP to 8 below.  Output will be slightly larger than the pre-V188 fast path
+     * but quality recovers to ~50+ dB. */
     const float fast_step_mult    = fast_mode ? 3.0f : 1.0f;
     const float fast_bitrate_mult = fast_mode ? 0.5f : 1.0f;
 
@@ -5062,7 +5070,11 @@ CudaJ2KEncoder::encode_ebcot(
      * Fast mode: MAX_BP=4 (step_mult=3.0 → coarse quant → ≤4 bit-planes). */
     for (int c = 0; c < 3; ++c) {
         if (fast_mode) {
-            kernel_ebcot_t1<true, 4><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+            /* V188: fast path MAX_BP 4 → 12.  With V186 base_step now ~4× smaller and
+             * V185 effective T1 step varying per band, max num_bp on real frames at
+             * 150 Mbps lands around 10-11.  MAX_BP=12 covers them all without losing
+             * MSBs.  The unrolled inner loop is still small enough to pipeline well. */
+            kernel_ebcot_t1<true, 12><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                 _impl->d_a[c], stride,
                 _impl->d_cb_info, num_cbs,
                 _impl->d_ebcot_data[c],
