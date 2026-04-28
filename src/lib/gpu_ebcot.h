@@ -45,27 +45,27 @@ static constexpr int T1_NUM_CTXS  = 19;
 
 /* ===== MQ Coder Probability Estimation Table (ITU-T T.800, Table C.2) ===== */
 
-struct MQTableEntry {
-    uint16_t qe;      /* probability of LPS */
-    uint8_t  nmps;    /* next state after MPS */
-    uint8_t  nlps;    /* next state after LPS */
-    uint8_t  switchf; /* swap MPS/LPS symbols after LPS? */
-};
+/* V164: Pack all 5 fields into one uint32_t for a single constant-memory read per mq_encode.
+ * Layout: bits[15:0]=qe, bits[21:16]=nmps, bits[27:22]=nlps, bit[28]=switchf.
+ * nmps/nlps max = 46 < 64 → 6 bits each. qe max = 0x5601 → 16 bits. switchf = 0 or 1.
+ * Reduces divergent constant-memory reads from 3 to 1 per mq_encode call. */
+#define MQ_PACK(qe, nmps, nlps, sw) \
+    (uint32_t)((qe) | ((uint32_t)(nmps) << 16) | ((uint32_t)(nlps) << 22) | ((uint32_t)(sw) << 28))
 
 /* 47 entries from the standard */
-__device__ __constant__ static const MQTableEntry MQ_TABLE[47] = {
-    {0x5601,  1,  1, 1}, {0x3401,  2,  6, 0}, {0x1801,  3,  9, 0}, {0x0AC1,  4, 12, 0},
-    {0x0521,  5, 29, 0}, {0x0221, 38, 33, 0}, {0x5601,  7,  6, 1}, {0x5401,  8, 14, 0},
-    {0x4801,  9, 14, 0}, {0x3801, 10, 14, 0}, {0x3001, 11, 17, 0}, {0x2401, 12, 18, 0},
-    {0x1C01, 13, 20, 0}, {0x1601, 29, 21, 0}, {0x5601, 15, 14, 1}, {0x5401, 16, 14, 0},
-    {0x5101, 17, 15, 0}, {0x4801, 18, 16, 0}, {0x3801, 19, 17, 0}, {0x3401, 20, 18, 0},
-    {0x3001, 21, 19, 0}, {0x2801, 22, 19, 0}, {0x2401, 23, 20, 0}, {0x2201, 24, 21, 0},
-    {0x1C01, 25, 22, 0}, {0x1801, 26, 23, 0}, {0x1601, 27, 24, 0}, {0x1401, 28, 25, 0},
-    {0x1201, 29, 26, 0}, {0x1101, 30, 27, 0}, {0x0AC1, 31, 28, 0}, {0x09C1, 32, 29, 0},
-    {0x08A1, 33, 30, 0}, {0x0521, 34, 31, 0}, {0x0441, 35, 32, 0}, {0x02A1, 36, 33, 0},
-    {0x0221, 37, 34, 0}, {0x0141, 38, 35, 0}, {0x0111, 39, 36, 0}, {0x0085, 40, 37, 0},
-    {0x0049, 41, 38, 0}, {0x0025, 42, 39, 0}, {0x0015, 43, 40, 0}, {0x0009, 44, 41, 0},
-    {0x0005, 45, 42, 0}, {0x0001, 45, 43, 0}, {0x5601, 46, 46, 0}
+__device__ __constant__ static const uint32_t MQ_TABLE[47] = {
+    MQ_PACK(0x5601, 1, 1,1), MQ_PACK(0x3401, 2, 6,0), MQ_PACK(0x1801, 3, 9,0), MQ_PACK(0x0AC1, 4,12,0),
+    MQ_PACK(0x0521, 5,29,0), MQ_PACK(0x0221,38,33,0), MQ_PACK(0x5601, 7, 6,1), MQ_PACK(0x5401, 8,14,0),
+    MQ_PACK(0x4801, 9,14,0), MQ_PACK(0x3801,10,14,0), MQ_PACK(0x3001,11,17,0), MQ_PACK(0x2401,12,18,0),
+    MQ_PACK(0x1C01,13,20,0), MQ_PACK(0x1601,29,21,0), MQ_PACK(0x5601,15,14,1), MQ_PACK(0x5401,16,14,0),
+    MQ_PACK(0x5101,17,15,0), MQ_PACK(0x4801,18,16,0), MQ_PACK(0x3801,19,17,0), MQ_PACK(0x3401,20,18,0),
+    MQ_PACK(0x3001,21,19,0), MQ_PACK(0x2801,22,19,0), MQ_PACK(0x2401,23,20,0), MQ_PACK(0x2201,24,21,0),
+    MQ_PACK(0x1C01,25,22,0), MQ_PACK(0x1801,26,23,0), MQ_PACK(0x1601,27,24,0), MQ_PACK(0x1401,28,25,0),
+    MQ_PACK(0x1201,29,26,0), MQ_PACK(0x1101,30,27,0), MQ_PACK(0x0AC1,31,28,0), MQ_PACK(0x09C1,32,29,0),
+    MQ_PACK(0x08A1,33,30,0), MQ_PACK(0x0521,34,31,0), MQ_PACK(0x0441,35,32,0), MQ_PACK(0x02A1,36,33,0),
+    MQ_PACK(0x0221,37,34,0), MQ_PACK(0x0141,38,35,0), MQ_PACK(0x0111,39,36,0), MQ_PACK(0x0085,40,37,0),
+    MQ_PACK(0x0049,41,38,0), MQ_PACK(0x0025,42,39,0), MQ_PACK(0x0015,43,40,0), MQ_PACK(0x0009,44,41,0),
+    MQ_PACK(0x0005,45,42,0), MQ_PACK(0x0001,45,43,0), MQ_PACK(0x5601,46,46,0)
 };
 
 
@@ -152,11 +152,12 @@ __device__ static void mq_renorme(MQCoder* mq) {
 }
 
 /* MQ encode matching OpenJPEG's opj_mqc_encode()
- * V161: ctx_packed = (index << 1) | mps — one LMEM read instead of two. */
+ * V161: ctx_packed = (index << 1) | mps — one LMEM read instead of two.
+ * V164: MQ_TABLE packed into uint32_t — one constant-memory read replaces 3. */
 __device__ static void mq_encode(MQCoder* mq, int ctx, int d) {
     uint8_t  packed = mq->ctx_packed[ctx];   /* V161: one LMEM read */
-    uint8_t  curS   = packed >> 1;
-    uint16_t qe     = MQ_TABLE[curS].qe;
+    uint32_t entry  = MQ_TABLE[packed >> 1]; /* V164: one packed constant-mem read */
+    uint16_t qe     = static_cast<uint16_t>(entry);
     int      mpsv   = packed & 1;
 
     mq->A -= qe;
@@ -164,31 +165,27 @@ __device__ static void mq_encode(MQCoder* mq, int ctx, int d) {
     if (d != mpsv) {
         /* LPS */
         if (mq->A < qe) {
-            /* Conditional exchange: A is already the LPS interval */
             mq->C += qe;
         } else {
-            /* Normal: assign LPS the lower interval */
             mq->A = qe;
         }
-        /* V161: update packed state in one store; new_mps = mpsv ^ switchf */
-        mq->ctx_packed[ctx] = static_cast<uint8_t>(
-            (MQ_TABLE[curS].nlps << 1) | (mpsv ^ MQ_TABLE[curS].switchf));
+        uint8_t nlps    = static_cast<uint8_t>((entry >> 22) & 0x3F);
+        uint8_t switchf = static_cast<uint8_t>((entry >> 28) & 1);
+        mq->ctx_packed[ctx] = static_cast<uint8_t>((nlps << 1) | (mpsv ^ switchf));
         mq_renorme(mq);
     } else {
         /* MPS */
         if (mq->A < 0x8000) {
             if (mq->A < qe) {
-                /* Conditional exchange: swap intervals */
                 mq->A = qe;
             } else {
                 mq->C += qe;
             }
-            /* V161: update index, keep mps unchanged */
-            mq->ctx_packed[ctx] = static_cast<uint8_t>((MQ_TABLE[curS].nmps << 1) | mpsv);
+            uint8_t nmps = static_cast<uint8_t>((entry >> 16) & 0x3F);
+            mq->ctx_packed[ctx] = static_cast<uint8_t>((nmps << 1) | mpsv);
             mq_renorme(mq);
         } else {
             mq->C += qe;
-            /* No state transition — ctx_packed unchanged */
         }
     }
 }
@@ -693,20 +690,14 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             uint32_t s2 = sigma_pad[stripe_y + 2];
             uint32_t s3 = sigma_pad[stripe_y + 3];
             uint32_t s4 = sigma_pad[stripe_y + 4];
-            uint32_t s5 = sigma_pad[stripe_y + 5];
-            uint32_t sig_any = s0 | s1 | s2 | s3 | s4 | s5;
+            uint32_t sig_any = s0 | s1 | s2 | s3 | s4;
             uint32_t hn_pre  = sig_any | (sig_any << 1) | (sig_any >> 1);
             uint32_t coded_or = coded_bits[stripe_y] | coded_bits[stripe_y + 1]
                               | coded_bits[stripe_y + 2] | coded_bits[stripe_y + 3];
             uint32_t fast_not_zero = hn_pre | (coded_or << 1);
 
             /* V160: Precompute per-row skip mask for CUP inner row loop.
-             * cup_skip[ri] bit c = 1 → skip row (stripe_y+ri) of column c in CUP.
-             * = sigma already set OR coded in SPP/MRP for this column.
-             * Safety proof: sigma updates during CUP set bit (c+1) for column c;
-             * future columns c'>c check bit (c'+1) — orthogonal. No staleness.
-             * coded_bits updates set bit c for column c; future columns c'>c
-             * check bit c' — also orthogonal. ✓ */
+             * cup_skip[ri] bit c = 1 → row (stripe_y+ri) of column c is already coded or significant. */
             uint32_t cup_skip[STRIPE_H] = {0, 0, 0, 0};
             for (int ri = 0; ri < stripe_len_cup; ri++)
                 cup_skip[ri] = (sigma_pad[stripe_y + 1 + ri] >> 1) | coded_bits[stripe_y + ri];
@@ -717,11 +708,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 int all_zero;
 
                 if (fast_not_zero & cmask_pad) {
-                    /* Fast path: sigma or neighbor or coded evidence found — not all-zero. */
                     all_zero = 0;
                 } else {
-                    /* Precomputed shows no obvious disqualifiers. Do the full per-row check
-                     * to handle sigma updates from earlier columns in this CUP stripe. */
                     all_zero = (stripe_len_cup == 4) ? 1 : 0;
                     if (all_zero) {
                         for (int r = stripe_y; r < stripe_end; r++) {
@@ -731,16 +719,14 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     }
                 }
 
-                /* V149: load column bit-plane word once per column per pass */
                 uint32_t col_mag = mag_bp[bp_idx][c];
 
                 if (all_zero) {
-                    /* V149: extract stripe bits in one mask op; use __ffs for run-length */
                     uint32_t stripe_bits = (col_mag >> stripe_y) & 0xFu;
                     int any_sig = (stripe_bits != 0);
                     mq_encode(&mq, T1_CTXNO_AGG, any_sig);
                     if (!any_sig) continue;
-                    int run_len = __ffs(stripe_bits) - 1;  /* __ffs returns 1-indexed LSB pos */
+                    int run_len = __ffs(stripe_bits) - 1;
                     mq_encode(&mq, T1_CTXNO_UNI, (run_len >> 1) & 1);
                     mq_encode(&mq, T1_CTXNO_UNI, run_len & 1);
                     int r = stripe_y + run_len;
@@ -751,7 +737,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
                     coded_bits[r] |= cmask;
                     for (r = stripe_y + run_len + 1; r < stripe_end; r++) {
-                        if (cup_skip[r - stripe_y] & cmask) continue;  /* V160: register check */
+                        int ri = r - stripe_y;
+                        if (cup_skip[ri] & cmask) continue;
                         int bit = (col_mag >> r) & 1;
                         int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
@@ -764,8 +751,10 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                         coded_bits[r] |= cmask;
                     }
                 } else {
+#pragma unroll
                     for (int r = stripe_y; r < stripe_end; r++) {
-                        if (cup_skip[r - stripe_y] & cmask) continue;  /* V160: register check */
+                        int ri = r - stripe_y;
+                        if (cup_skip[ri] & cmask) continue;
                         int bit = (col_mag >> r) & 1;
                         int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
