@@ -24,7 +24,7 @@
 static constexpr int CB_DIM      = 32;   /* code-block dimension */
 static constexpr int CB_PIXELS   = CB_DIM * CB_DIM;  /* 1024 */
 static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
-static constexpr int MAX_BPLANES = 16;   /* max bit-planes for 12-bit + guard */
+static constexpr int MAX_BPLANES = 12;   /* V169: reduced from 16; num_bp clamped safely (12 sufficient for 12-bit DWT coefficients at DCP bitrates) */
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
 static constexpr int CB_BUF_SIZE = 2048; /* max coded bytes per code-block — ~avg 500 bytes at 150Mbps */
 
@@ -263,6 +263,35 @@ __device__ static void bypass_flush(BypassCoder* bc) {
     }
 }
 
+/* V166: Write n bits (1 ≤ n ≤ 8) from 'bits', MSB-first.
+ * bits are right-justified: bit n-1 is written first, bit 0 last.
+ * Handles byte boundary crossing and 0xFF stuffing correctly.
+ * Replaces n calls to bypass_write with a single fused operation,
+ * reducing per-column overhead in bypass MRP from O(n) to O(1). */
+__device__ static void bypass_write_bits(BypassCoder* bc, uint8_t bits, int n) {
+    int space = 8 - bc->cnt;
+    if (n <= space) {
+        bc->accum = static_cast<uint8_t>((bc->accum << n) | bits);
+        bc->cnt += n;
+        if (bc->cnt == 8) {
+            *bc->bp = bc->accum;
+            if (bc->accum == 0xFF) { bc->bp++; *bc->bp = 0x00; }
+            bc->bp++;
+            bc->accum = 0;
+            bc->cnt   = 0;
+        }
+    } else {
+        /* Split: fill current byte with top 'space' bits, emit, put rest in accum */
+        int rem = n - space;
+        bc->accum = static_cast<uint8_t>((bc->accum << space) | (bits >> rem));
+        *bc->bp = bc->accum;
+        if (bc->accum == 0xFF) { bc->bp++; *bc->bp = 0x00; }
+        bc->bp++;
+        bc->accum = static_cast<uint8_t>(bits & ((1u << rem) - 1));
+        bc->cnt   = rem;
+    }
+}
+
 
 /* ===== T1 Context Determination (ITU-T T.800, Table D.1/D.2/D.3) ===== */
 /* Optimized: sentinel-padded sigma array eliminates all boundary checks.
@@ -422,6 +451,51 @@ __device__ static int t1_zc_if_neighbor(const uint32_t* sigma_pad, int r, int c,
     return ZC_LUT[subband * 45 + sh * 15 + sv * 5 + sd_clamp];
 }
 
+/* V169: fused ZC+SC context — reads sigma_pad ONCE for both zero-coding and sign coding.
+ * Used in SPP when bit may be 1: computes ZC check and pre-loads sign context data.
+ * Returns ZC context index (or -1 if no significant neighbor).
+ * If ZC >= 0 and *sc_ctx_out is needed: caller provides sign_bits; sc/xor are filled.
+ * Sign context is computed from sigma_pad values BEFORE sigma_pad update — valid because
+ * the update sets bit (c+1) which is checked by NEITHER sig_w (bit c) NOR sig_e (bit c+2). */
+__device__ static int t1_zc_sc_if_neighbor(const uint32_t* sigma_pad, const uint32_t* sign_bits,
+                                            int r, int c, int subband,
+                                            int* sc_ctx_out, int* xor_bit_out)
+{
+    int pc = c + 1, pr = r + 1;
+    uint32_t north = sigma_pad[pr - 1];
+    uint32_t cur   = sigma_pad[pr];
+    uint32_t south = sigma_pad[pr + 1];
+
+    if (!(((north >> (pc-1)) | (north >> pc) | (north >> (pc+1)) |
+           (cur >> (pc-1)) | (cur >> (pc+1)) |
+           (south >> (pc-1)) | (south >> pc) | (south >> (pc+1))) & 1))
+        return -1;
+
+    int sh = ((north >> pc) & 1) + ((south >> pc) & 1);
+    int sv = ((cur >> (pc-1)) & 1) + ((cur >> (pc+1)) & 1);
+    int sd = ((north >> (pc-1)) & 1) + ((north >> (pc+1)) & 1)
+           + ((south >> (pc-1)) & 1) + ((south >> (pc+1)) & 1);
+    int zc = ZC_LUT[subband * 45 + sh * 15 + sv * 5 + ((sd < 4) ? sd : 4)];
+
+    /* Precompute sign context using already-loaded sigma rows */
+    uint32_t sig_w = (cur >> (pc - 1)) & 1;
+    uint32_t sig_e = (cur >> (pc + 1)) & 1;
+    int hpos = 0, hneg = 0;
+    if (sig_w) { if ((sign_bits[r] >> (c - 1)) & 1) hneg = 1; else hpos = 1; }
+    if (sig_e) { if ((sign_bits[r] >> (c + 1)) & 1) hneg = 1; else hpos = 1; }
+    int hc = hpos - hneg;
+    uint32_t sig_n = (north >> pc) & 1;
+    uint32_t sig_s = (south >> pc) & 1;
+    int vpos = 0, vneg = 0;
+    if (sig_n) { if ((sign_bits[r - 1] >> c) & 1) vneg = 1; else vpos = 1; }
+    if (sig_s) { if ((sign_bits[r + 1] >> c) & 1) vneg = 1; else vpos = 1; }
+    int vc = vpos - vneg;
+    if (hc < 0) { hc = -hc; vc = -vc; }
+    if (hc == 0) { *xor_bit_out = (vc < 0) ? 1 : 0; *sc_ctx_out = (vc == 0) ? 0 : 1; }
+    else         { *xor_bit_out = 0; *sc_ctx_out = (vc < 0) ? 2 : (vc == 0) ? 3 : 4; }
+    return zc;
+}
+
 /* Sign coding context (Table D.2) — returns context label offset (0-4) + XOR bit.
  * Optimized: uses padded sigma to eliminate bounds checks. Branchless where possible. */
 __device__ static void t1_sign_context_fast(const uint32_t* sigma_pad, const uint32_t* sign_bits,
@@ -461,6 +535,40 @@ __device__ static void t1_sign_context_fast(const uint32_t* sigma_pad, const uin
     }
 }
 
+/* V169: ZC context from pre-loaded sigma rows (avoids LMEM re-read when caller has rows) */
+__device__ static int t1_zc_from_rows(uint32_t north, uint32_t cur, uint32_t south,
+                                       int c, int subband) {
+    int pc = c + 1;
+    int sh = ((north >> pc) & 1) + ((south >> pc) & 1);
+    int sv = ((cur >> (pc-1)) & 1) + ((cur >> (pc+1)) & 1);
+    int sd = ((north >> (pc-1)) & 1) + ((north >> (pc+1)) & 1)
+           + ((south >> (pc-1)) & 1) + ((south >> (pc+1)) & 1);
+    return ZC_LUT[subband * 45 + sh * 15 + sv * 5 + ((sd < 4) ? sd : 4)];
+}
+
+/* V169: SC context from pre-loaded sigma rows — same math as t1_sign_context_fast but
+ * using caller-provided rows so the LMEM reads are shared with ZC context computation. */
+__device__ static void t1_sc_from_rows(uint32_t north, uint32_t cur, uint32_t south,
+                                        const uint32_t* sign_bits, int r, int c,
+                                        int* ctx_out, int* xor_bit_out) {
+    int pc = c + 1;
+    uint32_t sig_w = (cur >> (pc - 1)) & 1;
+    uint32_t sig_e = (cur >> (pc + 1)) & 1;
+    int hpos = 0, hneg = 0;
+    if (sig_w) { if ((sign_bits[r] >> (c - 1)) & 1) hneg = 1; else hpos = 1; }
+    if (sig_e) { if ((sign_bits[r] >> (c + 1)) & 1) hneg = 1; else hpos = 1; }
+    int hc = hpos - hneg;
+    uint32_t sig_n = (north >> pc) & 1;
+    uint32_t sig_s = (south >> pc) & 1;
+    int vpos = 0, vneg = 0;
+    if (sig_n) { if ((sign_bits[r - 1] >> c) & 1) vneg = 1; else vpos = 1; }
+    if (sig_s) { if ((sign_bits[r + 1] >> c) & 1) vneg = 1; else vpos = 1; }
+    int vc = vpos - vneg;
+    if (hc < 0) { hc = -hc; vc = -vc; }
+    if (hc == 0) { *xor_bit_out = (vc < 0) ? 1 : 0; *ctx_out = (vc == 0) ? 0 : 1; }
+    else         { *xor_bit_out = 0; *ctx_out = (vc < 0) ? 2 : (vc == 0) ? 3 : 4; }
+}
+
 /* Magnitude refinement context (Table D.3) — uses padded sigma, no bounds checks.
  * Returns context label offset (0-2). */
 __device__ static int t1_mr_context_fast(const uint32_t* sigma_pad, const uint32_t* firstref_bits,
@@ -497,6 +605,7 @@ struct CodeBlockInfo {
  * V145: (128, 8) and (32, 32) both ~1% slower than (64, 16).
  * V155: tried (64, 32) for 32 blocks/SM — forced 32 regs, reduced ILP → +3ms. Reverted.
  * V156: bp_skip re-enabled with correct edge-case guard (always code >= 1 bit-plane).
+ * V167d: launch_bounds(64) no minBlocks → 40 regs + spills → 48ms. Reverted.
  * Caller must launch with exactly 64 threads/block. */
 __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
@@ -572,6 +681,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     /* 2. Compute number of bit-planes using __clz (count leading zeros) */
     int num_bp = (max_mag > 0) ? (32 - __clz(max_mag)) : 0;
+    if (num_bp > MAX_BPLANES) num_bp = MAX_BPLANES;  /* V169: clamp to array size */
     if (num_bp == 0) {
         d_coded_len[cb_idx] = 0;
         d_num_passes[cb_idx] = 0;
@@ -662,7 +772,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
             int stripe_len = stripe_end - stripe_y;
 
-            /* V159: SPP fast-skip: if ALL rows already significant, nothing to do. */
+            /* V159: SPP fast-skip: AND of all stripe rows — bit set = all 4 rows are significant. */
             uint32_t spp_all_sig = sigma_pad[stripe_y + 1] & sigma_pad[stripe_y + 2]
                                  & sigma_pad[stripe_y + 3] & sigma_pad[stripe_y + 4];
 
@@ -673,15 +783,16 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
-                if (spp_all_sig & cmask_pad) continue;
                 uint32_t cmask = 1u << c;
+                if (spp_all_sig & cmask_pad) continue;
                 uint32_t col_mag = mag_bp[bp_idx][c];
                 for (int r = stripe_y; r < stripe_end; r++) {
                     if (spp_sig[r - stripe_y] & cmask) continue;
-                    if (!has_sig_neighbor(sigma_pad, r, c)) continue;
+                    /* V168: fused neighbor-check + ZC context — halves sigma_pad LMEM reads */
+                    int zc = t1_zc_if_neighbor(sigma_pad, r, c, cbi.subband_type);
+                    if (zc < 0) continue;
 
                     int bit = (col_mag >> r) & 1;
-                    int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                     mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
 
                     if (bit) {
@@ -713,10 +824,13 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 uint32_t mrp_proc[STRIPE_H] = {0, 0, 0, 0};
                 for (int ri = 0; ri < stripe_len_mrp; ri++)
                     mrp_proc[ri] = (sigma_pad[stripe_y + 1 + ri] >> 1) & ~coded_bits[stripe_y + ri];
-                uint32_t mrp_colmask = mrp_proc[0] | mrp_proc[1] | mrp_proc[2] | mrp_proc[3];
-                for (int c = 0; c < cbw; c++) {
+                /* V166: bit-scan over active MRP columns only */
+                uint32_t mrp_active = mrp_proc[0] | mrp_proc[1]
+                                    | mrp_proc[2] | mrp_proc[3];
+                while (mrp_active) {
+                    int c = __ffs(mrp_active) - 1;
+                    mrp_active &= mrp_active - 1u;
                     uint32_t cmask = 1u << c;
-                    if (!(mrp_colmask & cmask)) continue;
                     uint32_t col_mag = mag_bp[bp_idx][c];
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if (!(mrp_proc[r - stripe_y] & cmask)) continue;
@@ -759,8 +873,11 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
         /* --- Cleanup Pass (CUP) — always runs, including first bit-plane --- */
         if (bp_bypass) {
-            /* V165: Bypass CUP — write raw significance and sign bits directly.
-             * No AGG run-length coding, no ZC/SC context, no MQ arithmetic. */
+            /* V166: Bypass CUP — column-level skip added (mirrors mrp_colmask).
+             * In lower bit-planes almost all coefficients are already significant,
+             * so cup_skip is dense.  cup_active_colmask lets us jump over columns
+             * where all stripe rows are covered by cup_skip, avoiding 4 inner-row
+             * iterations × ~29 of 32 columns per late-bypass stripe. */
             BypassCoder bc;
             bc.bp = mq.bp + 1;  bc.accum = 0;  bc.cnt = 0;
             for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
@@ -769,7 +886,14 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 uint32_t cup_skip[STRIPE_H] = {0, 0, 0, 0};
                 for (int ri = 0; ri < stripe_len_cup; ri++)
                     cup_skip[ri] = (sigma_pad[stripe_y + 1 + ri] >> 1) | coded_bits[stripe_y + ri];
-                for (int c = 0; c < cbw; c++) {
+                /* V166: Bit-scan over active columns only — avoids testing all 32
+                 * for the common case in late bypass bit-planes where cup_skip is dense. */
+                uint32_t cup_all_skip = cup_skip[0] & cup_skip[1]
+                                      & cup_skip[2] & cup_skip[3];
+                uint32_t cup_active   = ~cup_all_skip & ((1u << cbw) - 1u);
+                while (cup_active) {
+                    int c = __ffs(cup_active) - 1;  /* column index of lowest set bit */
+                    cup_active &= cup_active - 1u;  /* clear lowest set bit */
                     uint32_t cmask_pad = 1u << (c + 1);
                     uint32_t cmask = 1u << c;
                     uint32_t col_mag = mag_bp[bp_idx][c];
@@ -821,7 +945,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                         all_zero = 0;
                     } else {
                         all_zero = (stripe_len_cup == 4) ? 1 : 0;
-                        if (all_zero) {
+                        /* V168: when !any_significant, sigma_pad is all-zero → has_sig_neighbor
+                         * always false, cup_skip always zero — skip inner loop entirely. */
+                        if (all_zero && any_significant) {
                             for (int r = stripe_y; r < stripe_end; r++) {
                                 if (cup_skip[r - stripe_y] & cmask) { all_zero = 0; break; }
                                 if (has_sig_neighbor(sigma_pad, r, c)) { all_zero = 0; break; }
@@ -850,8 +976,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                             int ri = r - stripe_y;
                             if (cup_skip[ri] & cmask) continue;
                             int bit = (col_mag >> r) & 1;
-                            int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
-                            mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
+                            int zc2 = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
+                            mq_encode(&mq, T1_CTXNO_ZC + zc2, bit);
                             if (bit) {
                                 sigma_pad[r + 1] |= cmask_pad;
                                 any_significant = 1;
@@ -866,14 +992,14 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                             int ri = r - stripe_y;
                             if (cup_skip[ri] & cmask) continue;
                             int bit = (col_mag >> r) & 1;
-                            int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
-                            mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
+                            int zc2 = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
+                            mq_encode(&mq, T1_CTXNO_ZC + zc2, bit);
                             if (bit) {
                                 sigma_pad[r + 1] |= cmask_pad;
                                 any_significant = 1;
-                                int sc_ctx, xor_bit;
-                                t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
-                                mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
+                                int sc_ctx2, xor_bit2;
+                                t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx2, &xor_bit2);
+                                mq_encode(&mq, T1_CTXNO_SC + sc_ctx2, ((sign_bits[r] >> c) & 1) ^ xor_bit2);
                             }
                             coded_bits[r] |= cmask;
                         }
