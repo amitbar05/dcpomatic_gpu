@@ -347,7 +347,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w8(static_cast<uint8_t>(num_levels));
     w8(3);    /* xcb' = 3 → code-block width = 32 */
     w8(3);    /* ycb' = 3 → code-block height = 32 */
-    w8(0x00); /* V180_TEST: BYPASS disabled */
+    w8(0x00); /* SPcod: BYPASS bit=0.  Re-enabling produced decode failures. */
     w8(0x00); /* filter = 0 (9/7 irreversible) */
 
     /* QCD — per-subband step sizes (matching T1 quantization) */

@@ -5061,9 +5061,10 @@ CudaJ2KEncoder::encode_ebcot(
      * Effective quantization on those coefficients ≈ step × 2; combined
      * with step_mult=3.0 → effective step × 6 on the LSB. */
     int  bp_skip    = fast_mode ? 1 : 0;
-    /* V165: BYPASS mode — always enabled. Enables raw bit coding for MRP+CUP
-     * from the 3rd bit-plane down. Per J2K Part 1 C.3.8 BYPASS. */
-    bool use_bypass = false; /* V180_TEST: disable to isolate */
+    /* V165: BYPASS mode disabled — re-enabling produced "segment too long" decode
+     * failures even after V187, indicating residual bugs in the bypass coding path.
+     * Leave off until those are fixed; the speed gain isn't worth correctness. */
+    bool use_bypass = false;
     /* V177: MAX_BP increased to 14 for correct mode.
      * base_step=2.12 at 150Mbps/2K → max q ≈ 4095/1.378 ≈ 2972 → 12 bit-planes.
      * p_max = 13 - floor(log2(step_LL5)) + 1 = 14 for LL5. MAX_BP=14 covers all.

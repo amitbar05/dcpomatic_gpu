@@ -82,6 +82,7 @@ struct Pattern {
 };
 
 static int W = 2048, H = 1080;
+/* Set W=4096 H=2160 for 4K test via env: PSNR_4K=1 */
 
 static double psnr(const std::vector<int>& dec, std::function<int(int,int)> ref) {
     double mse = 0.0;
@@ -107,9 +108,10 @@ static void run(CudaJ2KEncoder& enc, const char* name,
             rgb[((size_t)y*W + x)*3 + 1] = v;
             rgb[((size_t)y*W + x)*3 + 2] = v;
         }
+    bool use_fast = (getenv("USE_FAST") != nullptr);
     /* warmup + measured */
-    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, false);
-    auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, false);
+    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, use_fast);
+    auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, use_fast);
 
     std::vector<std::vector<int>> comps; int dW, dH;
     if (!opj_decode(cs, comps, dW, dH, 0)) {
@@ -126,6 +128,7 @@ static void run(CudaJ2KEncoder& enc, const char* name,
 
 int main()
 {
+    if (getenv("PSNR_4K")) { W = 4096; H = 2160; }
     CudaJ2KEncoder enc;
     if (!enc.is_initialized()) { fprintf(stderr,"init failed\n"); return 1; }
     GpuColourParams p; build_params(p); enc.set_colour_params(p);
