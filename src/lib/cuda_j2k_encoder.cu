@@ -5075,8 +5075,8 @@ CudaJ2KEncoder::encode_ebcot(
         if (fast_mode) {
             /* V188: fast path MAX_BP 4 → 12.  With V186 base_step now ~4× smaller and
              * V185 effective T1 step varying per band, max num_bp on real frames at
-             * 150 Mbps lands around 10-11.  MAX_BP=12 covers them all without losing
-             * MSBs.  Tried MAX_BP=8 with mult=6 — quality collapsed to 12-16 dB. */
+             * 150 Mbps lands around 10-11.  Tried MAX_BP=10 — h_gradient regressed
+             * 52.9→26.8 dB (some CB hit 11 bit-planes, MSB truncated). MAX_BP=12 stays. */
             kernel_ebcot_t1<true, 12><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                 _impl->d_a[c], stride,
                 _impl->d_cb_info, num_cbs,
