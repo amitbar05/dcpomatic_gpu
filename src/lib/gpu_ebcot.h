@@ -24,7 +24,15 @@
 static constexpr int CB_DIM      = 32;   /* code-block dimension */
 static constexpr int CB_PIXELS   = CB_DIM * CB_DIM;  /* 1024 */
 static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
-static constexpr int MAX_BPLANES = 10;  /* correct-mode guard */
+/* V180: MAX_BPLANES must match the largest MAX_BP template arg used by callers
+ * (cuda_j2k_encoder.cu launches kernel_ebcot_t1<false,14>).  When MAX_BPLANES was
+ * 10 but a code-block's quantizer produced num_bp=14, the kernel wrote up to 40
+ * pass lengths into a 30-entry slice of d_pass_lengths, overflowing into the
+ * NEXT code-block's pass-length record and corrupting T2 packet header
+ * generation.  This caused gradient/natural images to decode as a sea of zeros
+ * with sporadic large reconstructed magnitudes (PSNR ~9 dB) even with the MQ
+ * coder and sign contexts correct.  Raise to 16 so MAX_PASSES=48 ≥ 14*3=42. */
+static constexpr int MAX_BPLANES = 16;
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
 static constexpr int CB_BUF_SIZE = 2048; /* max coded bytes per code-block — ~avg 500 bytes at 150Mbps */
 
