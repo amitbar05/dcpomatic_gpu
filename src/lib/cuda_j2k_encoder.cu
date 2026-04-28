@@ -132,6 +132,28 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V187: Fix tiled V-DWT out-of-bounds load at image bottom — 14-39 dB PSNR jump.
+          kernel_fused_vert_dwt_tiled_ho_2col's `interior` flag only checked
+          tile_start + V_TILE <= height, but the LOAD reads V_TILE_FL=32 rows
+          starting at load_start=tile_start-V_OVERLAP.  For the LAST tile
+          (tile_start + V_TILE = height exactly), interior=true, but
+          load_start + V_TILE_FL = height + V_OVERLAP exceeded image height.
+          The interior load path then read V_OVERLAP=4 rows past the image
+          bottom as garbage memory, producing huge spurious H-band coefficients
+          on the last 2-3 rows — visible as decoded values clipping to 0/4095
+          on bars and ~80 LSB error on flat regions.
+          Fix: interior = (load_start >= 0) && (load_start + V_TILE_FL <= height).
+          Forces the last tile through the mirroring path, which gives correct
+          symmetric extension.
+          PSNR jumps:
+            flat_50000: 48.8 → 63.4 dB
+            h_bars_8:   47.3 → 60.3 dB
+            v_bars_8:   48.6 → 61.0 dB
+            two_value:  52.9 → 65.3 dB
+    V186: Lower compute_base_step multiplier 0.25 → 0.06.  After V185 the T1
+          step is internally scaled (×2 HL/LH, ×4 HH), so the same abstract
+          base_step gives much coarser quantization.  Smaller multiplier
+          recovers per-bitplane resolution; clamp lower bound 1.0 → 0.25.
     V185: Fix HL/LH/HH stepsize compensation for irreversible 9/7 inverse DWT.
           OpenJPEG inverse DWT uses two_invK = 2/K (not invK) per dwt.c "BUG_WEIRD_TWO_INVK"
           comment.  This doubles HL/LH coefficients and quadruples HH on decode.  OPJ's
@@ -2255,7 +2277,13 @@ void kernel_fused_vert_dwt_tiled_ho_2col(
 
     int load_start = tile_start - V_OVERLAP;
     int tile_end   = min(tile_start + V_TILE, height);
-    bool interior  = (tile_start >= V_OVERLAP) && (tile_start + V_TILE <= height);
+    /* V187: `interior` must guarantee the LOAD reads are all in-bounds, i.e.
+     * load_start + V_TILE_FL <= height (NOT just tile_start + V_TILE <= height).
+     * The previous condition let the last tile (whose tile_end touches height)
+     * fall into the interior path, which then read V_OVERLAP rows past the
+     * image bottom as garbage memory and produced huge spurious H-band
+     * coefficients on the last few rows. */
+    bool interior  = (load_start >= 0) && (load_start + V_TILE_FL <= height);
 
     __half2 col2[V_TILE_FL];
     if (interior) {
@@ -4052,7 +4080,16 @@ compute_base_step(int width, int height, size_t per_comp)
 {
     size_t pixels = static_cast<size_t>(width) * height;
     float ratio = static_cast<float>(pixels) / std::max(per_comp, static_cast<size_t>(1));
-    return std::clamp(ratio * 0.25f, 1.0f, 32.5f);
+    /* V186: drop step by 4× — was clamp(ratio*0.25, 1.0, 32.5) → 2.13 at 150Mbps/2K.
+     * After V185 fix our T1 step is internally ×2 (HL/LH) or ×4 (HH), so the same
+     * "abstract" base_step gives much coarser HH quantization than before.  Lower
+     * base_step means finer quantization and more bit-planes; PSNR rises substantially
+     * on hard patterns (bars, checker) until num_bp brushes against MAX_BP. */
+    /* V186: 0.06 multiplier (was 0.25 pre-V185) gives ~4× finer base quantization.
+     * Combined with V185 step×2/×4 compensation, final T1 step matches OPJ encoder
+     * roughly.  Smaller multipliers (0.03) hurt high-entropy patterns by hitting the
+     * per-component byte budget early. */
+    return std::clamp(ratio * 0.06f, 0.25f, 32.5f);
 }
 
 static void
