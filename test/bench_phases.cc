@@ -47,8 +47,8 @@ int main(int argc, char** argv)
             rgb[i+2] = uint16_t((0.5f + 0.5f*std::sin((fx+fy)*15.f + 2.f))*60000.f);
         }
 
-    /* Warm up */
-    for (int i = 0; i < 3; ++i)
+    /* Warm up: 10 frames so GPU/DRAM reaches thermal steady state */
+    for (int i = 0; i < 10; ++i)
         (void) enc.encode_ebcot(rgb.data(), W, H, W*3, BR, FPS, false, false, fast);
 
     double total_ms = 0;

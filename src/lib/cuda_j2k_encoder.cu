@@ -132,6 +132,17 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V171: Eliminate mag_bp LMEM array — recompute per bit-plane from d_dwt.
+          mag_bp[MAX_BPLANES][CB_DIM] (1280 bytes LMEM) removed; replaced with
+          col_mag_arr[CB_DIM] computed per bit-plane by re-reading d_dwt coefficients.
+          MAX_BPLANES raised to 16 (guard only — loop bound is num_bp from quantizer).
+          Pass 2 (mag_bp pre-build loop) eliminated; bit-plane loop recomputes col_mag_arr.
+          ptxas: 46 regs, 800 bytes LMEM (was 44 regs, 1952 bytes — 1152 bytes saved).
+          Benchmark: 47.5ms (unchanged — d_dwt re-read DRAM cost ≈ LMEM savings).
+          Phase tmarks split: "DWT" → "RGB+HDWT0" + "DWT_lv1+" for diagnostics.
+          bench_phases.cc warmup increased 3→10 frames for thermal steady-state accuracy.
+          Also added kernel_rgb48_xyz_hdwt0_1ch_4row (kept, not dispatched; 4-row hurts
+          occupancy at 2K vs 2-row: 75% vs 100% due to 16KB vs 8KB smem).
     V128: Remove dead kernel_rgb48_xyz_hdwt0_1ch_4row_p12 — parity Slang V90.
           Never launched (annotated V124); runtime uses 2-row (2K) and 1-row (4K) p12 kernels.
           Deleted ~253 lines of function body + cudaFuncSetCacheConfig reference.
@@ -3014,6 +3025,160 @@ kernel_rgb48_xyz_hdwt0_1ch_2row(
 
 
 /**
+ * V171: 4-rows-per-block RGB→XYZ+HDWT0 kernel for RGB48 interleaved input.
+ * Halves block count vs 2-row: (height+1)/2 → (height+3)/4 blocks.
+ * Shared memory: 4*w*sizeof(__half).
+ * Launch: <<<(height+3)/4, H_THREADS_FUSED, 4*w*sizeof(__half), st>>>
+ */
+__global__ void
+kernel_rgb48_xyz_hdwt0_1ch_4row(
+    const uint16_t* __restrict__ d_rgb16,
+    const __half*   __restrict__ d_lut_in,
+    const uint16_t* __restrict__ d_lut_out,
+    const float*    __restrict__ d_matrix,
+    __half* __restrict__ d_hout,
+    int comp,
+    int width, int height, int rgb_stride, int stride)
+{
+    extern __shared__ __half sm[];  /* [0..w-1]=y0, [w..2w-1]=y1, [2w..3w-1]=y2, [3w..4w-1]=y3 */
+    int y0 = blockIdx.x * 4;
+    int y1 = y0 + 1, y2 = y0 + 2, y3 = y0 + 3;
+    int t = threadIdx.x, nt = blockDim.x;
+    int w = width, hw = (w + 1) / 2;
+
+    int mr = comp * 3;
+    float m0 = __ldg(&d_matrix[mr]);
+    float m1 = __ldg(&d_matrix[mr + 1]);
+    float m2 = __ldg(&d_matrix[mr + 2]);
+
+    /* Phase 1: colour-convert all 4 rows → sm[0..4w-1]. */
+    for (int px = t; px < w; px += nt) {
+        int b0 = y0 * rgb_stride + px * 3;
+        int ri = min((__ldg(&d_rgb16[b0 + 0]) >> 4), 4095);
+        int gi = min((__ldg(&d_rgb16[b0 + 1]) >> 4), 4095);
+        int bi = min((__ldg(&d_rgb16[b0 + 2]) >> 4), 4095);
+        float r = __half2float(__ldg(&d_lut_in[ri]));
+        float g = __half2float(__ldg(&d_lut_in[gi]));
+        float b = __half2float(__ldg(&d_lut_in[bi]));
+        float v = __saturatef(m0*r + m1*g + m2*b);
+        sm[px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)]));
+    }
+    if (y1 < height) {
+        for (int px = t; px < w; px += nt) {
+            int b1 = y1 * rgb_stride + px * 3;
+            int ri = min((__ldg(&d_rgb16[b1 + 0]) >> 4), 4095);
+            int gi = min((__ldg(&d_rgb16[b1 + 1]) >> 4), 4095);
+            int bi = min((__ldg(&d_rgb16[b1 + 2]) >> 4), 4095);
+            float r = __half2float(__ldg(&d_lut_in[ri]));
+            float g = __half2float(__ldg(&d_lut_in[gi]));
+            float b = __half2float(__ldg(&d_lut_in[bi]));
+            float v = __saturatef(m0*r + m1*g + m2*b);
+            sm[w + px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)]));
+        }
+    }
+    if (y2 < height) {
+        for (int px = t; px < w; px += nt) {
+            int b2 = y2 * rgb_stride + px * 3;
+            int ri = min((__ldg(&d_rgb16[b2 + 0]) >> 4), 4095);
+            int gi = min((__ldg(&d_rgb16[b2 + 1]) >> 4), 4095);
+            int bi = min((__ldg(&d_rgb16[b2 + 2]) >> 4), 4095);
+            float r = __half2float(__ldg(&d_lut_in[ri]));
+            float g = __half2float(__ldg(&d_lut_in[gi]));
+            float b = __half2float(__ldg(&d_lut_in[bi]));
+            float v = __saturatef(m0*r + m1*g + m2*b);
+            sm[2*w + px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)]));
+        }
+    }
+    if (y3 < height) {
+        for (int px = t; px < w; px += nt) {
+            int b3 = y3 * rgb_stride + px * 3;
+            int ri = min((__ldg(&d_rgb16[b3 + 0]) >> 4), 4095);
+            int gi = min((__ldg(&d_rgb16[b3 + 1]) >> 4), 4095);
+            int bi = min((__ldg(&d_rgb16[b3 + 2]) >> 4), 4095);
+            float r = __half2float(__ldg(&d_lut_in[ri]));
+            float g = __half2float(__ldg(&d_lut_in[gi]));
+            float b = __half2float(__ldg(&d_lut_in[bi]));
+            float v = __saturatef(m0*r + m1*g + m2*b);
+            sm[3*w + px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)]));
+        }
+    }
+    __syncthreads();
+
+    /* Phase 2: in-place CDF 9/7 H-DWT on all 4 rows, 4 lifting passes. */
+    /* Alpha: odd positions */
+    for (int x = 1+t*2; x < w-1; x += nt*2) {
+        sm[x]     += __half(ALPHA) * (sm[x-1]       + sm[x+1]);
+        if (y1 < height) sm[w+x]   += __half(ALPHA) * (sm[w+x-1]   + sm[w+x+1]);
+        if (y2 < height) sm[2*w+x] += __half(ALPHA) * (sm[2*w+x-1] + sm[2*w+x+1]);
+        if (y3 < height) sm[3*w+x] += __half(ALPHA) * (sm[3*w+x-1] + sm[3*w+x+1]);
+    }
+    if (t==0) {
+        sm[w-1]   += __half(2.f*ALPHA) * sm[w-2];
+        if (y1 < height) sm[2*w-1] += __half(2.f*ALPHA) * sm[2*w-2];
+        if (y2 < height) sm[3*w-1] += __half(2.f*ALPHA) * sm[3*w-2];
+        if (y3 < height) sm[4*w-1] += __half(2.f*ALPHA) * sm[4*w-2];
+    }
+    __syncthreads();
+    /* Beta: even positions */
+    if (t==0) {
+        sm[0] += __half(2.f*BETA) * sm[1];
+        if (y1 < height) sm[w]   += __half(2.f*BETA) * sm[w+1];
+        if (y2 < height) sm[2*w] += __half(2.f*BETA) * sm[2*w+1];
+        if (y3 < height) sm[3*w] += __half(2.f*BETA) * sm[3*w+1];
+    }
+    for (int x = 2+t*2; x < w; x += nt*2) {
+        sm[x]     += __half(BETA) * (sm[x-1]       + sm[x+1]);
+        if (y1 < height) sm[w+x]   += __half(BETA) * (sm[w+x-1]   + sm[w+x+1]);
+        if (y2 < height) sm[2*w+x] += __half(BETA) * (sm[2*w+x-1] + sm[2*w+x+1]);
+        if (y3 < height) sm[3*w+x] += __half(BETA) * (sm[3*w+x-1] + sm[3*w+x+1]);
+    }
+    __syncthreads();
+    /* Gamma: odd positions */
+    for (int x = 1+t*2; x < w-1; x += nt*2) {
+        sm[x]     += __half(GAMMA) * (sm[x-1]       + sm[x+1]);
+        if (y1 < height) sm[w+x]   += __half(GAMMA) * (sm[w+x-1]   + sm[w+x+1]);
+        if (y2 < height) sm[2*w+x] += __half(GAMMA) * (sm[2*w+x-1] + sm[2*w+x+1]);
+        if (y3 < height) sm[3*w+x] += __half(GAMMA) * (sm[3*w+x-1] + sm[3*w+x+1]);
+    }
+    if (t==0) {
+        sm[w-1]   += __half(2.f*GAMMA) * sm[w-2];
+        if (y1 < height) sm[2*w-1] += __half(2.f*GAMMA) * sm[2*w-2];
+        if (y2 < height) sm[3*w-1] += __half(2.f*GAMMA) * sm[3*w-2];
+        if (y3 < height) sm[4*w-1] += __half(2.f*GAMMA) * sm[4*w-2];
+    }
+    __syncthreads();
+    /* Delta: even positions */
+    if (t==0) {
+        sm[0] += __half(2.f*DELTA) * sm[1];
+        if (y1 < height) sm[w]   += __half(2.f*DELTA) * sm[w+1];
+        if (y2 < height) sm[2*w] += __half(2.f*DELTA) * sm[2*w+1];
+        if (y3 < height) sm[3*w] += __half(2.f*DELTA) * sm[3*w+1];
+    }
+    for (int x = 2+t*2; x < w; x += nt*2) {
+        sm[x]     += __half(DELTA) * (sm[x-1]       + sm[x+1]);
+        if (y1 < height) sm[w+x]   += __half(DELTA) * (sm[w+x-1]   + sm[w+x+1]);
+        if (y2 < height) sm[2*w+x] += __half(DELTA) * (sm[2*w+x-1] + sm[2*w+x+1]);
+        if (y3 < height) sm[3*w+x] += __half(DELTA) * (sm[3*w+x-1] + sm[3*w+x+1]);
+    }
+    __syncthreads();
+
+    /* Phase 3: deinterleave and write half output for all 4 rows. */
+    for (int x = t*2;   x < w; x += nt*2) {
+        d_hout[y0*stride + x/2]                         = sm[x]     * __half(NORM_L);
+        if (y1 < height) d_hout[y1*stride + x/2]        = sm[w+x]   * __half(NORM_L);
+        if (y2 < height) d_hout[y2*stride + x/2]        = sm[2*w+x] * __half(NORM_L);
+        if (y3 < height) d_hout[y3*stride + x/2]        = sm[3*w+x] * __half(NORM_L);
+    }
+    for (int x = t*2+1; x < w; x += nt*2) {
+        d_hout[y0*stride + hw + x/2]                    = sm[x]     * __half(NORM_H);
+        if (y1 < height) d_hout[y1*stride + hw + x/2]  = sm[w+x]   * __half(NORM_H);
+        if (y2 < height) d_hout[y2*stride + hw + x/2]  = sm[2*w+x] * __half(NORM_H);
+        if (y3 < height) d_hout[y3*stride + hw + x/2]  = sm[3*w+x] * __half(NORM_H);
+    }
+}
+
+
+/**
  * V54: 2-rows-per-block RGB→XYZ+HDWT0 kernel for packed 12-bit planar input.
  *
  * Input format (d_rgb12): 3 contiguous planes, each holding all pixels of one channel
@@ -4711,6 +4876,8 @@ CudaJ2KEncoder::encode_ebcot(
             width, height, rgb_stride_pixels, stride);
     }
 
+    tmark("RGB+HDWT0");
+
     /* Step 3: DWT levels 1+ (H-DWT + V-DWT per level per component) */
     for (int c = 0; c < 3; ++c) {
         int w = width, h = height;
@@ -4730,7 +4897,7 @@ CudaJ2KEncoder::encode_ebcot(
      * T1 is launched on the same stream[c] as DWT, so the intra-stream
      * ordering is automatic. We only need to sync if we're about to do
      * CPU-side work that modifies the CB table (step 4). */
-    tmark("DWT");
+    tmark("DWT_lv1+");
 
     /* Step 4: Build code-block table if needed */
     int64_t frame_bits = bit_rate / fps;

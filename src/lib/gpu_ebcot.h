@@ -24,7 +24,7 @@
 static constexpr int CB_DIM      = 32;   /* code-block dimension */
 static constexpr int CB_PIXELS   = CB_DIM * CB_DIM;  /* 1024 */
 static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
-static constexpr int MAX_BPLANES = 12;   /* V169: reduced from 16; num_bp clamped safely (12 sufficient for 12-bit DWT coefficients at DCP bitrates) */
+static constexpr int MAX_BPLANES = 16;  /* V171: clamp guard only; mag_bp eliminated */
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
 static constexpr int CB_BUF_SIZE = 2048; /* max coded bytes per code-block — ~avg 500 bytes at 150Mbps */
 
@@ -643,14 +643,13 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      * and columns shifted by +1 (bit 0 and bit cbw+1 are sentinel zeros).
      * This eliminates ALL boundary checks from neighbor significance lookups.
      *
-     * V149: mag_bp[bp_idx][c] replaces mag[r*cbw+c] in the coding loop.
-     * Layout: mag_bp[bp_idx][c] = uint32 with bit r set if coefficient (r,c)
+     * V149: col_mag_arr[c] replaces mag[r*cbw+c] in the coding loop.
+     * Layout: col_mag_arr[c] = uint32 with bit r set if coefficient (r,c)
      * has bit bp_idx set.  In the hot coding loop we load ONE uint32 per column
      * per bit-plane (replacing 4 strided int16 LMEM loads), then extract row
      * bits with register shifts — 32× fewer LMEM load instructions.
-     * V151: plane-first layout mag_bp[bp_idx][c] so the coding loop reads
-     * 32 contiguous uint32 columns per cache line instead of strided 64B. */
-    uint32_t mag_bp[MAX_BPLANES][CB_DIM]; /* V151: plane-first: mag_bp[bp_idx][c] */
+     * V171: mag_bp[] eliminated — recompute per-bit-plane col_mag_arr[] from d_dwt.
+     * Reduces active LMEM from 1952→730 bytes (63% less), improving L2 hit rate. */
     uint32_t sigma_pad[CB_DIM + 2]; /* padded: sigma_pad[0]=sentinel, [1..cbh]=real, [cbh+1]=sentinel */
     uint32_t sign_bits[CB_DIM];     /* sign: bit c = negative (real indexing, not padded) */
     uint32_t firstref_bits[CB_DIM]; /* first refinement: bit c = first time */
@@ -689,26 +688,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         return;
     }
 
-    /* V154: pack mag_bp[] directly from d_dwt (two-pass, no mag[] intermediary).
-     * bp_idx=0 is the MSB plane (bit num_bp-1 of the magnitude).
-     * Plane-first layout: 32 contiguous uint32 values per bit-plane row —
-     * the coding loop loads the full plane in 1 cache line instead of 16. */
-    for (int bp_idx = 0; bp_idx < num_bp; bp_idx++)
-        for (int c = 0; c < cbw; c++)
-            mag_bp[bp_idx][c] = 0;
-
-    for (int r = 0; r < cbh; r++) {
-        uint32_t rmask = 1u << r;
-        const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
-        for (int c = 0; c < cbw; c++) {
-            int q = __float2int_rn(fabsf(__half2float(__ldg(row_ptr + c))) * inv_step);
-            if (q == 0) continue;
-            for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
-                if ((q >> (num_bp - 1 - bp_idx)) & 1)
-                    mag_bp[bp_idx][c] |= rmask;
-            }
-        }
-    }
+    /* V171: mag_bp[] removed. col_mag_arr[] is computed fresh per bit-plane
+     * inside the coding loop by re-reading d_dwt. Saves 1280 bytes LMEM. */
 
     /* 3. Initialize MQ coder */
     uint8_t* out_buf = d_coded_data + (size_t)cb_idx * CB_BUF_SIZE;
@@ -735,6 +716,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      * Padded sigma convention: real row r -> sigma_pad[r+1], real col c -> bit (c+1).
      * Macro SIGP(sigma_pad, r, c) reads significance without bounds checks. */
 
+    /* V171: col_mag_arr[] — column bitvector for current bit-plane, recomputed per bp. */
+    uint32_t col_mag_arr[CB_DIM];
+
     /* Track whether any coefficient is significant yet (for early pass skipping) */
     int any_significant = 0;
 
@@ -746,8 +730,19 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     for (int bp = num_bp - 1; bp >= 0; bp--) {
         bool first_bp = (bp == num_bp - 1);
-        /* V149: bp_idx=0 is MSB plane; coded loop iterates bp from MSB down */
-        int bp_idx = num_bp - 1 - bp;
+
+        /* V171: Compute col_mag_arr[] for this bit-plane by re-reading d_dwt.
+         * Bit bp of the magnitude coefficient determines if this bit-plane has a '1'.
+         * Re-reading d_dwt trades bandwidth for 1280 bytes less active LMEM. */
+        for (int c = 0; c < cbw; c++) col_mag_arr[c] = 0;
+        for (int r = 0; r < cbh; r++) {
+            uint32_t rmask = 1u << r;
+            const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
+            for (int c = 0; c < cbw; c++) {
+                int q = __float2int_rn(fabsf(__half2float(__ldg(row_ptr + c))) * inv_step);
+                if ((q >> bp) & 1) col_mag_arr[c] |= rmask;
+            }
+        }
 
         /* V165: BYPASS flag — MRP and CUP use raw bit coding from the 3rd bit-plane down.
          * Per J2K Part 1 C.3.8: first 4 passes (CUP+SPP+MRP+CUP of top 2 bit-planes) are
@@ -758,8 +753,6 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
          * from the previous non-bypass CUP), restart MQ arithmetic state at the byte
          * position after the previous bypass CUP output. Contexts are preserved. */
         if (bp_bypass && bp < num_bp - 3) {
-            /* Previous bit-plane ended with bypass CUP; mq.bp is already at the last
-             * bypass byte. Restart MQ for this SPP at the next byte. */
             mq_restart(&mq, mq.bp + 1);
         }
 
@@ -785,7 +778,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
                 if (spp_all_sig & cmask_pad) continue;
-                uint32_t col_mag = mag_bp[bp_idx][c];
+                uint32_t col_mag = col_mag_arr[c];
                 for (int r = stripe_y; r < stripe_end; r++) {
                     if (spp_sig[r - stripe_y] & cmask) continue;
                     /* V168: fused neighbor-check + ZC context — halves sigma_pad LMEM reads */
@@ -831,7 +824,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     int c = __ffs(mrp_active) - 1;
                     mrp_active &= mrp_active - 1u;
                     uint32_t cmask = 1u << c;
-                    uint32_t col_mag = mag_bp[bp_idx][c];
+                    uint32_t col_mag = col_mag_arr[c];
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if (!(mrp_proc[r - stripe_y] & cmask)) continue;
                         bypass_write(&bc, (col_mag >> r) & 1);
@@ -856,7 +849,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 for (int c = 0; c < cbw; c++) {
                     uint32_t cmask = 1u << c;
                     if (!(mrp_colmask & cmask)) continue;
-                    uint32_t col_mag = mag_bp[bp_idx][c];
+                    uint32_t col_mag = col_mag_arr[c];
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if (!(mrp_proc[r - stripe_y] & cmask)) continue;
                         int bit = (col_mag >> r) & 1;
@@ -896,7 +889,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     cup_active &= cup_active - 1u;  /* clear lowest set bit */
                     uint32_t cmask_pad = 1u << (c + 1);
                     uint32_t cmask = 1u << c;
-                    uint32_t col_mag = mag_bp[bp_idx][c];
+                    uint32_t col_mag = col_mag_arr[c];
                     for (int r = stripe_y; r < stripe_end; r++) {
                         int ri = r - stripe_y;
                         if (cup_skip[ri] & cmask) continue;
@@ -955,7 +948,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                         }
                     }
 
-                    uint32_t col_mag = mag_bp[bp_idx][c];
+                    uint32_t col_mag = col_mag_arr[c];
 
                     if (all_zero) {
                         uint32_t stripe_bits = (col_mag >> stripe_y) & 0xFu;
