@@ -494,12 +494,11 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     uint32_t firstref_bits[CB_DIM]; /* first refinement: bit c = first time */
     uint32_t coded_bits[CB_DIM];    /* coded in current pass */
 
-    sigma_pad[0] = 0;           /* north sentinel row */
-    sigma_pad[cbh + 1] = 0;     /* south sentinel row */
-    for (int r = 0; r < cbh; r++) {
-        sigma_pad[r + 1] = 0;   /* real rows stored at [r+1], shifted by 1 bit for column sentinel */
-        firstref_bits[r] = 0xFFFFFFFF; /* all 1s = first time */
-    }
+    /* V158: initialize full sigma_pad (all CB_DIM+2 entries) so V158's per-stripe
+     * precomputed mask can safely read sigma_pad[stripe_y+5] for any stripe including
+     * the last incomplete stripe of small boundary code-blocks (e.g. cbh=2). */
+    for (int i = 0; i < CB_DIM + 2; i++) sigma_pad[i] = 0;
+    for (int r = 0; r < cbh; r++) firstref_bits[r] = 0xFFFFFFFF;
 
     float inv_step = __frcp_rn(cbi.quant_step);  /* fast reciprocal */
 
@@ -594,8 +593,19 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         if (any_significant) {
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
+
+            /* V159: SPP fast-skip — if ALL rows in column c are already significant,
+             * there is nothing for SPP to code in this column. This is safe because
+             * sigma_pad[*] bit (c+1) is only updated when column c itself is processed
+             * (not adjacent columns), so there is no staleness issue for column c's mask.
+             * Note: the broader spp_colmask approach (checking neighbor significance) is
+             * UNSAFE due to rightward propagation of new sigma within the same SPP stripe. */
+            uint32_t spp_all_sig = sigma_pad[stripe_y + 1] & sigma_pad[stripe_y + 2]
+                                 & sigma_pad[stripe_y + 3] & sigma_pad[stripe_y + 4];
+
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
+                if (spp_all_sig & cmask_pad) continue;  /* V159: all rows significant, skip */
                 uint32_t cmask = 1u << c;
                 /* V149: load column bit-plane word once; extract per-row bits from register */
                 uint32_t col_mag = mag_bp[bp_idx][c];
@@ -626,8 +636,15 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         if (any_significant) {
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
+
+            /* V159: MRP fast-skip — skip columns with no already-significant coefficients.
+             * Exact check: if no row in stripe has sigma set for column c, skip. */
+            uint32_t mrp_colmask = sigma_pad[stripe_y + 1] | sigma_pad[stripe_y + 2]
+                                 | sigma_pad[stripe_y + 3] | sigma_pad[stripe_y + 4];
+
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
+                if (!(mrp_colmask & cmask_pad)) continue;  /* V159: fast skip */
                 uint32_t cmask = 1u << c;
                 uint32_t col_mag = mag_bp[bp_idx][c];
                 for (int r = stripe_y; r < stripe_end; r++) {
@@ -646,17 +663,49 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         /* --- Cleanup Pass (CUP) — always runs, including first bit-plane --- */
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
+
+            /* V158: Precompute a per-stripe "definitely not all-zero" bitmask to
+             * fast-exit the all_zero check for most columns.
+             * bit (c+1) set → column c cannot use AGG run-length coding this stripe.
+             * Covers: direct significance in any stripe+border row (s0..s5),
+             *         significant 8-neighbor of any stripe row (spread by ±1 bit),
+             *         coded in a prior pass (coded_bits OR).
+             * sigma_pad is fully initialized (all CB_DIM+2 entries = 0) so accessing
+             * sigma_pad[stripe_y+5] is always safe even for boundary CBs.
+             * Saves up to 20 LMEM reads per column for the ~90% of columns that are
+             * not all-zero (those that hit the fast_not_zero & cmask_pad branch below). */
+            uint32_t s0 = sigma_pad[stripe_y];
+            uint32_t s1 = sigma_pad[stripe_y + 1];
+            uint32_t s2 = sigma_pad[stripe_y + 2];
+            uint32_t s3 = sigma_pad[stripe_y + 3];
+            uint32_t s4 = sigma_pad[stripe_y + 4];
+            uint32_t s5 = sigma_pad[stripe_y + 5];
+            uint32_t sig_any = s0 | s1 | s2 | s3 | s4 | s5;
+            uint32_t hn_pre  = sig_any | (sig_any << 1) | (sig_any >> 1);
+            uint32_t coded_or = coded_bits[stripe_y] | coded_bits[stripe_y + 1]
+                              | coded_bits[stripe_y + 2] | coded_bits[stripe_y + 3];
+            uint32_t fast_not_zero = hn_pre | (coded_or << 1);
+
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
-                int all_zero = 1;
                 int stripe_len = stripe_end - stripe_y;
-                if (stripe_len == 4) {
-                    for (int r = stripe_y; r < stripe_end; r++) {
-                        if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) { all_zero = 0; break; }
-                        if (has_sig_neighbor(sigma_pad, r, c)) { all_zero = 0; break; }
+                int all_zero;
+
+                if (fast_not_zero & cmask_pad) {
+                    /* Fast path: sigma or neighbor or coded evidence found — not all-zero. */
+                    all_zero = 0;
+                } else {
+                    /* Precomputed shows no obvious disqualifiers. Do the full per-row check
+                     * to handle sigma updates from earlier columns in this CUP stripe. */
+                    all_zero = (stripe_len == 4) ? 1 : 0;
+                    if (all_zero) {
+                        for (int r = stripe_y; r < stripe_end; r++) {
+                            if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) { all_zero = 0; break; }
+                            if (has_sig_neighbor(sigma_pad, r, c)) { all_zero = 0; break; }
+                        }
                     }
-                } else { all_zero = 0; }
+                }
 
                 /* V149: load column bit-plane word once per column per pass */
                 uint32_t col_mag = mag_bp[bp_idx][c];
