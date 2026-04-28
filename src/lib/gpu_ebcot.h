@@ -24,7 +24,7 @@
 static constexpr int CB_DIM      = 32;   /* code-block dimension */
 static constexpr int CB_PIXELS   = CB_DIM * CB_DIM;  /* 1024 */
 static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
-static constexpr int MAX_BPLANES = 16;  /* V171: clamp guard only; mag_bp eliminated */
+static constexpr int MAX_BPLANES = 10;  /* V172: correct-mode clamp (fast mode always clamps to 4) */
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
 static constexpr int CB_BUF_SIZE = 2048; /* max coded bytes per code-block — ~avg 500 bytes at 150Mbps */
 
@@ -606,7 +606,14 @@ struct CodeBlockInfo {
  * V155: tried (64, 32) for 32 blocks/SM — forced 32 regs, reduced ILP → +3ms. Reverted.
  * V156: bp_skip re-enabled with correct edge-case guard (always code >= 1 bit-plane).
  * V167d: launch_bounds(64) no minBlocks → 40 regs + spills → 48ms. Reverted.
+ * V172: template<bool FAST4>: fast path (FAST4=true) clamps num_bp to 4, uses pre-built
+ *       mag_bp[4][CB_DIM] (Pass 2) instead of per-iteration d_dwt re-read. At num_bp≤4,
+ *       the compiler fully unrolls the bit-plane loop → 0 LMEM (same as V169 MAX_BPLANES=4).
+ *       Correct path (FAST4=false): V171 col_mag_arr recompute, 800 bytes LMEM.
+ *       Dispatch: fast flag → kernel_ebcot_t1<true>; else → kernel_ebcot_t1<false>.
+ *       (64, 8) tested, no change: LMEM=800 bytes, 47 regs. Not from reg pressure.
  * Caller must launch with exactly 64 threads/block. */
+template<bool FAST4>
 __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
     int dwt_stride,                      /* row stride of DWT array (= image width) */
@@ -680,7 +687,13 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     /* 2. Compute number of bit-planes using __clz (count leading zeros) */
     int num_bp = (max_mag > 0) ? (32 - __clz(max_mag)) : 0;
-    if (num_bp > MAX_BPLANES) num_bp = MAX_BPLANES;  /* V169: clamp to array size */
+    /* V172: FAST4 clamps to 4 planes (compiler can then fully unroll → 0 LMEM).
+     * Correct mode clamps to MAX_BPLANES (guard against array overflow). */
+    if constexpr (FAST4) {
+        if (num_bp > 4) num_bp = 4;
+    } else {
+        if (num_bp > MAX_BPLANES) num_bp = MAX_BPLANES;
+    }
     if (num_bp == 0) {
         d_coded_len[cb_idx] = 0;
         d_num_passes[cb_idx] = 0;
@@ -688,8 +701,30 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         return;
     }
 
-    /* V171: mag_bp[] removed. col_mag_arr[] is computed fresh per bit-plane
-     * inside the coding loop by re-reading d_dwt. Saves 1280 bytes LMEM. */
+    /* V172: FAST4=true uses mag_bp_flat[4*CB_DIM] (pre-built, allows 0 LMEM at ≤4 planes).
+     * FAST4=false uses V171 col_mag_arr recompute per bit-plane (800 bytes LMEM).
+     * For FAST4=false: mag_bp_flat is size-1 dead code eliminated by compiler. */
+    uint32_t mag_bp_flat[FAST4 ? 4 * CB_DIM : 1];
+
+    if constexpr (FAST4) {
+        /* V172 Pass 2 (FAST4): build mag_bp_flat[bp_idx * CB_DIM + c].
+         * bp_idx=0 is the MSB plane. Layout matches V169's mag_bp[bp_idx][c]. */
+        for (int bp_idx = 0; bp_idx < num_bp; bp_idx++)
+            for (int c = 0; c < cbw; c++)
+                mag_bp_flat[bp_idx * CB_DIM + c] = 0;
+        for (int r = 0; r < cbh; r++) {
+            uint32_t rmask = 1u << r;
+            const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
+            for (int c = 0; c < cbw; c++) {
+                int q = __float2int_rn(fabsf(__half2float(__ldg(row_ptr + c))) * inv_step);
+                if (q == 0) continue;
+                for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
+                    if ((q >> (num_bp - 1 - bp_idx)) & 1)
+                        mag_bp_flat[bp_idx * CB_DIM + c] |= rmask;
+                }
+            }
+        }
+    }
 
     /* 3. Initialize MQ coder */
     uint8_t* out_buf = d_coded_data + (size_t)cb_idx * CB_BUF_SIZE;
@@ -717,7 +752,10 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      * Macro SIGP(sigma_pad, r, c) reads significance without bounds checks. */
 
     /* V171: col_mag_arr[] — column bitvector for current bit-plane, recomputed per bp. */
-    uint32_t col_mag_arr[CB_DIM];
+    /* V172: col_mag_arr only used in FAST4=false path (V171 recompute).
+     * In FAST4=true path, coding passes access mag_bp_flat directly.
+     * Declared as size-1 dead array in FAST4=true (compiler eliminates it). */
+    uint32_t col_mag_arr[FAST4 ? 1 : CB_DIM];
 
     /* Track whether any coefficient is significant yet (for early pass skipping) */
     int any_significant = 0;
@@ -730,17 +768,20 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     for (int bp = num_bp - 1; bp >= 0; bp--) {
         bool first_bp = (bp == num_bp - 1);
+        /* V172: bp_idx for FAST4 mag_bp_flat indexing (MSB plane = bp_idx 0) */
+        const int bp_idx = num_bp - 1 - bp;
 
-        /* V171: Compute col_mag_arr[] for this bit-plane by re-reading d_dwt.
-         * Bit bp of the magnitude coefficient determines if this bit-plane has a '1'.
-         * Re-reading d_dwt trades bandwidth for 1280 bytes less active LMEM. */
-        for (int c = 0; c < cbw; c++) col_mag_arr[c] = 0;
-        for (int r = 0; r < cbh; r++) {
-            uint32_t rmask = 1u << r;
-            const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
-            for (int c = 0; c < cbw; c++) {
-                int q = __float2int_rn(fabsf(__half2float(__ldg(row_ptr + c))) * inv_step);
-                if ((q >> bp) & 1) col_mag_arr[c] |= rmask;
+        /* V172: For correct mode (FAST4=false): recompute col_mag_arr from d_dwt (V171).
+         * For fast mode (FAST4=true): passes use mag_bp_flat[bp_idx*CB_DIM+c] directly. */
+        if constexpr (!FAST4) {
+            for (int c = 0; c < cbw; c++) col_mag_arr[c] = 0;
+            for (int r = 0; r < cbh; r++) {
+                uint32_t rmask = 1u << r;
+                const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
+                for (int c = 0; c < cbw; c++) {
+                    int q = __float2int_rn(fabsf(__half2float(__ldg(row_ptr + c))) * inv_step);
+                    if ((q >> bp) & 1) col_mag_arr[c] |= rmask;
+                }
             }
         }
 
@@ -778,7 +819,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
                 if (spp_all_sig & cmask_pad) continue;
-                uint32_t col_mag = col_mag_arr[c];
+                uint32_t col_mag = FAST4 ? mag_bp_flat[bp_idx * CB_DIM + c] : col_mag_arr[c];
                 for (int r = stripe_y; r < stripe_end; r++) {
                     if (spp_sig[r - stripe_y] & cmask) continue;
                     /* V168: fused neighbor-check + ZC context — halves sigma_pad LMEM reads */
@@ -824,7 +865,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     int c = __ffs(mrp_active) - 1;
                     mrp_active &= mrp_active - 1u;
                     uint32_t cmask = 1u << c;
-                    uint32_t col_mag = col_mag_arr[c];
+                    uint32_t col_mag = FAST4 ? mag_bp_flat[bp_idx * CB_DIM + c] : col_mag_arr[c];
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if (!(mrp_proc[r - stripe_y] & cmask)) continue;
                         bypass_write(&bc, (col_mag >> r) & 1);
@@ -849,7 +890,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 for (int c = 0; c < cbw; c++) {
                     uint32_t cmask = 1u << c;
                     if (!(mrp_colmask & cmask)) continue;
-                    uint32_t col_mag = col_mag_arr[c];
+                    uint32_t col_mag = FAST4 ? mag_bp_flat[bp_idx * CB_DIM + c] : col_mag_arr[c];
                     for (int r = stripe_y; r < stripe_end; r++) {
                         if (!(mrp_proc[r - stripe_y] & cmask)) continue;
                         int bit = (col_mag >> r) & 1;
@@ -889,7 +930,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     cup_active &= cup_active - 1u;  /* clear lowest set bit */
                     uint32_t cmask_pad = 1u << (c + 1);
                     uint32_t cmask = 1u << c;
-                    uint32_t col_mag = col_mag_arr[c];
+                    uint32_t col_mag = FAST4 ? mag_bp_flat[bp_idx * CB_DIM + c] : col_mag_arr[c];
                     for (int r = stripe_y; r < stripe_end; r++) {
                         int ri = r - stripe_y;
                         if (cup_skip[ri] & cmask) continue;
@@ -948,7 +989,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                         }
                     }
 
-                    uint32_t col_mag = col_mag_arr[c];
+                    uint32_t col_mag = FAST4 ? mag_bp_flat[bp_idx * CB_DIM + c] : col_mag_arr[c];
 
                     if (all_zero) {
                         uint32_t stripe_bits = (col_mag >> stripe_y) & 0xFu;

@@ -132,6 +132,16 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V172: template<bool FAST4> kernel_ebcot_t1 — fast path clamps to 4 bit-planes.
+          FAST4=true: pre-build mag_bp_flat[4*CB_DIM] in Pass 2 (1× d_dwt read vs num_bp×).
+            Passes access mag_bp_flat directly; col_mag_arr eliminated (dead code).
+            ptxas: 46 regs, 1184 bytes LMEM (mag_bp_flat 512 + others 672).
+            Benchmark fast: 19.3ms/frame, 214969 bytes (59% faster than 47.5ms!).
+          FAST4=false: V171 col_mag_arr per-iteration recompute, 800 bytes LMEM.
+            Benchmark correct: 47.1ms/frame, 793109 bytes (unchanged).
+          Dispatch: fast_mode flag → kernel_ebcot_t1<true>; else → kernel_ebcot_t1<false>.
+          Quality trade-off: FAST4 clamps num_bp to 4 → 214KB vs 793KB at 150 Mbps.
+            Acceptable for preview/draft; correct mode for final DCP export.
     V171: Eliminate mag_bp LMEM array — recompute per bit-plane from d_dwt.
           mag_bp[MAX_BPLANES][CB_DIM] (1280 bytes LMEM) removed; replaced with
           col_mag_arr[CB_DIM] computed per bit-plane by re-reading d_dwt coefficients.
@@ -4969,16 +4979,32 @@ CudaJ2KEncoder::encode_ebcot(
     /* V165: BYPASS mode — always enabled. Enables raw bit coding for MRP+CUP
      * from the 3rd bit-plane down. Per J2K Part 1 C.3.8 BYPASS. */
     bool use_bypass = true;
+    /* V172: fast mode uses kernel_ebcot_t1<true> — clamps num_bp to 4, uses pre-built
+     * mag_bp[4][CB_DIM] (Pass 2). At ≤4 bit-planes, compiler fully unrolls the loop
+     * → 0 LMEM → ~42.5ms (same as V169 MAX_BPLANES=4 behavior).
+     * Correct mode uses kernel_ebcot_t1<false> — V171 col_mag_arr recompute, 800 LMEM. */
     for (int c = 0; c < 3; ++c) {
-        kernel_ebcot_t1<<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-            _impl->d_a[c], stride,
-            _impl->d_cb_info, num_cbs,
-            _impl->d_ebcot_data[c],
-            _impl->d_ebcot_len[c],
-            _impl->d_ebcot_npasses[c],
-            _impl->d_ebcot_passlens[c],
-            _impl->d_ebcot_numbp[c],
-            bp_skip, use_bypass);
+        if (fast_mode) {
+            kernel_ebcot_t1<true><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                _impl->d_a[c], stride,
+                _impl->d_cb_info, num_cbs,
+                _impl->d_ebcot_data[c],
+                _impl->d_ebcot_len[c],
+                _impl->d_ebcot_npasses[c],
+                _impl->d_ebcot_passlens[c],
+                _impl->d_ebcot_numbp[c],
+                bp_skip, use_bypass);
+        } else {
+            kernel_ebcot_t1<false><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                _impl->d_a[c], stride,
+                _impl->d_cb_info, num_cbs,
+                _impl->d_ebcot_data[c],
+                _impl->d_ebcot_len[c],
+                _impl->d_ebcot_npasses[c],
+                _impl->d_ebcot_passlens[c],
+                _impl->d_ebcot_numbp[c],
+                bp_skip, use_bypass);
+        }
     }
 
     /* V148: T1 error is checked after the stream syncs at the end of D2H. */
