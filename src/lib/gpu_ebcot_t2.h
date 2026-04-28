@@ -590,36 +590,70 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         for (int c = 0; c < 3; c++)
             fprintf(stderr, "DEBUG pkt r=%d c=%d size=%zu\n", r, c, pkt_by_res[c][r].size());
 #endif
-    size_t total_pkt = 0;
+    /* V194: split packets across DCP-required tile-parts (3 for 2K, 6 for 4K).
+     * Each TP: SOT (12 bytes) + SOD (2 bytes) + its share of packet bytes.
+     * Pack packets into TPs in LRCP order, splitting on byte boundaries. */
+    int n_tile_parts = is_4k ? 6 : 3;
+
+    /* Build a flat ordered list of (comp, res) packet blobs in LRCP order. */
+    std::vector<const std::vector<uint8_t>*> ordered_pkts;
+    ordered_pkts.reserve((num_levels + 1) * 3);
     for (int r = 0; r <= num_levels; r++)
         for (int c = 0; c < 3; c++)
-            total_pkt += pkt_by_res[c][r].size();
+            ordered_pkts.push_back(&pkt_by_res[c][r]);
 
-    uint32_t single_tp_size = static_cast<uint32_t>(12 + 2 + total_pkt);
+    size_t total_pkt = 0;
+    for (auto* p : ordered_pkts) total_pkt += p->size();
 
-    /* TLM — single tile-part for tile 0 */
+    /* Distribute packets across TPs by total byte count.  TP boundaries fall on
+     * packet boundaries (we don't split a packet across TPs). */
+    std::vector<int> tp_first_pkt(n_tile_parts);
+    std::vector<size_t> tp_pkt_bytes(n_tile_parts, 0);
+    {
+        size_t target_per_tp = (total_pkt + n_tile_parts - 1) / n_tile_parts;
+        int pkt_idx = 0;
+        for (int t = 0; t < n_tile_parts; ++t) {
+            tp_first_pkt[t] = pkt_idx;
+            size_t accum = 0;
+            int last_t = (t == n_tile_parts - 1);
+            while (pkt_idx < (int)ordered_pkts.size()
+                   && (last_t || accum < target_per_tp)) {
+                accum += ordered_pkts[pkt_idx]->size();
+                ++pkt_idx;
+            }
+            tp_pkt_bytes[t] = accum;
+        }
+        /* If we exited with fewer pkts than tp_first_pkt suggests, the remaining
+         * TPs get zero packets — emit empty TPs to satisfy the spec count. */
+    }
+
+    /* TLM — list all tile-parts. */
     w16(J2K_TLM_M);
-    w16(static_cast<uint16_t>(2 + 1 + 1 + 1 * (1 + 4))); /* Ltlm: 1 entry */
+    w16(static_cast<uint16_t>(2 + 1 + 1 + n_tile_parts * (1 + 4))); /* Ltlm */
     w8(0);    /* Ztlm = 0 */
     w8(0x50); /* Stlm: ST=1 (1-byte Ttlm), SP=1 (4-byte Ptlm) */
-    w8(0);              /* Ttlm = tile 0 */
-    w32(single_tp_size);
+    for (int t = 0; t < n_tile_parts; ++t) {
+        uint32_t tp_size = static_cast<uint32_t>(12 + 2 + tp_pkt_bytes[t]);
+        w8(0);                /* Ttlm = tile 0 (single tile) */
+        w32(tp_size);
+    }
 
-    /* V193 reverted: LRCP order (r outer, c inner) matches COD=0x00 progression. */
-    w16(J2K_SOT_M);
-    w16(10);
-    w16(0);   /* tile index = 0 */
-    w32(single_tp_size);
-    w8(0);    /* tile-part index = 0 */
-    w8(1);    /* number of tile-parts = 1 */
-    w16(J2K_SOD_M);
-    for (int r = 0; r <= num_levels; r++)
-        for (int c = 0; c < 3; c++)
-            cs.insert(cs.end(), pkt_by_res[c][r].begin(), pkt_by_res[c][r].end());
+    /* Emit each tile-part. */
+    for (int t = 0; t < n_tile_parts; ++t) {
+        uint32_t tp_size = static_cast<uint32_t>(12 + 2 + tp_pkt_bytes[t]);
+        w16(J2K_SOT_M);
+        w16(10);
+        w16(0);                                        /* Isot: tile index */
+        w32(tp_size);                                  /* Psot: TP byte length */
+        w8(static_cast<uint8_t>(t));                   /* TPsot: TP index */
+        w8(static_cast<uint8_t>(n_tile_parts));        /* TNsot: total TPs */
+        w16(J2K_SOD_M);
+        int end_pkt = (t + 1 < n_tile_parts) ? tp_first_pkt[t + 1] : (int)ordered_pkts.size();
+        for (int i = tp_first_pkt[t]; i < end_pkt; ++i)
+            cs.insert(cs.end(), ordered_pkts[i]->begin(), ordered_pkts[i]->end());
+    }
 
-    /* EOC — final marker.  V139 FIX: NEVER pad after EOC.  Trailing zeros are
-     * illegal J2K and cause dcp::verify_j2k to throw "missing marker start
-     * byte" on low-content frames (e.g. black/near-uniform first frames). */
+    /* EOC — final marker.  V139 FIX: NEVER pad after EOC. */
     w16(J2K_EOC_M);
 
     return cs;
