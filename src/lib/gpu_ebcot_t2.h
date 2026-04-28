@@ -3,7 +3,10 @@
  * CPU-side code for assembling EBCOT T1-coded data into a valid J2K codestream.
  *
  * Called after GPU EBCOT T1 kernel produces coded bytes per code-block.
- * Assembles packets in CPRL progression order with single quality layer.
+ * V181: LRCP progression order (Layer-Resolution-Component-Position).
+ * Packets interleaved as: for each res r, write packets for comp 0, 1, 2.
+ * This avoids CPRL OpenJPEG quirk where all 18 packets were assigned to comp 0
+ * (decoded comp 0 std=1337 vs expected 763; comp 1/2 nearly all-2048).
  */
 
 #ifndef GPU_EBCOT_T2_H
@@ -117,11 +120,19 @@ inline void build_codeblock_table(
             sg.width = defs[s].sw; sg.height = defs[s].sh;
             sg.type = defs[s].type; sg.level = static_cast<uint8_t>(l - 1);
             sg.res = num_levels - l + 1;
-            sg.step = step;
+            sg.step = step;  /* QCD writes this; T1 quantizes with step * inv_dwt_gain. */
             sg.ncbx = (sg.width + CB_DIM - 1) / CB_DIM;
             sg.ncby = (sg.height + CB_DIM - 1) / CB_DIM;
             sg.cb_start_idx = static_cast<int>(cb_infos.size());
             sg.cb_x0 = 0; sg.cb_y0 = 0;
+            /* V185: irreversible 9/7 inverse DWT amplifies HL/LH by 2x and HH by 4x
+             * (OPJ uses two_invK = 2/K instead of invK; see opj dwt.c "BUG_WEIRD_TWO_INVK").
+             * To compensate, T1 must quantize with step × inv_dwt_gain so dequantized
+             * coefficients are pre-scaled smaller; the inverse DWT then amplifies them
+             * back to the right magnitude.  QCD writes the unscaled `step`. */
+            float t1_step = step;
+            if (defs[s].type == SUBBAND_HL || defs[s].type == SUBBAND_LH) t1_step = step * 2.0f;
+            else if (defs[s].type == SUBBAND_HH) t1_step = step * 4.0f;
             for (int cby = 0; cby < sg.ncby; cby++) {
                 for (int cbx = 0; cbx < sg.ncbx; cbx++) {
                     CodeBlockInfo cbi;
@@ -131,7 +142,7 @@ inline void build_codeblock_table(
                     cbi.height = static_cast<int16_t>(std::min(CB_DIM, sg.height - cby * CB_DIM));
                     cbi.subband_type = static_cast<uint8_t>(defs[s].type);
                     cbi.level = static_cast<uint8_t>(l - 1);
-                    cbi.quant_step = step;
+                    cbi.quant_step = t1_step;
                     cb_infos.push_back(cbi);
                 }
             }
@@ -149,48 +160,48 @@ inline void build_codeblock_table(
  * - For each code-block: inclusion (1 bit), zero bit-planes (tag tree), npasses, lengths
  */
 /* V144: batched MSB-first bit writer.
- *   - acc holds up to 56 pending bits (high bits are the oldest pending bits).
- *   - write_bits appends up to 32 bits in one shift/OR; flushes whole bytes.
- *   - write_bit is a one-bit specialisation of write_bits.
- * Output is byte-identical to the prior bit-at-a-time implementation:
- *   bit order within each output byte is MSB first, matching the previous
- *   (bit_pos: 7→0) convention.
+ * J2K-compatible byte stuffing (T.800 B.10.1 / OpenJPEG bio approach):
+ *   After emitting a byte equal to 0xFF, only 7 bits are available in the
+ *   next byte (bit 7 is forced to 0 as a stuffing marker).  The decoder
+ *   (OpenJPEG bio) checks whether the previous fetched byte was 0xFF and
+ *   uses ct=7 instead of ct=8, reading only bits [6:0] from the next byte.
  *
- * V145 experiment (reverted): inline JPEG 2000 B.10.1 bit-stuffing (insert 0
- * bit after every 0xFF emission) instead of the post-pass sanitize.  It
- * preserved more header bits on 0xFF boundaries but empirically still required
- * the sanitize backstop to cover body/header boundary cases, and didn't help
- * the one lingering OpenJPEG "segment too long" failure — no net win. */
+ *   prev_ff tracks whether the last flushed byte was 0xFF.  When true,
+ *   flush_byte() emits only 7 bits of acc (MSB first in bits [6:0]), leaving
+ *   bit 7 = 0.  This matches OpenJPEG bio exactly and removes the need for
+ *   post-pass sanitize (which was incorrectly discarding real data bits). */
 struct BitWriter {
     std::vector<uint8_t>& buf;
-    uint64_t acc;    /* high bits are the oldest pending bits */
-    int      acc_n;  /* number of valid bits currently in acc */
+    uint64_t acc;    /* pending bits, MSB = oldest */
+    int      acc_n;  /* number of valid bits in acc */
+    bool     prev_ff; /* was the last flushed byte 0xFF? */
 
-    BitWriter(std::vector<uint8_t>& b) : buf(b), acc(0), acc_n(0) {}
+    BitWriter(std::vector<uint8_t>& b) : buf(b), acc(0), acc_n(0), prev_ff(false) {}
+
+    void flush_byte() {
+        /* After 0xFF, only 7 bits fit (bit 7 must be 0). */
+        int bits = prev_ff ? 7 : 8;
+        acc_n -= bits;
+        uint8_t byte = static_cast<uint8_t>((acc >> acc_n) & (prev_ff ? 0x7Fu : 0xFFu));
+        buf.push_back(byte);
+        prev_ff = (byte == 0xFF);
+    }
 
     void write_bits(uint32_t val, int nbits) {
-        if (nbits < 32) val &= (1u << nbits) - 1u;
+        if (nbits > 0 && nbits < 32) val &= (1u << nbits) - 1u;
         acc = (acc << nbits) | static_cast<uint64_t>(val);
         acc_n += nbits;
-        while (acc_n >= 8) {
-            acc_n -= 8;
-            buf.push_back(static_cast<uint8_t>((acc >> acc_n) & 0xFFu));
-        }
+        while (acc_n >= (prev_ff ? 7 : 8)) flush_byte();
     }
 
-    void write_bit(int b) {
-        acc = (acc << 1) | static_cast<uint64_t>(b & 1);
-        if (++acc_n == 8) {
-            buf.push_back(static_cast<uint8_t>(acc & 0xFFu));
-            acc_n = 0;
-            acc = 0;
-        }
-    }
+    void write_bit(int b) { write_bits(static_cast<uint32_t>(b & 1), 1); }
 
     void flush() {
         if (acc_n > 0) {
-            /* pad low bits with zero to align to byte boundary */
-            buf.push_back(static_cast<uint8_t>((acc << (8 - acc_n)) & 0xFFu));
+            int bits = prev_ff ? 7 : 8;
+            uint8_t byte = static_cast<uint8_t>((acc << (bits - acc_n)) & (prev_ff ? 0x7Fu : 0xFFu));
+            buf.push_back(byte);
+            prev_ff = (byte == 0xFF);
             acc_n = 0;
             acc = 0;
         }
@@ -198,8 +209,95 @@ struct BitWriter {
 };
 
 
+/* ===== Hierarchical Tag Tree (ITU-T T.800 B.10.2) ===== */
+/*
+ * J2K tag tree for encoding inclusion and zero-bit-planes (ZBP) per-precinct.
+ * Leaf count = ncbx × ncby.  Internal nodes organised as a quadtree:
+ *   level 0 = leaves (finest), level L = root (1×1).
+ * Each node stores value = min(children), low = highest threshold
+ * already emitted, known = final 1-bit has been sent.
+ * encode() matches opj_tgt_encode: walks root→leaf, emits new bits only.
+ */
+struct TagTree {
+    struct Node {
+        int  value;   /* min value of subtree */
+        int  low;     /* highest threshold already emitted */
+        bool known;   /* final 1-bit sent; skip on re-entry */
+        int  parent;  /* index of parent, -1 for root */
+    };
+
+    std::vector<Node> nodes;
+    std::vector<int>  level_off; /* nodes[level_off[lv]..] = level lv */
+    std::vector<int>  level_w;
+    int               num_leaves = 0;
+
+    void build(int ncbx, int ncby) {
+        nodes.clear(); level_off.clear(); level_w.clear();
+        int w = ncbx, h = ncby, total = 0;
+        std::vector<std::pair<int,int>> dims;
+        while (true) {
+            dims.push_back({w, h});
+            if (w == 1 && h == 1) break;
+            w = (w + 1) / 2;
+            h = (h + 1) / 2;
+        }
+        int nlv = (int)dims.size();
+        for (int lv = 0; lv < nlv; lv++) {
+            level_off.push_back(total); level_w.push_back(dims[lv].first);
+            total += dims[lv].first * dims[lv].second;
+        }
+        nodes.resize(total);
+        num_leaves = dims[0].first * dims[0].second;
+        for (int lv = 0; lv < nlv; lv++) {
+            int wlv = dims[lv].first, hlv = dims[lv].second, off = level_off[lv];
+            for (int j = 0; j < hlv; j++) for (int i = 0; i < wlv; i++) {
+                Node& n = nodes[off + j * wlv + i];
+                n.value = 0x7FFFFFFF; n.low = 0; n.known = false;
+                n.parent = (lv + 1 < nlv)
+                    ? level_off[lv+1] + (j/2) * dims[lv+1].first + (i/2)
+                    : -1;
+            }
+        }
+    }
+
+    /* Set leaf value and propagate minimum upward. */
+    void set_leaf(int leaf_idx, int value) {
+        nodes[leaf_idx].value = value;
+        int idx = leaf_idx;
+        while (nodes[idx].parent != -1) {
+            int par = nodes[idx].parent;
+            if (value < nodes[par].value) { nodes[par].value = value; idx = par; }
+            else break;
+        }
+    }
+
+    /* Encode leaf_idx with threshold (matches opj_tgt_encode). */
+    void encode(BitWriter& bw, int leaf_idx, int threshold) {
+        /* Collect path from leaf to root */
+        int path[32], plen = 0;
+        for (int idx = leaf_idx; idx != -1; idx = nodes[idx].parent)
+            path[plen++] = idx;
+        /* Process root → leaf */
+        int low = 0;
+        for (int pi = plen - 1; pi >= 0; pi--) {
+            Node& node = nodes[path[pi]];
+            if (low > node.low) node.low = low; else low = node.low;
+            while (low < threshold) {
+                if (low >= node.value) {
+                    if (!node.known) { bw.write_bit(1); node.known = true; }
+                    break;
+                }
+                bw.write_bit(0);
+                ++low;
+            }
+            node.low = low;
+        }
+    }
+};
+
+
 /* Build a complete J2K codestream from EBCOT T1 coded data.
- * This is a simplified single-tile, single-layer, CPRL implementation. */
+ * This is a simplified single-tile, single-layer, LRCP implementation. */
 inline std::vector<uint8_t> build_ebcot_codestream(
     int width, int height, bool is_4k, bool is_3d,
     int num_levels, float base_step,
@@ -234,94 +332,81 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w16(3);
     for (int c = 0; c < 3; c++) { w8(11); w8(1); w8(1); }
 
-    /* COD */
-    int num_precincts = num_levels + 1;
+    /* COD — V179: Scod=0x00 (no precinct partition, default 2^15×2^15 precincts).
+     * Our build_tp writes one packet per resolution covering all codeblocks.
+     * With Scod=0x01 (explicit precincts, 256×256), HL1 (1024×540) required
+     * 4×3=12 packets per resolution but we wrote only 1, causing OpenJPEG to
+     * read packet bodies as headers and report "segment too long" → ~12 dB PSNR.
+     * With Scod=0x00, each resolution is one precinct → one packet per resolution. */
     w16(J2K_COD_M);
-    w16(2 + 1 + 4 + 5 + num_precincts);
-    w8(0x01); /* Scod: precinct partition */
-    w8(0x04); /* CPRL progression */
+    w16(2 + 1 + 4 + 5);  /* no precinct partition bytes */
+    w8(0x00); /* Scod=0: no precinct partition → default 2^15×2^15 per resolution */
+    w8(0x00); /* LRCP progression (V181: was CPRL=0x04; CPRL assigned all packets to comp 0) */
     w16(1);   /* 1 quality layer */
-    w8(1);    /* MCT=1 */
+    w8(0);    /* MCT=0: XYZ stored directly, no ICT component transform */
     w8(static_cast<uint8_t>(num_levels));
-    w8(4);    /* code-block width exponent - 2 (2^(4+2) = 64? No, 2^(4+2)=64. DCI uses 32=2^5, so 5-2=3) */
-    /* Actually DCI uses 32×32 code-blocks: xcb'=3, ycb'=3 (2^(3+2)=32) */
-    cs.pop_back(); /* remove the 4 */
     w8(3);    /* xcb' = 3 → code-block width = 32 */
     w8(3);    /* ycb' = 3 → code-block height = 32 */
-    w8(0x00); /* no bypass/reset/terminate */
+    w8(0x00); /* V180_TEST: BYPASS disabled */
     w8(0x00); /* filter = 0 (9/7 irreversible) */
-    w8(0x77); /* precinct LL: 128×128 */
-    for (int i = 1; i < num_precincts; i++) w8(0x88); /* precinct others: 256×256 */
 
     /* QCD — per-subband step sizes (matching T1 quantization) */
     {
         int nsb = 3 * num_levels + 1;
         w16(J2K_QCD_M);
         w16(static_cast<uint16_t>(2 + 1 + 2 * nsb));
-        w8(0x22); /* scalar expounded, 1 guard bit */
+        w8(0x42); /* scalar expounded, 2 guard bits (SMPTE 422M DCP profile) */
         /* Encode step for each subband in standard order */
         /* LL, then for each level (coarsest→finest): HL, LH, HH */
         for (int i = 0; i < nsb; i++) {
             float step_val = (i < static_cast<int>(subbands.size())) ? subbands[i].step : base_step;
-            /* Encode as (eps<<11)|man per ITU-T T.800 A.6.4 */
+            /* Encode as (eps<<11)|man per ITU-T T.800 A.6.4.
+             * OPJ decoder (tcd.c): stepsize = (1+man/2048)*2^(Rb-eps), Rb=prec=12 (irreversible).
+             * Set eps=12-log2s so stepsize = (1+man/2048)*2^log2s = step_val. */
             int log2s = static_cast<int>(std::floor(std::log2(std::max(step_val, 0.001f))));
-            int eps = 13 - log2s;
-            float denom = std::ldexp(1.0f, 13 - eps);
+            int eps = 12 - log2s;
+            float denom = std::ldexp(1.0f, log2s);  /* = 2^log2s (Rb-eps = 12-(12-log2s) = log2s) */
             int man = static_cast<int>((step_val / denom - 1.0f) * 2048.0f);
             man = std::max(0, std::min(2047, man));
             w16(static_cast<uint16_t>((eps << 11) | man));
         }
     }
 
-    /* QCC for components 0 and 2 (X/Z use 1.1× coarser step) */
-    {
-        int nsb = 3 * num_levels + 1;
-        for (int comp : {0, 2}) {
-            w16(J2K_QCC_M);
-            w16(static_cast<uint16_t>(4 + 2 * nsb));
-            w8(static_cast<uint8_t>(comp));
-            w8(0x22);
-            for (int i = 0; i < nsb; i++) {
-                float step_val = ((i < static_cast<int>(subbands.size())) ? subbands[i].step : base_step) * 1.1f;
-                int log2s = static_cast<int>(std::floor(std::log2(std::max(step_val, 0.001f))));
-                int eps = 13 - log2s;
-                float denom = std::ldexp(1.0f, 13 - eps);
-                int man = static_cast<int>((step_val / denom - 1.0f) * 2048.0f);
-                man = std::max(0, std::min(2047, man));
-                w16(static_cast<uint16_t>((eps << 11) | man));
-            }
-        }
-    }
+    /* V182: QCC removed — T1 uses base_step uniformly for all components.
+     * Adding QCC with step×1.1 while T1 uses base_step causes a decoder amplitude
+     * mismatch (decoder dequantizes with the wrong step for comp 0/2). */
 
-    /* Build 3 tile-parts (one per component) — required by DCI Bv2.1.
-     * CPRL order: for each component, iterate resolution levels.
-     * Simple rate control: limit each component to target_bytes/3.
-     * OPTIMIZATION: Parallelize per-component tile-part generation. */
-    std::vector<uint8_t> tp_data[3];
+    /* V182: Build per-component, per-resolution packet blobs.
+     * LRCP order: for each resolution r, write packets for comp 0, 1, 2.
+     * Simple rate control: limit each component to target_bytes/3. */
+    /* pkt_by_res[comp][res] = packet bytes (header + body) for that (comp, res) pair */
+    std::vector<std::vector<uint8_t>> pkt_by_res[3];
+    for (int c = 0; c < 3; c++)
+        pkt_by_res[c].resize(num_levels + 1);
     size_t per_comp_budget = (target_bytes > 0) ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
-    /* Compute per-subband, per-component p_max matching the QCD/QCC marker encoding.
-     * p_max = eps + Nguard (Nguard=1).  eps = 13 - floor(log2(effective_step)).
-     * Must use the SAME step clamping and per-component step as the QCD/QCC markers:
-     *   comp 1     → QCD step:       clamp(subbands[sb].step,       0.001)
-     *   comp 0,2   → QCC step×1.1:   clamp(subbands[sb].step*1.1,   0.001)
-     * Any mismatch shifts z by ±1, causing a 2× magnitude error in decoded coefficients. */
-    auto sb_pmax_for_comp = [&](size_t sb, int comp) -> int {
-        float step = (comp == 1) ? subbands[sb].step : subbands[sb].step * 1.1f;
-        step = std::max(step, 0.001f);   /* same clamp as QCD/QCC encoding */
+    /* Compute per-subband p_max = band->numbps (OPJ tcd.c: eps+numgbits-1).
+     * eps=12-log2s (to match OPJ Rb=12 stepsize formula), numgbits=2 (Sqcd=0x42):
+     * band->numbps = (12-log2s) + 2 - 1 = 13-log2s = pmax.
+     * ZBP z = pmax-nb → cblk->numbps = pmax-(pmax-nb) = nb. Correct. */
+    auto sb_pmax_for_comp = [&](size_t sb, int /*comp*/) -> int {
+        /* pmax = band->numbps = 13-log2(step). */
+        float step = std::max(subbands[sb].step, 0.001f);
         int log2s = static_cast<int>(std::floor(std::log2f(step)));
-        return 13 - log2s + 1;   /* eps + 1 guard bit */
+        return 13 - log2s;
     };
 
+    /* V181: build_tp fills pkt_by_res[comp][res] — one blob per (comp, res) pair.
+     * Packets are then interleaved in LRCP order: for each res, comp 0, 1, 2.
+     * sanitize is applied per-packet blob to ensure no 0xFF marker sequences. */
     auto build_tp = [&](int comp) {
-        /* V133 OPT: Pre-reserve per-component buffer + use single persistent pkt_body */
-        tp_data[comp].reserve(per_comp_budget == SIZE_MAX ? 4 * 1024 * 1024 : per_comp_budget + 4096);
-
         size_t comp_bytes = 0;
         std::vector<uint8_t> pkt_header_buf;
         std::vector<uint8_t> pkt_body;
         pkt_header_buf.reserve(8192);
-        pkt_body.reserve(1 * 1024 * 1024);  /* 1MB — avoids regrowth */
+        pkt_body.reserve(512 * 1024);
+
+        TagTree incl_tree, zbp_tree;
 
         for (int res = 0; res <= num_levels; res++) {
             pkt_header_buf.clear();
@@ -333,141 +418,141 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             for (size_t sb = 0; sb < subbands.size(); sb++) {
                 if (subbands[sb].res != res) continue;
 
-                int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
+                int ncbx  = subbands[sb].ncbx, ncby = subbands[sb].ncby;
+                int ncbs  = ncbx * ncby;
                 int cb_start = subbands[sb].cb_start_idx;
-                int pmax = sb_pmax_for_comp(sb, comp);
+                int pmax  = sb_pmax_for_comp(sb, comp);
+#ifdef GPU_J2K_DEBUG_NP
+                if (comp == 0 && res <= 1) {
+                    for (int cbi = 0; cbi < std::min(ncbs, 4); cbi++) {
+                        int cb_idx = cb_start + cbi;
+                        uint8_t np_v = num_passes[comp][cb_idx];
+                        uint8_t nb_v = cb_num_bp ? cb_num_bp[comp][cb_idx] : 0;
+                        uint16_t ln_v = coded_len[comp][cb_idx];
+                        fprintf(stderr, "[T2_DBG] res=%d sb=%zu cbi=%d np=%d nb=%d len=%d pmax=%d z=%d\n",
+                            res, sb, cbi, np_v, nb_v, ln_v, pmax, pmax - nb_v);
+                    }
+                }
+#endif
 
+                /* Build hierarchical tag trees for this subband.
+                 * Flat 1-bit-per-CB encoding was wrong: for HL1 (32×17=544 CBs)
+                 * the tree has 745 total nodes; the 201-bit discrepancy caused
+                 * OpenJPEG to read ZBP/body bytes as inclusion bits, corrupting
+                 * the entire AC packet stream and producing ~12 dB PSNR. */
+                incl_tree.build(ncbx, ncby);
+                zbp_tree.build(ncbx, ncby);
+
+                /* Pre-scan: set leaf values before encoding any bits.
+                 * Excluded CBs: incl=MAX (never included), zbp=pmax (all zero BPs). */
+                std::vector<bool> included(ncbs, false);
                 for (int cbi = 0; cbi < ncbs; cbi++) {
                     int cb_idx = cb_start + cbi;
                     uint16_t len = coded_len[comp][cb_idx];
                     uint8_t  np  = num_passes[comp][cb_idx];
-
-                    /* V137: D2H may have truncated coded data to cb_stride-1 */
                     if (len > static_cast<uint16_t>(cb_stride - 1))
                         len = static_cast<uint16_t>(cb_stride - 1);
-
                     if (np == 0 || len == 0 || comp_bytes + len > per_comp_budget) {
-                        bw.write_bit(0);
-                        continue;
+                        incl_tree.set_leaf(cbi, 0x7FFFFFFF);
+                        zbp_tree.set_leaf(cbi, pmax);
+                    } else {
+                        included[cbi] = true;
+                        comp_bytes += len;
+                        incl_tree.set_leaf(cbi, 0);
+                        int nb = (cb_num_bp != nullptr) ? static_cast<int>(cb_num_bp[comp][cb_idx]) : 0;
+                        /* z = pmax-nb: OPJ cblk->numbps = band->numbps-z = pmax-(pmax-nb) = nb. */
+                        int z  = pmax - nb;
+                        if (z < 0) z = 0;
+                        zbp_tree.set_leaf(cbi, z);
                     }
-                    comp_bytes += len;
+                }
 
-                    /* Inclusion tag tree: 1 = included in this layer. */
-                    bw.write_bit(1);
+                /* Encode packet header and body for each CB in order. */
+                for (int cbi = 0; cbi < ncbs; cbi++) {
+                    int cb_idx = cb_start + cbi;
 
-                    /* Zero bit-planes tag tree (ITU-T T.800 B.10.7).
-                     * z = p_max - cb_num_bp.  Encoded as z zero-bits then one 1-bit.
-                     * Per the standard: bit=0 means threshold < value (not yet reached),
-                     * bit=1 means threshold >= value (reached).  For value z, the decoder
-                     * reads until it gets a 1-bit; the count of 0s before it equals z. */
-                    int nb = (cb_num_bp != nullptr) ? static_cast<int>(cb_num_bp[comp][cb_idx]) : 0;
-                    int z  = pmax - nb;
-                    if (z < 0) z = 0;
-                    for (int zi = 0; zi < z; zi++) bw.write_bit(0);
-                    bw.write_bit(1);
+                    /* Inclusion tag tree (threshold = layer+1 = 1 for 1st layer). */
+                    incl_tree.encode(bw, cbi, 1);
+                    if (!included[cbi]) continue;
 
-                    /* Number of coding passes (ITU-T T.800 Table B.4).
-                     *   1     : "0"                         (1 bit)
-                     *   2     : "10"                        (2 bits)
-                     *   3..5  : "1100".."1110"              (4 bits: 0xC..0xE)
-                     *   6..36 : "11110" + 4 bits (n-6)      (9 bits: 0x1E0..0x1FE)
-                     *   37..164: "11111" + 7 bits (n-37)    (12 bits: 0xF80..0xFFF)
-                     * V140 FIX: the 37+ branch was emitting 16 bits (0xFF80|...),
-                     * mis-aligning every subsequent CB's length field and breaking
-                     * decode on high-contrast frames. Correct encoding is 12 bits. */
+                    /* ZBP tag tree (threshold = pmax encodes exact z value). */
+                    zbp_tree.encode(bw, cbi, pmax);
+
+                    /* Number of coding passes (ITU-T T.800 Table B.4 / OpenJPEG t2_putnumpasses).
+                     * np=37+: 16-bit code 0xFF80|(np-37) — NOT 12-bit as previously wrong. */
+                    uint8_t np = num_passes[comp][cb_idx];
                     if (np == 1)       bw.write_bit(0);
                     else if (np == 2)  bw.write_bits(2, 2);
                     else if (np <= 5)  bw.write_bits(0xC | (np - 3), 4);
                     else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
-                    else               bw.write_bits(0xF80 | ((np - 37) & 0x7F), 12);
+                    else               bw.write_bits(0xFF80u | (unsigned(np) - 37u), 16);
 
-                    /* Code-block length (ITU-T T.800 B.10.7).
-                     * len_bits = Lblock + floor(log2(np)).
-                     * V140 FIX: was ceil(log2(np)) — OpenJPEG's reference decoder
-                     * uses floor, so for non-power-of-2 np (3, 5, 6, 7, 9..) we
-                     * emitted one extra length bit, mis-aligning every subsequent
-                     * CB in the packet. floor(log2(np)) == 31 - clz(np) for np>=1. */
+                    /* Code-block length: Lblock + floor(log2(np)) bits. */
+                    uint16_t len = coded_len[comp][cb_idx];
+                    if (len > static_cast<uint16_t>(cb_stride - 1))
+                        len = static_cast<uint16_t>(cb_stride - 1);
                     int lblock = 3;
                     int floor_log2_np = (np <= 1) ? 0 : (31 - __builtin_clz(static_cast<unsigned>(np)));
                     int len_bits = lblock + floor_log2_np;
                     if (len_bits < 1) len_bits = 1;
-                    while ((1 << len_bits) <= len) {
-                        bw.write_bit(1);
-                        lblock++; len_bits++;
-                    }
+                    while ((1 << len_bits) <= len) { bw.write_bit(1); lblock++; len_bits++; }
                     bw.write_bit(0);
                     bw.write_bits(len, len_bits);
 
-                    /* V133: append coded data directly (skip byte 0 sentinel).
-                     * V137: source stride is cb_stride (may be smaller than CB_BUF_SIZE
-                     * due to strided D2H). */
                     const uint8_t* src = coded_data[comp] + (size_t)cb_idx * cb_stride + 1;
                     pkt_body.insert(pkt_body.end(), src, src + len);
                 }
             }
 
             bw.flush();
-            tp_data[comp].insert(tp_data[comp].end(), pkt_header_buf.begin(), pkt_header_buf.end());
-            tp_data[comp].insert(tp_data[comp].end(), pkt_body.begin(), pkt_body.end());
+            auto& dst = pkt_by_res[comp][res];
+            dst.insert(dst.end(), pkt_header_buf.begin(), pkt_header_buf.end());
+            dst.insert(dst.end(), pkt_body.begin(), pkt_body.end());
         }
     }; /* end lambda build_tp */
 
-    /* V143: Combine build_tp and sanitize into one async job per component so
-     * we spawn 2 async threads total instead of 4.  std::async(launch::async)
-     * creates a real OS thread each time (~50-100us); for ~1ms of T2 work,
-     * halving the thread spawns is a measurable saving. */
-    auto sanitize = [](uint8_t* p, size_t n) {
-        for (size_t i = 0; i + 1 < n; i++)
-            if (p[i] == 0xFF) p[i + 1] &= 0x7F;
-    };
-    auto build_and_clean = [&](int c) {
-        build_tp(c);
-        sanitize(tp_data[c].data(), tp_data[c].size());
-    };
-    auto fut0 = std::async(std::launch::async, [&]() { build_and_clean(0); });
-    auto fut1 = std::async(std::launch::async, [&]() { build_and_clean(1); });
-    build_and_clean(2);
+    /* V183: BitWriter now implements J2K-compatible byte stuffing (7 bits after
+     * 0xFF), so no post-pass sanitize is needed.  build_tp is called directly. */
+    auto fut0 = std::async(std::launch::async, [&]() { build_tp(0); });
+    auto fut1 = std::async(std::launch::async, [&]() { build_tp(1); });
+    build_tp(2);
     fut0.wait();
     fut1.wait();
 
-    /* V139 FIX: if a tile-part's last byte is 0xFF, append 0x00 stuff byte.
-     * Otherwise the following 0xFF 0x90 (next SOT, or 0xFF 0xD9 EOC) would
-     * parse as 0xFF 0xFF XX and the verifier/decoder sees an unknown marker. */
-    for (int c = 0; c < 3; c++) {
-        if (!tp_data[c].empty() && tp_data[c].back() == 0xFF)
-            tp_data[c].push_back(0x00);
-    }
+    /* V181: Interleave packets in LRCP order: for each resolution, write comp 0, 1, 2.
+     * This replaces CPRL (comp outer) which caused OpenJPEG to read all 18 packets
+     * as component 0 data — leaving comp 1 and comp 2 all-zero (decoded as 2048). */
+#ifdef GPU_J2K_DEBUG_PACKETS
+    for (int r = 0; r <= num_levels; r++)
+        for (int c = 0; c < 3; c++)
+            fprintf(stderr, "DEBUG pkt r=%d c=%d size=%zu\n", r, c, pkt_by_res[c][r].size());
+#endif
+    size_t total_pkt = 0;
+    for (int r = 0; r <= num_levels; r++)
+        for (int c = 0; c < 3; c++)
+            total_pkt += pkt_by_res[c][r].size();
 
-    /* Compute tile-part sizes: SOT(12) + SOD(2) + data (after stuff-byte fixup) */
-    uint32_t tp_size[3];
-    for (int c = 0; c < 3; c++)
-        tp_size[c] = static_cast<uint32_t>(12 + 2 + tp_data[c].size());
+    uint32_t single_tp_size = static_cast<uint32_t>(12 + 2 + total_pkt);
 
-    /* TLM — tile length marker (3 tile-parts, all of tile 0).
-     * V140 FIX: use ST=1 (1-byte Ttlm) so decoders know each Ptlm refers to
-     * tile 0 — a tile-part of a single tile, not 3 separate tiles.  With ST=0
-     * OpenJPEG assumes tile 0,1,2 and warns "invalid tile number 1". */
+    /* TLM — single tile-part for tile 0 */
     w16(J2K_TLM_M);
-    w16(static_cast<uint16_t>(2 + 1 + 1 + 3 * (1 + 4))); /* Ltlm */
+    w16(static_cast<uint16_t>(2 + 1 + 1 + 1 * (1 + 4))); /* Ltlm: 1 entry */
     w8(0);    /* Ztlm = 0 */
     w8(0x50); /* Stlm: ST=1 (1-byte Ttlm), SP=1 (4-byte Ptlm) */
-    for (int c = 0; c < 3; c++) {
-        w8(0);              /* Ttlm = tile index (single tile) */
-        w32(tp_size[c]);    /* Ptlm = tile-part length */
-    }
+    w8(0);              /* Ttlm = tile 0 */
+    w32(single_tp_size);
 
-    /* 3 tile-parts: SOT + SOD for each component. */
-    for (int c = 0; c < 3; c++) {
-        w16(J2K_SOT_M);
-        w16(10);  /* Lsot */
-        w16(0);   /* tile index = 0 (single tile) */
-        w32(tp_size[c]);
-        w8(static_cast<uint8_t>(c));  /* tile-part index */
-        w8(3);    /* number of tile-parts = 3 */
-
-        w16(J2K_SOD_M);
-        cs.insert(cs.end(), tp_data[c].begin(), tp_data[c].end());
-    }
+    /* Single tile-part: 18 packets in LRCP order (r=0: c0,c1,c2; r=1: c0,c1,c2; ...) */
+    w16(J2K_SOT_M);
+    w16(10);
+    w16(0);   /* tile index = 0 */
+    w32(single_tp_size);
+    w8(0);    /* tile-part index = 0 */
+    w8(1);    /* number of tile-parts = 1 */
+    w16(J2K_SOD_M);
+    for (int r = 0; r <= num_levels; r++)
+        for (int c = 0; c < 3; c++)
+            cs.insert(cs.end(), pkt_by_res[c][r].begin(), pkt_by_res[c][r].end());
 
     /* EOC — final marker.  V139 FIX: NEVER pad after EOC.  Trailing zeros are
      * illegal J2K and cause dcp::verify_j2k to throw "missing marker start

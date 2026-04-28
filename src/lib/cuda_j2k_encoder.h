@@ -128,6 +128,10 @@ public:
 	bool is_initialized() const { return _initialized; }
 	bool has_colour_params() const { return _colour_params_valid; }
 
+	/* Debug: download d_a[c] (DWT output) after encode_ebcot() call.
+	 * Returns a flat array of size width*height __half values (stride=width). */
+	std::vector<float> debug_get_dwt_output(int c, int width, int height);
+
 private:
 	std::unique_ptr<CudaJ2KEncoderImpl> _impl;
 	bool _initialized = false;

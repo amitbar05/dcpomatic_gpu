@@ -132,6 +132,45 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V185: Fix HL/LH/HH stepsize compensation for irreversible 9/7 inverse DWT.
+          OpenJPEG inverse DWT uses two_invK = 2/K (not invK) per dwt.c "BUG_WEIRD_TWO_INVK"
+          comment.  This doubles HL/LH coefficients and quadruples HH on decode.  OPJ's
+          encoder compensates via log2_gain in tcd.c stepsize calculation.
+          Our encoder didn't compensate → bars/checker reconstructed at 2x/4x magnitude
+          near edges → saturation at 0/4095 → 15-25 dB PSNR.
+          Fix in build_codeblock_table: cbi.quant_step = step * 2 for HL/LH, * 4 for HH.
+          QCD continues to write the unscaled `step`. Encoder T1 quantizes coarser, so
+          dequantized coefficients are 2x/4x smaller; inverse DWT amplification recovers
+          the right magnitude.
+          PSNR jumps: h_bars_8 23.9→47.3 dB, v_bars_8 22.5→48.6 dB, checker_64 15.5→29.8 dB.
+    V177: Fix DC level shift + QCD guard bits — root cause of PSNR failures.
+          Two-part fix for systematic flat-field anomaly (decoded≈2048 for all XYZ inputs):
+          1. DC level shift: kernel_rgb48_xyz_hdwt0_1ch_2row now stores XYZ-2048 instead
+             of XYZ. JPEG 2000 unsigned images require encoder to subtract 2^(prec-1)=2048
+             before DWT; decoder adds 2048 after IDWT. Without this, decoded = XYZ+2048.
+          2. Sqcd 0x22→0x42: numgbits 1→2 (SMPTE 422M DCP profile). OPJ tcd.c formula:
+             band->numbps = expn+numgbits-1. With numgbits=1: band->numbps=pmax (not pmax+1),
+             making z=pmax+1-nb give cblk->numbps=nb-1 (off-by-one: MSB lost in all CBs).
+             With numgbits=2: band->numbps=pmax+1, z=pmax+1-nb → cblk->numbps=nb. Correct.
+    V176: Unified pre-build for correct mode: FAST4=false now uses mag_bp_flat (single
+          d_dwt scan, like FAST4=true) instead of per-bp col_mag_arr recompute. Template
+          parameter MAX_BP=7 for correct mode (all blocks have ≤7 bp at 150Mbps). col_mag_arr
+          eliminated from both paths. Correct: 47ms, 1568 LMEM; fast: 19ms, 1184 LMEM.
+          Root cause finding: the 19ms (fast) vs 47ms (correct) timing difference comes from
+          step_mult (3.0 vs 1.0) reducing bit-planes from ~4 to ~2, not kernel structure.
+          Kernel PTX is identical for FAST4=false,MAX_BP=4 and FAST4=true,MAX_BP=4.
+    V175: template<bool FAST4, int MAX_BP>: second template parameter, unified for both
+          modes. No benchmark improvement — see V176 analysis.
+    V174: Level-adaptive num_bp cap in FAST4=false kernel. LL5+L5-AC (level≥4) capped
+          at 8 bp, L4 (level=3) at 9 bp. BENCHMARKED: no improvement — those blocks
+          already have ≤8 bp naturally at 150Mbps. Timing 46.75ms (unchanged).
+    V173: Two-pass correct mode: FAST4=true for all blocks (Pass 1, ~19ms), then
+          FAST4=false for first num_hard blocks (LL5..L3, subbands[0..9], Pass 2).
+          Hard blocks: 172 CBs/component (4+12+36+120). Full-quality overwrite for
+          low-frequency subbands that need >4 bit-planes; easy high-freq blocks keep
+          FAST4 approximation. BENCHMARKED: 66ms correct / 20ms fast — two sequential
+          passes are SLOWER because hard blocks were already the V172 critical path.
+          V173 reverted; V174 takes a different approach.
     V172: template<bool FAST4> kernel_ebcot_t1 — fast path clamps to 4 bit-planes.
           FAST4=true: pre-build mag_bp_flat[4*CB_DIM] in Pass 2 (1× d_dwt read vs num_bp×).
             Passes access mag_bp_flat directly; col_mag_arr eliminated (dead code).
@@ -2961,7 +3000,8 @@ kernel_rgb48_xyz_hdwt0_1ch_2row(
         float g = __half2float(__ldg(&d_lut_in[gi]));
         float b = __half2float(__ldg(&d_lut_in[bi]));
         float v = __saturatef(m0*r + m1*g + m2*b);
-        sm[px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)]));
+        /* DC level shift: encoder stores XYZ-2048 so decoder's +2048 reconstructs XYZ. */
+        sm[px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)])) - __half(2048.0f);
     }
     if (y1 < height) {
         for (int px = t; px < w; px += nt) {
@@ -2973,7 +3013,7 @@ kernel_rgb48_xyz_hdwt0_1ch_2row(
             float g = __half2float(__ldg(&d_lut_in[gi]));
             float b = __half2float(__ldg(&d_lut_in[bi]));
             float v = __saturatef(m0*r + m1*g + m2*b);
-            sm[w + px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)]));
+            sm[w + px] = u16_to_f16(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)])) - __half(2048.0f);
         }
     }
     __syncthreads();
@@ -4978,14 +5018,14 @@ CudaJ2KEncoder::encode_ebcot(
     int  bp_skip    = fast_mode ? 1 : 0;
     /* V165: BYPASS mode — always enabled. Enables raw bit coding for MRP+CUP
      * from the 3rd bit-plane down. Per J2K Part 1 C.3.8 BYPASS. */
-    bool use_bypass = true;
-    /* V172: fast mode uses kernel_ebcot_t1<true> — clamps num_bp to 4, uses pre-built
-     * mag_bp[4][CB_DIM] (Pass 2). At ≤4 bit-planes, compiler fully unrolls the loop
-     * → 0 LMEM → ~42.5ms (same as V169 MAX_BPLANES=4 behavior).
-     * Correct mode uses kernel_ebcot_t1<false> — V171 col_mag_arr recompute, 800 LMEM. */
+    bool use_bypass = false; /* V180_TEST: disable to isolate */
+    /* V177: MAX_BP increased to 14 for correct mode.
+     * base_step=2.12 at 150Mbps/2K → max q ≈ 4095/1.378 ≈ 2972 → 12 bit-planes.
+     * p_max = 13 - floor(log2(step_LL5)) + 1 = 14 for LL5. MAX_BP=14 covers all.
+     * Fast mode: MAX_BP=4 (step_mult=3.0 → coarse quant → ≤4 bit-planes). */
     for (int c = 0; c < 3; ++c) {
         if (fast_mode) {
-            kernel_ebcot_t1<true><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+            kernel_ebcot_t1<true, 4><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                 _impl->d_a[c], stride,
                 _impl->d_cb_info, num_cbs,
                 _impl->d_ebcot_data[c],
@@ -4995,7 +5035,7 @@ CudaJ2KEncoder::encode_ebcot(
                 _impl->d_ebcot_numbp[c],
                 bp_skip, use_bypass);
         } else {
-            kernel_ebcot_t1<false><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+            kernel_ebcot_t1<false, 14><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                 _impl->d_a[c], stride,
                 _impl->d_cb_info, num_cbs,
                 _impl->d_ebcot_data[c],
@@ -5050,6 +5090,18 @@ CudaJ2KEncoder::encode_ebcot(
     tmark("D2H");
 
     /* Step 7: CPU T2 assembly + codestream construction */
+#ifdef GPU_J2K_DEBUG_T1
+    for (int c = 0; c < 3; ++c) {
+        long sum_bp = 0, sum_len = 0, nz_bp = 0;
+        for (int i = 0; i < num_cbs; ++i) {
+            sum_bp  += _impl->h_ebcot_numbp[c][i];
+            sum_len += _impl->h_ebcot_len[c][i];
+            if (_impl->h_ebcot_numbp[c][i] > 0) ++nz_bp;
+        }
+        fprintf(stderr, "DEBUG T1 comp=%d  avg_bp=%.2f nz=%ld/%d avg_len=%.1f\n",
+                c, sum_bp / (double)num_cbs, nz_bp, num_cbs, sum_len / (double)num_cbs);
+    }
+#endif
     const uint8_t*  cd[3] = { _impl->h_ebcot_data[0], _impl->h_ebcot_data[1], _impl->h_ebcot_data[2] };
     const uint16_t* cl[3] = { _impl->h_ebcot_len[0],  _impl->h_ebcot_len[1],  _impl->h_ebcot_len[2] };
     const uint8_t*  np[3] = { _impl->h_ebcot_npasses[0], _impl->h_ebcot_npasses[1], _impl->h_ebcot_npasses[2] };
@@ -5078,6 +5130,20 @@ CudaJ2KEncoder::set_colour_params(GpuColourParams const& params)
     if (!_initialized || !params.valid) return;
     _impl->upload_colour_params(params);
     _colour_params_valid = true;
+}
+
+
+std::vector<float>
+CudaJ2KEncoder::debug_get_dwt_output(int c, int width, int height)
+{
+    if (!_initialized || c < 0 || c >= 3) return {};
+    std::vector<__half> h_tmp(size_t(width) * height);
+    cudaMemcpy(h_tmp.data(), _impl->d_a[c],
+               size_t(width) * height * sizeof(__half), cudaMemcpyDeviceToHost);
+    std::vector<float> out(h_tmp.size());
+    for (size_t i = 0; i < h_tmp.size(); ++i)
+        out[i] = __half2float(h_tmp[i]);
+    return out;
 }
 
 
