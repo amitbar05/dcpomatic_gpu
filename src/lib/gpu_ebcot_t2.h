@@ -341,7 +341,11 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w16(J2K_COD_M);
     w16(2 + 1 + 4 + 5);  /* no precinct partition bytes */
     w8(0x00); /* Scod=0: no precinct partition → default 2^15×2^15 per resolution */
-    w8(0x00); /* LRCP progression (V181: was CPRL=0x04; CPRL assigned all packets to comp 0) */
+    /* V193 attempt failed: announcing CPRL caused 512×512 noise content to fail
+     * decode in OpenJPEG ("segment too long").  Reverting to LRCP for now;
+     * proper CPRL likely needs the precinct partition (Scod=1) too, since OPJ
+     * may interpret the CPRL ordering relative to precincts. */
+    w8(0x00); /* LRCP progression */
     w16(1);   /* 1 quality layer */
     w8(0);    /* MCT=0: XYZ stored directly, no ICT component transform */
     w8(static_cast<uint8_t>(num_levels));
@@ -355,7 +359,11 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         int nsb = 3 * num_levels + 1;
         w16(J2K_QCD_M);
         w16(static_cast<uint16_t>(2 + 1 + 2 * nsb));
-        w8(0x42); /* scalar expounded, 2 guard bits (SMPTE 422M DCP profile) */
+        /* V192: numgbits 2 → 1 for 2K, 2 for 4K (DCP spec).  band->numbps formula
+         * `eps + numgbits - 1` shifts; pmax computation below adjusted to match. */
+        const int numgbits = is_4k ? 2 : 1;
+        const uint8_t sqcd = static_cast<uint8_t>((numgbits << 5) | 0x02); /* sqty=2 expounded */
+        w8(sqcd);
         /* Encode step for each subband in standard order */
         /* LL, then for each level (coarsest→finest): HL, LH, HH */
         for (int i = 0; i < nsb; i++) {
@@ -386,14 +394,14 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     size_t per_comp_budget = (target_bytes > 0) ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
     /* Compute per-subband p_max = band->numbps (OPJ tcd.c: eps+numgbits-1).
-     * eps=12-log2s (to match OPJ Rb=12 stepsize formula), numgbits=2 (Sqcd=0x42):
-     * band->numbps = (12-log2s) + 2 - 1 = 13-log2s = pmax.
-     * ZBP z = pmax-nb → cblk->numbps = pmax-(pmax-nb) = nb. Correct. */
+     * V192: numgbits depends on profile (1 for 2K, 2 for 4K).
+     * eps = 12 - log2s.  band->numbps = eps + numgbits - 1 = 11 + numgbits - log2s.
+     * ZBP z = pmax - nb → cblk->numbps = pmax - z = nb. Correct for both. */
+    const int numgbits_for_pmax = is_4k ? 2 : 1;
     auto sb_pmax_for_comp = [&](size_t sb, int /*comp*/) -> int {
-        /* pmax = band->numbps = 13-log2(step). */
         float step = std::max(subbands[sb].step, 0.001f);
         int log2s = static_cast<int>(std::floor(std::log2f(step)));
-        return 13 - log2s;
+        return (12 - log2s) + numgbits_for_pmax - 1;
     };
 
     /* V189: per-component proportional truncation.  Compute total bytes for this
@@ -597,7 +605,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w8(0);              /* Ttlm = tile 0 */
     w32(single_tp_size);
 
-    /* Single tile-part: 18 packets in LRCP order (r=0: c0,c1,c2; r=1: c0,c1,c2; ...) */
+    /* V193 reverted: LRCP order (r outer, c inner) matches COD=0x00 progression. */
     w16(J2K_SOT_M);
     w16(10);
     w16(0);   /* tile index = 0 */
