@@ -71,15 +71,18 @@ __device__ __constant__ static const MQTableEntry MQ_TABLE[47] = {
 
 /* ===== MQ Coder State ===== */
 
+/* V161: Pack index (6 bits) + mps (1 bit) into one byte: ctx_packed = (index << 1) | mps.
+ * This reduces LMEM reads in mq_encode from 2 (index[] + mps[]) to 1 (ctx_packed[]).
+ * index values 0-46 fit in 6 bits (max 46 = 0x2E). The MPS bit occupies bit 0.
+ * Halves context-state LMEM footprint: 19 bytes instead of 38. */
 struct MQCoder {
     uint32_t A;        /* interval (16-bit logical, stored in 32-bit for arithmetic) */
     uint32_t C;        /* code register */
     int      CT;       /* counter */
     uint8_t* bp;       /* byte output pointer */
     uint8_t* start;    /* start of output buffer */
-    /* Per-context state: index into MQ_TABLE + MPS symbol */
-    uint8_t  index[T1_NUM_CTXS];
-    uint8_t  mps[T1_NUM_CTXS];
+    /* V161: packed context state: bits 7-1 = MQ table index (0-46), bit 0 = MPS symbol */
+    uint8_t  ctx_packed[T1_NUM_CTXS];
 };
 
 
@@ -96,20 +99,12 @@ __device__ static void mq_init(MQCoder* mq, uint8_t* buf) {
     mq->bp    = buf;
     mq->start = buf;
 
-    /* Context initialization per JPEG2000 Table D.7:
-     * ZC (0-8): state 0, MPS=0
-     * SC (9-13): state 0, MPS=0
-     * MR (14-16): state 0, MPS=0
-     * AGG (17): state 3, MPS=0
-     * UNI (18): state 46, MPS=0
-     * Context 0 (ZC first): state 4 per OpenJPEG */
-    for (int i = 0; i < T1_NUM_CTXS; i++) {
-        mq->index[i] = 0;
-        mq->mps[i]   = 0;
-    }
-    mq->index[0]            = 4;  /* ZC context 0 starts at state 4 */
-    mq->index[T1_CTXNO_AGG] = 3;
-    mq->index[T1_CTXNO_UNI] = 46;
+    /* Context initialization per JPEG2000 Table D.7.
+     * V161: ctx_packed = (index << 1) | mps; all start at index=0, mps=0 */
+    for (int i = 0; i < T1_NUM_CTXS; i++) mq->ctx_packed[i] = 0;
+    mq->ctx_packed[0]            = 4 << 1;   /* ZC context 0: state 4, MPS=0 */
+    mq->ctx_packed[T1_CTXNO_AGG] = 3 << 1;   /* AGG: state 3, MPS=0 */
+    mq->ctx_packed[T1_CTXNO_UNI] = 46 << 1;  /* UNI: state 46, MPS=0 */
 }
 
 /* Byte output with carry propagation and 0xFF stuffing.
@@ -156,11 +151,13 @@ __device__ static void mq_renorme(MQCoder* mq) {
     } while (mq->A < 0x8000);
 }
 
-/* MQ encode matching OpenJPEG's opj_mqc_encode() */
+/* MQ encode matching OpenJPEG's opj_mqc_encode()
+ * V161: ctx_packed = (index << 1) | mps — one LMEM read instead of two. */
 __device__ static void mq_encode(MQCoder* mq, int ctx, int d) {
-    uint8_t  curS = mq->index[ctx];
-    uint16_t qe   = MQ_TABLE[curS].qe;
-    int      mpsv = mq->mps[ctx];
+    uint8_t  packed = mq->ctx_packed[ctx];   /* V161: one LMEM read */
+    uint8_t  curS   = packed >> 1;
+    uint16_t qe     = MQ_TABLE[curS].qe;
+    int      mpsv   = packed & 1;
 
     mq->A -= qe;
 
@@ -173,9 +170,9 @@ __device__ static void mq_encode(MQCoder* mq, int ctx, int d) {
             /* Normal: assign LPS the lower interval */
             mq->A = qe;
         }
-        mq->index[ctx] = MQ_TABLE[curS].nlps;
-        if (MQ_TABLE[curS].switchf)
-            mq->mps[ctx] = 1 - mpsv;
+        /* V161: update packed state in one store; new_mps = mpsv ^ switchf */
+        mq->ctx_packed[ctx] = static_cast<uint8_t>(
+            (MQ_TABLE[curS].nlps << 1) | (mpsv ^ MQ_TABLE[curS].switchf));
         mq_renorme(mq);
     } else {
         /* MPS */
@@ -186,10 +183,12 @@ __device__ static void mq_encode(MQCoder* mq, int ctx, int d) {
             } else {
                 mq->C += qe;
             }
-            mq->index[ctx] = MQ_TABLE[curS].nmps;
+            /* V161: update index, keep mps unchanged */
+            mq->ctx_packed[ctx] = static_cast<uint8_t>((MQ_TABLE[curS].nmps << 1) | mpsv);
             mq_renorme(mq);
         } else {
             mq->C += qe;
+            /* No state transition — ctx_packed unchanged */
         }
     }
 }
@@ -593,6 +592,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         if (any_significant) {
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
+            int stripe_len = stripe_end - stripe_y;
 
             /* V159: SPP fast-skip — if ALL rows in column c are already significant,
              * there is nothing for SPP to code in this column. This is safe because
@@ -603,6 +603,14 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             uint32_t spp_all_sig = sigma_pad[stripe_y + 1] & sigma_pad[stripe_y + 2]
                                  & sigma_pad[stripe_y + 3] & sigma_pad[stripe_y + 4];
 
+            /* V160: Precompute per-row "already significant" mask for SPP skip check.
+             * spp_sig[ri] bit c = 1 → row (stripe_y+ri) of column c is already significant.
+             * Safe: sigma updates during SPP set bit (c+1) for the column being processed;
+             * future columns c'>c check bit (c'+1) which is unaffected by processing c. */
+            uint32_t spp_sig[STRIPE_H] = {0, 0, 0, 0};
+            for (int ri = 0; ri < stripe_len; ri++)
+                spp_sig[ri] = sigma_pad[stripe_y + 1 + ri] >> 1;
+
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
                 if (spp_all_sig & cmask_pad) continue;  /* V159: all rows significant, skip */
@@ -610,7 +618,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 /* V149: load column bit-plane word once; extract per-row bits from register */
                 uint32_t col_mag = mag_bp[bp_idx][c];
                 for (int r = stripe_y; r < stripe_end; r++) {
-                    if (sigma_pad[r + 1] & cmask_pad) continue;
+                    if (spp_sig[r - stripe_y] & cmask) continue;  /* V160: register instead of LMEM */
                     if (!has_sig_neighbor(sigma_pad, r, c)) continue;
 
                     int bit = (col_mag >> r) & 1;
@@ -636,19 +644,24 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         if (any_significant) {
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
+            int stripe_len_mrp = stripe_end - stripe_y;
 
-            /* V159: MRP fast-skip — skip columns with no already-significant coefficients.
-             * Exact check: if no row in stripe has sigma set for column c, skip. */
-            uint32_t mrp_colmask = sigma_pad[stripe_y + 1] | sigma_pad[stripe_y + 2]
-                                 | sigma_pad[stripe_y + 3] | sigma_pad[stripe_y + 4];
+            /* V160: Precompute per-row "should process" mask for MRP.
+             * mrp_proc[ri] bit c = 1 → row (stripe_y+ri) of column c needs MRP coding.
+             * = significant AND not already coded in SPP.
+             * mrp_colmask = OR of rows for fast column-level skip.
+             * Safe: sigma_pad and coded_bits are read-only during MRP (no new significance). */
+            uint32_t mrp_proc[STRIPE_H] = {0, 0, 0, 0};
+            for (int ri = 0; ri < stripe_len_mrp; ri++)
+                mrp_proc[ri] = (sigma_pad[stripe_y + 1 + ri] >> 1) & ~coded_bits[stripe_y + ri];
+            uint32_t mrp_colmask = mrp_proc[0] | mrp_proc[1] | mrp_proc[2] | mrp_proc[3];
 
             for (int c = 0; c < cbw; c++) {
-                uint32_t cmask_pad = 1u << (c + 1);
-                if (!(mrp_colmask & cmask_pad)) continue;  /* V159: fast skip */
                 uint32_t cmask = 1u << c;
+                if (!(mrp_colmask & cmask)) continue;  /* V160: no row to process in this column */
                 uint32_t col_mag = mag_bp[bp_idx][c];
                 for (int r = stripe_y; r < stripe_end; r++) {
-                    if (!(sigma_pad[r + 1] & cmask_pad) || ((coded_bits[r] & cmask))) continue;
+                    if (!(mrp_proc[r - stripe_y] & cmask)) continue;  /* V160: register check */
                     int bit = (col_mag >> r) & 1;
                     int mr = t1_mr_context_fast(sigma_pad, firstref_bits, r, c);
                     mq_encode(&mq, T1_CTXNO_MR + mr, bit);
@@ -663,6 +676,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         /* --- Cleanup Pass (CUP) — always runs, including first bit-plane --- */
         for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
             int stripe_end = min(stripe_y + STRIPE_H, cbh);
+            int stripe_len_cup = stripe_end - stripe_y;
 
             /* V158: Precompute a per-stripe "definitely not all-zero" bitmask to
              * fast-exit the all_zero check for most columns.
@@ -686,10 +700,20 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                               | coded_bits[stripe_y + 2] | coded_bits[stripe_y + 3];
             uint32_t fast_not_zero = hn_pre | (coded_or << 1);
 
+            /* V160: Precompute per-row skip mask for CUP inner row loop.
+             * cup_skip[ri] bit c = 1 → skip row (stripe_y+ri) of column c in CUP.
+             * = sigma already set OR coded in SPP/MRP for this column.
+             * Safety proof: sigma updates during CUP set bit (c+1) for column c;
+             * future columns c'>c check bit (c'+1) — orthogonal. No staleness.
+             * coded_bits updates set bit c for column c; future columns c'>c
+             * check bit c' — also orthogonal. ✓ */
+            uint32_t cup_skip[STRIPE_H] = {0, 0, 0, 0};
+            for (int ri = 0; ri < stripe_len_cup; ri++)
+                cup_skip[ri] = (sigma_pad[stripe_y + 1 + ri] >> 1) | coded_bits[stripe_y + ri];
+
             for (int c = 0; c < cbw; c++) {
                 uint32_t cmask_pad = 1u << (c + 1);
                 uint32_t cmask = 1u << c;
-                int stripe_len = stripe_end - stripe_y;
                 int all_zero;
 
                 if (fast_not_zero & cmask_pad) {
@@ -698,10 +722,10 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                 } else {
                     /* Precomputed shows no obvious disqualifiers. Do the full per-row check
                      * to handle sigma updates from earlier columns in this CUP stripe. */
-                    all_zero = (stripe_len == 4) ? 1 : 0;
+                    all_zero = (stripe_len_cup == 4) ? 1 : 0;
                     if (all_zero) {
                         for (int r = stripe_y; r < stripe_end; r++) {
-                            if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) { all_zero = 0; break; }
+                            if (cup_skip[r - stripe_y] & cmask) { all_zero = 0; break; }
                             if (has_sig_neighbor(sigma_pad, r, c)) { all_zero = 0; break; }
                         }
                     }
@@ -727,7 +751,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
                     coded_bits[r] |= cmask;
                     for (r = stripe_y + run_len + 1; r < stripe_end; r++) {
-                        if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) continue;
+                        if (cup_skip[r - stripe_y] & cmask) continue;  /* V160: register check */
                         int bit = (col_mag >> r) & 1;
                         int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
@@ -741,7 +765,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
                     }
                 } else {
                     for (int r = stripe_y; r < stripe_end; r++) {
-                        if ((sigma_pad[r + 1] & cmask_pad) || (coded_bits[r] & cmask)) continue;
+                        if (cup_skip[r - stripe_y] & cmask) continue;  /* V160: register check */
                         int bit = (col_mag >> r) & 1;
                         int zc = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
                         mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
