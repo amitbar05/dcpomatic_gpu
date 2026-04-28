@@ -4053,7 +4053,7 @@ build_j2k_codestream(
         cs.write_u16(2 + 1 + 4 + 5 + num_precincts);
         cs.write_u8(0x01); cs.write_u8(0x04); cs.write_u16(1); cs.write_u8(1);
         cs.write_u8(is_4k ? 6 : NUM_DWT_LEVELS);
-        cs.write_u8(3); cs.write_u8(3); cs.write_u8(0x00); cs.write_u8(0x00);
+        cs.write_u8(3); cs.write_u8(3); cs.write_u8(0x01); cs.write_u8(0x00); /* SPcod: BYPASS bit=1 */
         cs.write_u8(0x77);
         for (int i = 1; i < num_precincts; ++i) cs.write_u8(0x88);
     }
@@ -4218,7 +4218,7 @@ run_dwt_and_build_codestream(
         cs.write_u8(is_4k ? 6 : NUM_DWT_LEVELS); /* SPcod: decomposition levels */
         cs.write_u8(3);                          /* SPcod: xcb'=3 → 32-sample code blocks */
         cs.write_u8(3);                          /* SPcod: ycb'=3 → 32-sample code blocks */
-        cs.write_u8(0x00);                       /* SPcod: no bypass/reset/terminate */
+        cs.write_u8(0x01);                       /* SPcod: BYPASS bit=1 (V165 bypass mode) */
         cs.write_u8(0x00);                       /* SPcod: filter=0 (9/7 irreversible, DCI) */
         cs.write_u8(0x77);                       /* Precinct: LL band = 128×128 */
         for (int i = 1; i < num_precincts; ++i)
@@ -4798,7 +4798,10 @@ CudaJ2KEncoder::encode_ebcot(
      * up to 3 coding passes per CB (SPP+MRP+CUP of the final bit-plane).
      * Effective quantization on those coefficients ≈ step × 2; combined
      * with step_mult=3.0 → effective step × 6 on the LSB. */
-    int bp_skip = fast_mode ? 1 : 0;
+    int  bp_skip    = fast_mode ? 1 : 0;
+    /* V165: BYPASS mode — always enabled. Enables raw bit coding for MRP+CUP
+     * from the 3rd bit-plane down. Per J2K Part 1 C.3.8 BYPASS. */
+    bool use_bypass = true;
     for (int c = 0; c < 3; ++c) {
         kernel_ebcot_t1<<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
             _impl->d_a[c], stride,
@@ -4808,7 +4811,7 @@ CudaJ2KEncoder::encode_ebcot(
             _impl->d_ebcot_npasses[c],
             _impl->d_ebcot_passlens[c],
             _impl->d_ebcot_numbp[c],
-            bp_skip);
+            bp_skip, use_bypass);
     }
 
     /* V148: T1 error is checked after the stream syncs at the end of D2H. */
