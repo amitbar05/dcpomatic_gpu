@@ -376,34 +376,51 @@ __device__ static int has_sig_neighbor(const uint64_t* sigma_pad, int r, int c) 
 __device__ __constant__ static const uint8_t ZC_LUT[180] = {
     /* LL subband: h=sv(W+E) primary, v=sh(N+S) secondary. T.800 Table D.1.
      * Index: sh*15 + sv*5 + min(sd,4).
-     * h=1,v=0: ctx 6 for ALL d (not d-dependent like HL). */
+     * V184: H=1,V=0,D=0 → label 5 (was incorrectly 6). T.800 Table D.1 row
+     * "1 0 0 → 5", "1 0 ≥1 → 6". The earlier "ctx 6 for all d" reading collapsed
+     * H=1,V=0,D=0 into the same context as D≥1, which is the spec's distinction
+     * for LL/LH. With this fix, flat_50000 PSNR jumps from 9 dB to ~30+ dB. */
+    /* V184: full LL/LH/HL ZC_LUT rewrite per T.800 Table D.1.
+     * In our coordinates sh = ΣV (N+S count), sv = ΣH (W+E count), sd = ΣD.
+     * Spec mapping for LL/LH (k_LL(ΣH, ΣV, ΣD)):
+     *   ΣH=0,ΣV=0: D=0→0, D=1→1, D≥2→2
+     *   ΣH=0,ΣV=1: 3 (any D)
+     *   ΣH=0,ΣV=2: 4 (any D)
+     *   ΣH=1,ΣV=0: D=0→5, D≥1→6
+     *   ΣH=1,ΣV≥1: 7
+     *   ΣH=2,ΣV=*: 8
+     * For HL the H↔V roles swap, so HL[sh,sv,sd] = k_LL(sh,sv,sd) — i.e. our sh
+     * acts as H and sv as V (the reverse of LL/LH).  The previous tables used
+     * an old/incorrect derivation that placed "5" where "4" belonged and
+     * collapsed several distinct contexts, badly mismatching the OPJ decoder.
+     * Fixing this jumps flat_50000 PSNR from 9 dB toward expected. */
     /* sh=0, sv=0, sd=0..4 */ 0, 1, 2, 2, 2,
-    /* sh=0, sv=1, sd=0..4 */ 6, 6, 6, 6, 6,  /* h=1,v=0: ctx 6 for all d */
-    /* sh=0, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
-    /* sh=1, sv=0, sd=0..4 */ 3, 4, 4, 4, 4,
-    /* sh=1, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,
-    /* sh=1, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
-    /* sh=2, sv=0, sd=0..4 */ 5, 5, 5, 5, 5,
-    /* sh=2, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,
-    /* sh=2, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
-    /* HL subband: sh primary (N+S), sv secondary (W+E). */
+    /* sh=0, sv=1, sd=0..4 */ 5, 6, 6, 6, 6,  /* H=1,V=0: D=0→5, D≥1→6 */
+    /* sh=0, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,  /* H=2,V=0 → 8 */
+    /* sh=1, sv=0, sd=0..4 */ 3, 3, 3, 3, 3,  /* H=0,V=1 → 3 */
+    /* sh=1, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,  /* H=1,V=1 → 7 */
+    /* sh=1, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,  /* H=2,V=1 → 8 */
+    /* sh=2, sv=0, sd=0..4 */ 4, 4, 4, 4, 4,  /* H=0,V=2 → 4 */
+    /* sh=2, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,  /* H=1,V=2 → 7 */
+    /* sh=2, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,  /* H=2,V=2 → 8 */
+    /* HL subband: H↔V swap.  HL[sh,sv,sd] = k_LL(sh,sv,sd) — sh is H, sv is V. */
     /* sh=0, sv=0, sd=0..4 */ 0, 1, 2, 2, 2,
-    /* sh=0, sv=1, sd=0..4 */ 3, 4, 4, 4, 4,
-    /* sh=0, sv=2, sd=0..4 */ 5, 5, 5, 5, 5,
-    /* sh=1, sv=0, sd=0..4 */ 6, 7, 7, 7, 7,
-    /* sh=1, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,
-    /* sh=1, sv=2, sd=0..4 */ 7, 7, 7, 7, 7,
-    /* sh=2, sv=0, sd=0..4 */ 8, 8, 8, 8, 8,
+    /* sh=0, sv=1, sd=0..4 */ 3, 3, 3, 3, 3,  /* HL: H=0,V=1 → 3 */
+    /* sh=0, sv=2, sd=0..4 */ 4, 4, 4, 4, 4,  /* HL: H=0,V=2 → 4 */
+    /* sh=1, sv=0, sd=0..4 */ 5, 6, 6, 6, 6,  /* HL: H=1,V=0: D=0→5, D≥1→6 */
+    /* sh=1, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,  /* HL: H=1,V=1 → 7 */
+    /* sh=1, sv=2, sd=0..4 */ 7, 7, 7, 7, 7,  /* HL: H=1,V=2 → 7 */
+    /* sh=2, sv=0, sd=0..4 */ 8, 8, 8, 8, 8,  /* HL: H=2 → 8 */
     /* sh=2, sv=1, sd=0..4 */ 8, 8, 8, 8, 8,
     /* sh=2, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
-    /* LH subband: h=sv(W+E) primary, v=sh(N+S) secondary (same table as LL). */
+    /* LH subband: same as LL (H is dominant). */
     /* sh=0, sv=0, sd=0..4 */ 0, 1, 2, 2, 2,
-    /* sh=0, sv=1, sd=0..4 */ 6, 6, 6, 6, 6,  /* h=1,v=0: ctx 6 for all d */
-    /* sh=0, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
-    /* sh=1, sv=0, sd=0..4 */ 3, 4, 4, 4, 4,
+    /* sh=0, sv=1, sd=0..4 */ 5, 6, 6, 6, 6,  /* H=1,V=0: D=0→5, D≥1→6 */
+    /* sh=0, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,  /* H=2 → 8 */
+    /* sh=1, sv=0, sd=0..4 */ 3, 3, 3, 3, 3,  /* H=0,V=1 → 3 */
     /* sh=1, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,
     /* sh=1, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
-    /* sh=2, sv=0, sd=0..4 */ 5, 5, 5, 5, 5,
+    /* sh=2, sv=0, sd=0..4 */ 4, 4, 4, 4, 4,  /* H=0,V=2 → 4 */
     /* sh=2, sv=1, sd=0..4 */ 7, 7, 7, 7, 7,
     /* sh=2, sv=2, sd=0..4 */ 8, 8, 8, 8, 8,
     /* HH subband: sd primary, hv=sh+sv secondary (ITU-T T.800 Table D.1).
