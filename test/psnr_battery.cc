@@ -151,5 +151,19 @@ int main()
     });
     run(enc, "ramp_small_range",    [](int x,int){ return uint16_t(20000 + x * 10000ll / (W-1)); });
     run(enc, "two_value_split",     [](int x,int){ return uint16_t(x < W/2 ? 20000 : 40000); });
+    /* "Realistic" content: smooth gradient + low-amplitude high-freq noise + a few sharp regions.
+     * Stress-tests typical photo-like content: smooth bulk, edge artifacts, fine texture. */
+    run(enc, "photo_synth",         [](int x,int y){
+        float cx = (x - W/2) / float(W/2), cy = (y - H/2) / float(H/2);
+        float r = std::sqrt(cx*cx + cy*cy);
+        unsigned s = (unsigned)(x*1543u + y*7919u);
+        s = s * 1664525u + 1013904223u;
+        int noise = ((s >> 17) & 0xFF) - 128;
+        int base = int(40000 + 20000 * (1.0f - r));  /* radial gradient */
+        if ((x/256) == 4 && (y/270) == 2) base = 60000;  /* a bright square */
+        int v = base + noise;
+        if (v < 1000) v = 1000; if (v > 65000) v = 65000;
+        return uint16_t(v);
+    });
     return 0;
 }
