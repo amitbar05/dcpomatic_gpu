@@ -1,32 +1,36 @@
-# auto_iter queue — Run 12. Post-V198 exploration.
+# auto_iter queue — Run 13. Final exploratory queue.
+# After 195 iters with only 1 commit (V198), V198d locked optimum.
 
-# === Stage PP: MAX_BP 13 + max_cb_d2h reductions for correct =================
-# Now LMEM is smaller; D2H budget might align differently.
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1408|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1152|
+# === Stage RR: combined finer micro perturbations =====================
+# Try pairs that weren't tested
+script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.85f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.545f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.15f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.455f : 1.0f|' src/lib/cuda_j2k_encoder.cu
 
-# === Stage PP: launch_bounds with new MAX_BP ============================
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 22)|
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 24)|
+# === Stage RR: combined ratio + tail clamp ========================
+script:sed -i 's|ratio \* 0.06f|ratio * 0.0599f|; s|, 0.25f, 32.5f|, 0.25f, 32.5f|' src/lib/cuda_j2k_encoder.cu
 
-# === Stage PP: Now-clean MAX_BP=13 + ratio fine sweep =================
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.05992f|
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.06008f|
+# === Stage SS: try per-component step factor variations ==========
+# Probably no effect since all components use same step.
 
-# === Stage PP: tail clamp variations ==================================
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.249f, 32.5f|
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.251f, 32.5f|
+# === Stage SS: t1_step micro tweaks (HF + LF coordinated) ========
+script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 4.0f;|; s|t1_step = step \* 2.0f;|t1_step = step * 2.05f;|' src/lib/gpu_ebcot_t2.h
+script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 4.0f;|; s|t1_step = step \* 2.0f;|t1_step = step * 1.95f;|' src/lib/gpu_ebcot_t2.h
 
-# === Stage PP: combined small steps =================================
-script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 11, __half>|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.495f : 1.0f|' src/lib/cuda_j2k_encoder.cu
-script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 13, __half>|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.505f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+# === Stage SS: __launch_bounds__ now post-V198 (smaller LMEM) =====
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 21)|
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(80, 12)|
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(72, 14)|
 
-# === Stage QQ: try fast_step variations ==============================
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.92f : 1.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.08f : 1.0f|
+# === Stage TT: more max_cb_d2h variations =========================
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 668 : CB_BUF_SIZE|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 612 : CB_BUF_SIZE|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 588 : CB_BUF_SIZE|
 
-# === Stage QQ: max_cb_d2h fast variations ============================
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 696 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 584 : CB_BUF_SIZE|
+# === Stage TT: MAX_BP = 13 + max_cb_d2h reductions paired =========
+script:sed -i 's|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1408|' src/lib/cuda_j2k_encoder.cu
 
-noop: end of Run 12 queue
+# === Stage UU: explore tail clamp upper bound ====================
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.25f, 30.0f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.25f, 35.0f|
+
+noop: end of Run 13 queue
