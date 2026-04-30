@@ -2803,6 +2803,315 @@ kernel_fused_vert_dwt_tiled(
 }
 
 
+/* ============================================================================
+ * V196: FP32 DWT kernels (high-precision "correct" encode_ebcot path).
+ *
+ * Mirrors the existing FP16 kernels exactly but does every store and lift in
+ * float32. Removes the ~60 dB precision ceiling we observed on flat / gradient
+ * / bars patterns — the FP16 path's accumulated lifting noise was the
+ * dominant correctness gap to OpenJPEG.
+ *
+ * Used only for fast_mode=false (correct mode). The FP16 set is unchanged so
+ * fast mode keeps its HFMA2/__half2 throughput.
+ *
+ * Naming: identical structure to the FP16 variants, suffix _fp32. Shared
+ * memory uses a distinct symbol (extern __shared__ float smem_f32[]) to avoid
+ * the __shared__ type-conflict that retired the original float-smem code
+ * (see #if 0 blocks above).
+ * ========================================================================== */
+
+/* FP32 H-DWT, level 0: int32 input → float deinterleaved output. */
+__global__ void
+kernel_fused_i2f_horz_dwt_fp32(
+    const int32_t* __restrict__ d_input,
+    float* __restrict__ d_tmp,
+    int width, int height, int stride)
+{
+    extern __shared__ float smem_f32[];
+    int y = blockIdx.x;
+    if (y >= height) return;
+
+    int t = threadIdx.x, nt = blockDim.x;
+
+    for (int x = t; x < width; x += nt)
+        smem_f32[x] = __int2float_rn(__ldg(&d_input[y * stride + x]));
+    __syncthreads();
+
+    /* DCI width even and >1: drop boundary guards. */
+    for (int x = 1 + t * 2; x < width - 1; x += nt * 2)
+        smem_f32[x] += ALPHA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    if (t == 0) smem_f32[width - 1] += 2.0f * ALPHA * smem_f32[width - 2];
+    __syncthreads();
+
+    if (t == 0) smem_f32[0] += 2.0f * BETA * smem_f32[1];
+    for (int x = 2 + t * 2; x < width; x += nt * 2)
+        smem_f32[x] += BETA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    __syncthreads();
+
+    for (int x = 1 + t * 2; x < width - 1; x += nt * 2)
+        smem_f32[x] += GAMMA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    if (t == 0) smem_f32[width - 1] += 2.0f * GAMMA * smem_f32[width - 2];
+    __syncthreads();
+
+    if (t == 0) smem_f32[0] += 2.0f * DELTA * smem_f32[1];
+    for (int x = 2 + t * 2; x < width; x += nt * 2)
+        smem_f32[x] += DELTA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    __syncthreads();
+
+    int hw = (width + 1) / 2;
+    for (int x = t * 2; x < width; x += nt * 2)
+        d_tmp[y * stride + x / 2] = smem_f32[x] * NORM_L;
+    for (int x = t * 2 + 1; x < width; x += nt * 2)
+        d_tmp[y * stride + hw + x / 2] = smem_f32[x] * NORM_H;
+}
+
+
+/* FP32 H-DWT, levels 1+: float input → float deinterleaved output. */
+__global__ void
+kernel_fused_horz_dwt_fp32(
+    const float* __restrict__ d_data,
+    float* __restrict__ d_tmp,
+    int width, int height, int stride)
+{
+    extern __shared__ float smem_f32[];
+    int y = blockIdx.x;
+    if (y >= height) return;
+
+    int t = threadIdx.x, nt = blockDim.x;
+
+    for (int x = t; x < width; x += nt)
+        smem_f32[x] = d_data[y * stride + x];
+    __syncthreads();
+
+    for (int x = 1 + t * 2; x < width - 1; x += nt * 2)
+        smem_f32[x] += ALPHA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    if (t == 0) smem_f32[width - 1] += 2.0f * ALPHA * smem_f32[width - 2];
+    __syncthreads();
+
+    if (t == 0) smem_f32[0] += 2.0f * BETA * smem_f32[1];
+    for (int x = 2 + t * 2; x < width; x += nt * 2)
+        smem_f32[x] += BETA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    __syncthreads();
+
+    for (int x = 1 + t * 2; x < width - 1; x += nt * 2)
+        smem_f32[x] += GAMMA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    if (t == 0) smem_f32[width - 1] += 2.0f * GAMMA * smem_f32[width - 2];
+    __syncthreads();
+
+    if (t == 0) smem_f32[0] += 2.0f * DELTA * smem_f32[1];
+    for (int x = 2 + t * 2; x < width; x += nt * 2)
+        smem_f32[x] += DELTA * (smem_f32[x - 1] + smem_f32[x + 1]);
+    __syncthreads();
+
+    int hw = (width + 1) / 2;
+    for (int x = t * 2; x < width; x += nt * 2)
+        d_tmp[y * stride + x / 2] = smem_f32[x] * NORM_L;
+    for (int x = t * 2 + 1; x < width; x += nt * 2)
+        d_tmp[y * stride + hw + x / 2] = smem_f32[x] * NORM_H;
+}
+
+
+/* FP32 V-DWT, register-blocked (small subbands, h ≤ MAX_REG_HEIGHT).
+ * Reads float input, lifts in float, writes float output. */
+template<bool EVEN_HEIGHT>
+__global__ void
+kernel_fused_vert_dwt_fp32_reg_ho(
+    const float* __restrict__ d_src,
+    float* __restrict__ d_dst,
+    int width, int height, int stride)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+
+    float col[MAX_REG_HEIGHT];
+    #pragma unroll 4
+    for (int y = 0; y < height; y++)
+        col[y] = __ldg(&d_src[y * stride + x]);
+
+    /* Alpha: odd rows */
+    #pragma unroll 4
+    for (int y = 1; y < height - 1; y += 2)
+        col[y] += ALPHA * (col[y-1] + col[y+1]);
+    if (EVEN_HEIGHT)
+        col[height-1] += 2.0f * ALPHA * col[height-2];
+
+    /* Beta: even rows */
+    col[0] += 2.0f * BETA * col[1];
+    #pragma unroll 4
+    for (int y = 2; y < height - 1; y += 2)
+        col[y] += BETA * (col[y-1] + col[y+1]);
+    if (!EVEN_HEIGHT)
+        col[height-1] += 2.0f * BETA * col[height-2];
+
+    /* Gamma: odd rows */
+    #pragma unroll 4
+    for (int y = 1; y < height - 1; y += 2)
+        col[y] += GAMMA * (col[y-1] + col[y+1]);
+    if (EVEN_HEIGHT)
+        col[height-1] += 2.0f * GAMMA * col[height-2];
+
+    /* Delta: even rows */
+    col[0] += 2.0f * DELTA * col[1];
+    #pragma unroll 4
+    for (int y = 2; y < height - 1; y += 2)
+        col[y] += DELTA * (col[y-1] + col[y+1]);
+    if (!EVEN_HEIGHT)
+        col[height-1] += 2.0f * DELTA * col[height-2];
+
+    int hh = (height + 1) / 2;
+    #pragma unroll 4
+    for (int y = 0; y < height; y += 2)
+        d_dst[(y/2)*stride + x] = col[y] * NORM_L;
+    #pragma unroll 4
+    for (int y = 1; y < height; y += 2)
+        d_dst[(hh + y/2)*stride + x] = col[y] * NORM_H;
+}
+
+
+/* FP32 V-DWT, tiled (large subbands, h > MAX_REG_HEIGHT).
+ * Reads float, lifts float, writes float. Single-column (no HFMA2 trick). */
+__global__ void
+kernel_fused_vert_dwt_fp32_tiled(
+    const float* __restrict__ d_src,
+    float* __restrict__ d_dst,
+    int width, int height, int stride)
+{
+    int x          = blockIdx.x * blockDim.x + threadIdx.x;
+    int tile_start = blockIdx.y * V_TILE;
+    if (x >= width || tile_start >= height) return;
+
+    int load_start = tile_start - V_OVERLAP;
+    int tile_end   = min(tile_start + V_TILE, height);
+
+    float col[V_TILE_FL];
+    /* Whole-point symmetric extension at boundaries. */
+    for (int i = 0; i < V_TILE_FL; i++) {
+        int gy = load_start + i;
+        if (gy < 0) gy = -gy;
+        else if (gy >= height) gy = 2*(height-1) - gy;
+        col[i] = __ldg(&d_src[gy * stride + x]);
+    }
+
+    /* V_TILE/V_OVERLAP both even → load_start always even → P0=0. */
+    cdf97_lift_tiled<0>(col);
+
+    int hh = (height + 1) / 2;
+    for (int i = V_OVERLAP; i < V_OVERLAP + (tile_end - tile_start); i++) {
+        int gy = load_start + i;
+        if (i & 1)
+            d_dst[(hh + gy/2) * stride + x] = col[i] * NORM_H;
+        else
+            d_dst[(gy/2) * stride + x] = col[i] * NORM_L;
+    }
+}
+
+
+/* FP32 RGB→XYZ→H-DWT0 fused, 2-rows-per-block.
+ * Mirrors kernel_rgb48_xyz_hdwt0_1ch_2row but with float smem and float output.
+ * Same shared-mem layout: [0..w-1] row y0, [w..2w-1] row y1. */
+__global__ void
+kernel_rgb48_xyz_hdwt0_1ch_2row_fp32(
+    const uint16_t* __restrict__ d_rgb16,
+    const float*    __restrict__ d_lut_in_f32,
+    const uint16_t* __restrict__ d_lut_out,
+    const float*    __restrict__ d_matrix,
+    float* __restrict__ d_hout,
+    int comp,
+    int width, int height, int rgb_stride, int stride)
+{
+    extern __shared__ float smem_f32[];   /* 2*w floats */
+    int y0 = blockIdx.x * 2;
+    int y1 = y0 + 1;
+    int t = threadIdx.x, nt = blockDim.x;
+    int w = width, hw = (w + 1) / 2;
+
+    int mr = comp * 3;
+    float m0 = __ldg(&d_matrix[mr]);
+    float m1 = __ldg(&d_matrix[mr + 1]);
+    float m2 = __ldg(&d_matrix[mr + 2]);
+
+    /* Phase 1: load + RGB→XYZ for both rows. Output gamma LUT writes 12-bit
+     * value, then DC level shift -2048 stored in float smem. */
+    for (int px = t; px < w; px += nt) {
+        int b0 = y0 * rgb_stride + px * 3;
+        int ri = min((__ldg(&d_rgb16[b0 + 0]) >> 4), 4095);
+        int gi = min((__ldg(&d_rgb16[b0 + 1]) >> 4), 4095);
+        int bi = min((__ldg(&d_rgb16[b0 + 2]) >> 4), 4095);
+        float r = __ldg(&d_lut_in_f32[ri]);
+        float g = __ldg(&d_lut_in_f32[gi]);
+        float b = __ldg(&d_lut_in_f32[bi]);
+        float v = __saturatef(m0*r + m1*g + m2*b);
+        smem_f32[px] = static_cast<float>(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)])) - 2048.0f;
+    }
+    if (y1 < height) {
+        for (int px = t; px < w; px += nt) {
+            int b1 = y1 * rgb_stride + px * 3;
+            int ri = min((__ldg(&d_rgb16[b1 + 0]) >> 4), 4095);
+            int gi = min((__ldg(&d_rgb16[b1 + 1]) >> 4), 4095);
+            int bi = min((__ldg(&d_rgb16[b1 + 2]) >> 4), 4095);
+            float r = __ldg(&d_lut_in_f32[ri]);
+            float g = __ldg(&d_lut_in_f32[gi]);
+            float b = __ldg(&d_lut_in_f32[bi]);
+            float v = __saturatef(m0*r + m1*g + m2*b);
+            smem_f32[w + px] = static_cast<float>(__ldg(&d_lut_out[static_cast<int>(v*4095.5f)])) - 2048.0f;
+        }
+    }
+    __syncthreads();
+
+    /* Phase 2: in-place CDF 9/7 H-DWT lifting on both rows (FP32). */
+    /* Alpha */
+    for (int x = 1+t*2; x < w-1; x += nt*2) {
+        smem_f32[x]   += ALPHA * (smem_f32[x-1]   + smem_f32[x+1]);
+        if (y1 < height) smem_f32[w+x] += ALPHA * (smem_f32[w+x-1] + smem_f32[w+x+1]);
+    }
+    if (t==0) {
+        smem_f32[w-1]   += 2.f*ALPHA * smem_f32[w-2];
+        if (y1 < height) smem_f32[2*w-1] += 2.f*ALPHA * smem_f32[2*w-2];
+    }
+    __syncthreads();
+    /* Beta */
+    if (t==0) {
+        smem_f32[0] += 2.f*BETA * smem_f32[1];
+        if (y1 < height) smem_f32[w] += 2.f*BETA * smem_f32[w+1];
+    }
+    for (int x = 2+t*2; x < w; x += nt*2) {
+        smem_f32[x]   += BETA * (smem_f32[x-1]   + smem_f32[x+1]);
+        if (y1 < height) smem_f32[w+x] += BETA * (smem_f32[w+x-1] + smem_f32[w+x+1]);
+    }
+    __syncthreads();
+    /* Gamma */
+    for (int x = 1+t*2; x < w-1; x += nt*2) {
+        smem_f32[x]   += GAMMA * (smem_f32[x-1]   + smem_f32[x+1]);
+        if (y1 < height) smem_f32[w+x] += GAMMA * (smem_f32[w+x-1] + smem_f32[w+x+1]);
+    }
+    if (t==0) {
+        smem_f32[w-1]   += 2.f*GAMMA * smem_f32[w-2];
+        if (y1 < height) smem_f32[2*w-1] += 2.f*GAMMA * smem_f32[2*w-2];
+    }
+    __syncthreads();
+    /* Delta */
+    if (t==0) {
+        smem_f32[0] += 2.f*DELTA * smem_f32[1];
+        if (y1 < height) smem_f32[w] += 2.f*DELTA * smem_f32[w+1];
+    }
+    for (int x = 2+t*2; x < w; x += nt*2) {
+        smem_f32[x]   += DELTA * (smem_f32[x-1]   + smem_f32[x+1]);
+        if (y1 < height) smem_f32[w+x] += DELTA * (smem_f32[w+x-1] + smem_f32[w+x+1]);
+    }
+    __syncthreads();
+
+    /* Phase 3: deinterleave (L|H) → row-strided d_hout. */
+    for (int x = t*2; x < w; x += nt*2) {
+        d_hout[y0*stride + x/2] = smem_f32[x] * NORM_L;
+        if (y1 < height) d_hout[y1*stride + x/2] = smem_f32[w+x] * NORM_L;
+    }
+    for (int x = t*2+1; x < w; x += nt*2) {
+        d_hout[y0*stride + hw + x/2] = smem_f32[x] * NORM_H;
+        if (y1 < height) d_hout[y1*stride + hw + x/2] = smem_f32[w+x] * NORM_H;
+    }
+}
+
+
 #if 0  /* Dead kernel — superseded by kernel_rgb48_xyz_hdwt0_1ch variants */
 /**
  * V28: Fused RGB48→XYZ colour conversion + horizontal DWT level 0 (all 3 components).
@@ -3598,6 +3907,15 @@ struct CudaJ2KEncoderImpl
     __half*  d_a[3]  = {nullptr};  /* V36: half: V-DWT output (was float; saves 2B/pixel) */
     __half*  d_b[3]  = {nullptr};  /* V26: half: H-DWT output (saves 50% DRAM vs float) */
     /* d_half[3] removed in V30: V29 tiled kernel uses registers, no fp16 workspace */
+
+    /* V196: FP32 DWT buffers for the high-precision "correct" encode_ebcot path.
+     * Allocated lazily — only when fast_mode=false uses the FP32 DWT route.
+     * Doubles DRAM vs the FP16 path; T1 reads native float, removing the FP16
+     * precision floor (~60 dB ceiling on flat patterns) that capped the
+     * previous correct mode. */
+    float*   d_a_f32[3] = {nullptr, nullptr, nullptr};  /* V-DWT output  (float) */
+    float*   d_b_f32[3] = {nullptr, nullptr, nullptr};  /* H-DWT output  (float) */
+    size_t   buf_pixels_f32 = 0;
     /* Integer input per component (encode() path only; not used in encode_from_rgb48) */
     int32_t* d_in[3] = {nullptr};
     /* GPU-packed tier-1 output */
@@ -3851,10 +4169,30 @@ struct CudaJ2KEncoderImpl
             if (d_a[c])  { cudaFree(d_a[c]);  d_a[c]  = nullptr; }
             if (d_b[c])  { cudaFree(d_b[c]);  d_b[c]  = nullptr; }
             if (d_in[c]) { cudaFree(d_in[c]); d_in[c] = nullptr; }
-            /* d_half[c] was removed in V30 — was fp16 V-DWT workspace, now unused */
+            if (d_a_f32[c]) { cudaFree(d_a_f32[c]); d_a_f32[c] = nullptr; }  /* V196 */
+            if (d_b_f32[c]) { cudaFree(d_b_f32[c]); d_b_f32[c] = nullptr; }  /* V196 */
         }
         if (d_packed) { cudaFree(d_packed); d_packed = nullptr; }
         buf_pixels = 0;
+        buf_pixels_f32 = 0;
+    }
+
+    /* V196: lazily allocate float DWT buffers for the high-precision path.
+     * Worst case at 4K (2160×3840 float × 2 buffers × 3 channels) ≈ 192 MB on
+     * top of the existing 96 MB FP16 set. Comfortably fits 4 GB GTX 1050 Ti. */
+    void ensure_buffers_f32(int width, int height) {
+        size_t pixels = static_cast<size_t>(width) * height;
+        if (pixels <= buf_pixels_f32) return;
+        for (int c = 0; c < 3; ++c) {
+            if (d_a_f32[c]) { cudaFree(d_a_f32[c]); d_a_f32[c] = nullptr; }
+            if (d_b_f32[c]) { cudaFree(d_b_f32[c]); d_b_f32[c] = nullptr; }
+        }
+        size_t pad = static_cast<size_t>(width) * 8 * sizeof(float) + 64;
+        for (int c = 0; c < 3; ++c) {
+            cudaMalloc(&d_a_f32[c], pixels * sizeof(float) + pad);
+            cudaMalloc(&d_b_f32[c], pixels * sizeof(float) + pad);
+        }
+        buf_pixels_f32 = pixels;
     }
 
     void destroy_comp_graphs() {
@@ -4015,6 +4353,59 @@ gpu_dwt97_level(
             d_half_h, d_half_a, width, height, stride);
     }
     (void)d_half_work;  /* V30+: no longer used */
+}
+
+
+/* V196: FP32 sibling of gpu_dwt97_level. Same H-then-V structure, same launch
+ * configurations, but every kernel takes/produces float buffers and lifts in
+ * float. Used for the high-precision encode_ebcot path. */
+static void
+gpu_dwt97_level_fp32(
+    float* d_a_f,           /* V-DWT output (float) */
+    float* d_b_f,           /* H-DWT output (float) */
+    const int32_t* d_input, /* int32 input (level 0 only, ignored if skip_hdwt) */
+    int width, int height, int stride,
+    int level, cudaStream_t st,
+    bool skip_hdwt = false)
+{
+    constexpr int H_THREADS = 512;
+    constexpr int V_THREADS_TILED = 256;
+    constexpr int V_THREADS_REG   = 128;
+
+    size_t smem = static_cast<size_t>(width) * sizeof(float);
+    int grid_v  = (width + V_THREADS_REG - 1) / V_THREADS_REG;
+
+    /* Step 1: H-DWT — writes float to d_b_f.
+     * Level 0 non-skip: reads int32 d_input. Levels 1+: reads float d_a_f. */
+    if (!skip_hdwt) {
+        if (level == 0) {
+            /* Level 0 always one row per block (matches FP16 history pre-V74). */
+            kernel_fused_i2f_horz_dwt_fp32<<<height, H_THREADS, smem, st>>>(
+                d_input, d_b_f, width, height, stride);
+        } else {
+            /* Adaptive thread count to match FP16 path. */
+            int h_blk = (width > 480) ? H_THREADS :
+                        (width > 240) ? 256 :
+                        (width > 120) ? 128 : 64;
+            kernel_fused_horz_dwt_fp32<<<height, h_blk, smem, st>>>(
+                d_a_f, d_b_f, width, height, stride);
+        }
+    }
+
+    /* Step 2: V-DWT reads float d_b_f, writes float d_a_f. */
+    if (height <= MAX_REG_HEIGHT) {
+        if (height % 2 == 0)
+            kernel_fused_vert_dwt_fp32_reg_ho<true><<<grid_v, V_THREADS_REG, 0, st>>>(
+                d_b_f, d_a_f, width, height, stride);
+        else
+            kernel_fused_vert_dwt_fp32_reg_ho<false><<<grid_v, V_THREADS_REG, 0, st>>>(
+                d_b_f, d_a_f, width, height, stride);
+    } else {
+        dim3 v_grid2d((width + V_THREADS_TILED - 1) / V_THREADS_TILED,
+                      (height + V_TILE - 1) / V_TILE);
+        kernel_fused_vert_dwt_fp32_tiled<<<v_grid2d, V_THREADS_TILED, 0, st>>>(
+            d_b_f, d_a_f, width, height, stride);
+    }
 }
 
 
@@ -4941,6 +5332,12 @@ CudaJ2KEncoder::encode_ebcot(
     _impl->ensure_buffers(width, height);
     _impl->ensure_rgb_buffer(width, height);
 
+    /* V196: high-precision FP32 DWT path for the "correct" (non-fast) mode.
+     * Lazily allocates float twins of d_a/d_b. Removes the ~60 dB FP16 ceiling
+     * that limited correct-mode PSNR. fast_mode keeps the FP16 path. */
+    const bool use_fp32_dwt = !fast_mode;
+    if (use_fp32_dwt) _impl->ensure_buffers_f32(width, height);
+
     const int num_levels = is_4k ? 6 : NUM_DWT_LEVELS;
     int stride = width;
 
@@ -4962,15 +5359,27 @@ CudaJ2KEncoder::encode_ebcot(
      * PreferNone at 4K.  Matrix/lut register state amortised over 2× the work;
      * adjacent-row L2 locality improves.  encode_from_rgb48's p12 path used
      * this pattern for years; encode_ebcot simply never caught up. */
-    size_t ch_smem = static_cast<size_t>(2 * width) * sizeof(__half);
     int rgb_grid_2row = (height + 1) / 2;
 
-    for (int c = 0; c < 3; ++c) {
-        kernel_rgb48_xyz_hdwt0_1ch_2row<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
-            _impl->d_rgb16[0],
-            _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
-            _impl->d_b[c], c,
-            width, height, rgb_stride_pixels, stride);
+    if (use_fp32_dwt) {
+        /* V196: FP32 RGB+H-DWT0 fused kernel writes to d_b_f32. */
+        size_t ch_smem_f32 = static_cast<size_t>(2 * width) * sizeof(float);
+        for (int c = 0; c < 3; ++c) {
+            kernel_rgb48_xyz_hdwt0_1ch_2row_fp32<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem_f32, _impl->stream[c]>>>(
+                _impl->d_rgb16[0],
+                _impl->d_lut_in_f32, _impl->d_lut_out, _impl->d_matrix,
+                _impl->d_b_f32[c], c,
+                width, height, rgb_stride_pixels, stride);
+        }
+    } else {
+        size_t ch_smem = static_cast<size_t>(2 * width) * sizeof(__half);
+        for (int c = 0; c < 3; ++c) {
+            kernel_rgb48_xyz_hdwt0_1ch_2row<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
+                _impl->d_rgb16[0],
+                _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
+                _impl->d_b[c], c,
+                width, height, rgb_stride_pixels, stride);
+        }
     }
 
     tmark("RGB+HDWT0");
@@ -4979,9 +5388,15 @@ CudaJ2KEncoder::encode_ebcot(
     for (int c = 0; c < 3; ++c) {
         int w = width, h = height;
         for (int level = 0; level < num_levels; ++level) {
-            gpu_dwt97_level(_impl->d_a[c], _impl->d_b[c], nullptr,
-                            _impl->d_in[c], w, h, stride, level, _impl->stream[c],
-                            level == 0 /* skip H-DWT for level 0 */);
+            if (use_fp32_dwt) {
+                gpu_dwt97_level_fp32(_impl->d_a_f32[c], _impl->d_b_f32[c],
+                                     _impl->d_in[c], w, h, stride, level, _impl->stream[c],
+                                     level == 0 /* skip H-DWT for level 0 */);
+            } else {
+                gpu_dwt97_level(_impl->d_a[c], _impl->d_b[c], nullptr,
+                                _impl->d_in[c], w, h, stride, level, _impl->stream[c],
+                                level == 0 /* skip H-DWT for level 0 */);
+            }
             w = (w + 1) / 2;
             h = (h + 1) / 2;
         }
@@ -5077,7 +5492,7 @@ CudaJ2KEncoder::encode_ebcot(
              * V185 effective T1 step varying per band, max num_bp on real frames at
              * 150 Mbps lands around 10-11.  Tried MAX_BP=10 — h_gradient regressed
              * 52.9→26.8 dB (some CB hit 11 bit-planes, MSB truncated). MAX_BP=12 stays. */
-            kernel_ebcot_t1<true, 12><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+            kernel_ebcot_t1<true, 12, __half><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                 _impl->d_a[c], stride,
                 _impl->d_cb_info, num_cbs,
                 _impl->d_ebcot_data[c],
@@ -5087,8 +5502,9 @@ CudaJ2KEncoder::encode_ebcot(
                 _impl->d_ebcot_numbp[c],
                 bp_skip, use_bypass);
         } else {
-            kernel_ebcot_t1<false, 14><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-                _impl->d_a[c], stride,
+            /* V196: correct path reads FP32 d_a_f32 — no FP16 precision floor. */
+            kernel_ebcot_t1<false, 14, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                _impl->d_a_f32[c], stride,
                 _impl->d_cb_info, num_cbs,
                 _impl->d_ebcot_data[c],
                 _impl->d_ebcot_len[c],

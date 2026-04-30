@@ -647,9 +647,19 @@ struct CodeBlockInfo {
  *       finding: all 2K blocks have ≤7 bp at 150Mbps (capping at 4 and 7 gave same output).
  *       Unrolled loop eliminates serial branch overhead, enables software pipelining.
  * Caller must launch with exactly 64 threads/block. */
-template<bool FAST4, int MAX_BP = (FAST4 ? 4 : 10)>
+/* V196: helper to load a single DWT coefficient as float irrespective of storage type.
+ * For __half storage we go via __half2float; for float storage we just use __ldg.
+ * Marked __forceinline__ so the dispatch is purely compile-time. */
+template<typename DWT_T>
+__device__ __forceinline__ float dwt_load(const DWT_T* p) { return __half2float(__ldg(p)); }
+template<>
+__device__ __forceinline__ float dwt_load<float>(const float* p) { return __ldg(p); }
+
+/* V196: kernel_ebcot_t1 templated on DWT_T to support both FP16 (existing fast
+ * path) and FP32 (new high-precision correct path) DWT input. */
+template<bool FAST4, int MAX_BP = (FAST4 ? 4 : 10), typename DWT_T = __half>
 __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
-    const __half* __restrict__ d_dwt,   /* DWT output coefficients (d_a[c]) */
+    const DWT_T* __restrict__ d_dwt,    /* DWT output coefficients (d_a[c]) */
     int dwt_stride,                      /* row stride of DWT array (= image width) */
     const CodeBlockInfo* __restrict__ d_cb_info,  /* code-block metadata */
     int num_cbs,                         /* number of code-blocks */
@@ -708,9 +718,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     int max_mag = 0;
     for (int r = 0; r < cbh; r++) {
         uint32_t sb = 0;
-        const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
+        const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
         for (int c = 0; c < cbw; c++) {
-            float val = __half2float(__ldg(row_ptr + c));
+            float val = dwt_load(row_ptr + c);
             int q = __float2int_rn(fabsf(val) * inv_step);
             if (val < 0.0f) sb |= (1u << c);
             max_mag |= q;  /* bitwise OR — captures all bits for num_bp */
@@ -750,9 +760,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             mag_bp_flat[bp_idx * CB_DIM + c] = 0;
     for (int r = 0; r < cbh; r++) {
         uint32_t rmask = 1u << r;
-        const __half* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
+        const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
         for (int c = 0; c < cbw; c++) {
-            int q = __float2int_rn(fabsf(__half2float(__ldg(row_ptr + c))) * inv_step);
+            int q = __float2int_rn(fabsf(dwt_load(row_ptr + c)) * inv_step);
             if (q == 0) continue;
             for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
                 if ((q >> (num_bp - 1 - bp_idx)) & 1)
