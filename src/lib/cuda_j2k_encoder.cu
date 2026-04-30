@@ -5532,7 +5532,10 @@ CudaJ2KEncoder::encode_ebcot(
      * Any CB whose coded output exceeds the budget is truncated, which in
      * practice only affects the lowest few code-blocks at very high rates.
      */
-    const int max_cb_d2h = fast_mode ? 640 : 1024;
+    /* V196: bump correct-mode max_cb_d2h to full CB_BUF_SIZE so high-frequency
+     * patterns (checker_64, noise) aren't truncated mid-pass. The previous
+     * 1024 cap was a perf optimisation that hurt these patterns. */
+    const int max_cb_d2h = fast_mode ? 640 : CB_BUF_SIZE;
     for (int c = 0; c < 3; ++c) {
         cudaMemcpy2DAsync(
             _impl->h_ebcot_data[c], max_cb_d2h,
