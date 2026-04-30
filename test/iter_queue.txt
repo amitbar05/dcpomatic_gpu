@@ -1,50 +1,40 @@
-# auto_iter queue — Run 7. Final long sweep — diverse small perturbations.
-# 89 prior iters found NO commits.  V196d is the documented optimum.
-# This queue keeps auto_iter productive while looking for marginal wins.
+# auto_iter queue — Run 8. Combined micro perturbations.
+# Sometimes 2-3 parameters together find a small improvement that
+# individual changes miss.
 
-# Stage U: ratio with very fine granularity around 0.06
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0599f|
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0601f|
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0597f|
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0603f|
+# Stage Z: combined ratio + tail clamp pairs
+script:sed -i 's|ratio \* 0.06f|ratio * 0.0599f|; s|, 0.25f, 32.5f|, 0.25f, 32.5f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|ratio \* 0.06f|ratio * 0.0601f|; s|, 0.25f, 32.5f|, 0.25f, 32.5f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|ratio \* 0.06f|ratio * 0.0599f|; s|, 0.25f, 32.5f|, 0.245f, 32.5f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|ratio \* 0.06f|ratio * 0.0601f|; s|, 0.25f, 32.5f|, 0.255f, 32.5f|' src/lib/cuda_j2k_encoder.cu
 
-# Stage U: tail clamp variations
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.24f, 32.5f|
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.26f, 32.5f|
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.245f, 32.5f|
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.255f, 32.5f|
+# Stage Z: combined max_cb_d2h fast + ratio
+script:sed -i 's|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 656 : CB_BUF_SIZE|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.495f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 624 : CB_BUF_SIZE|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.505f : 1.0f|' src/lib/cuda_j2k_encoder.cu
 
-# Stage U: max_cb_d2h fast mode finer
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 644 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 636 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 632 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 648 : CB_BUF_SIZE|
+# Stage Z: combined fast_step + fast_bitrate (could shift Pareto front)
+script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.95f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.505f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.05f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.495f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.97f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.51f : 1.0f|' src/lib/cuda_j2k_encoder.cu
 
-# Stage V: combined micro adjustments
-script:sed -i 's|ratio \* 0.06f|ratio * 0.0599f|; s|, 0.25f, 32.5f|, 0.24f, 32.5f|' src/lib/cuda_j2k_encoder.cu
-script:sed -i 's|ratio \* 0.06f|ratio * 0.0601f|; s|, 0.25f, 32.5f|, 0.26f, 32.5f|' src/lib/cuda_j2k_encoder.cu
+# Stage AA: HF + LL5 paired
+script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 4.02f;|' src/lib/gpu_ebcot_t2.h && sed -i 's|0.85f, 0.65f, 0.65f, 0.65f|0.85f, 0.655f, 0.655f, 0.655f|' src/lib/gpu_ebcot_t2.h
+script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 3.98f;|' src/lib/gpu_ebcot_t2.h && sed -i 's|0.85f, 0.65f, 0.65f, 0.65f|0.85f, 0.645f, 0.645f, 0.645f|' src/lib/gpu_ebcot_t2.h
 
-# Stage V: HF subband micro tweaks combined
-script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 4.02f;|' src/lib/gpu_ebcot_t2.h
-script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 3.98f;|' src/lib/gpu_ebcot_t2.h
-script:sed -i 's|t1_step = step \* 2.0f;|t1_step = step * 2.02f;|' src/lib/gpu_ebcot_t2.h
-script:sed -i 's|t1_step = step \* 2.0f;|t1_step = step * 1.98f;|' src/lib/gpu_ebcot_t2.h
+# Stage AA: HL/LH + level weights paired
+script:sed -i 's|t1_step = step \* 2.0f;|t1_step = step * 2.02f;|' src/lib/gpu_ebcot_t2.h && sed -i 's|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.20f, 1.12f, 1.05f, 0.95f, 0.84f, 0.65f, 0.65f, 0.65f}|' src/lib/gpu_ebcot_t2.h
+script:sed -i 's|t1_step = step \* 2.0f;|t1_step = step * 1.98f;|' src/lib/gpu_ebcot_t2.h && sed -i 's|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.20f, 1.12f, 1.05f, 0.95f, 0.86f, 0.65f, 0.65f, 0.65f}|' src/lib/gpu_ebcot_t2.h
 
-# Stage W: re-baselining noops to capture timing drift
-noop: stage W noop 1
-noop: stage W noop 2
-noop: stage W noop 3
+# Stage BB: even more granular ratio sweep
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.05995f|
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.06005f|
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.05985f|
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.06015f|
 
-# Stage X: level weight micro variations on AC bands only
-sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.205f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|
-sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.195f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|
-sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.655f, 0.655f, 0.655f}|
-sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.645f, 0.645f, 0.645f}|
+# Stage CC: tail clamp very fine
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.248f, 32.5f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.252f, 32.5f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.246f, 32.5f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.254f, 32.5f|
 
-# Stage Y: try different fast_mode settings
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.495f : 1.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.505f : 1.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.99f : 1.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.01f : 1.0f|
-
-noop: end of Run 7 queue
+noop: end of Run 8 queue
