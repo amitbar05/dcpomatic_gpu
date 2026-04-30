@@ -1,0 +1,67 @@
+--- a/src/lib/gpu_ebcot_t2.h
++++ b/src/lib/gpu_ebcot_t2.h
+@@ -437,6 +437,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
+
+     const size_t per_comp_target = (target_bytes > 0)
+         ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
++    size_t comp_bytes_used[3] = {0, 0, 0};
+     for (int c = 0; c < 3; ++c) {
+         size_t comp_bytes = 0;
+         for (size_t sb = 0; sb < subbands.size(); ++sb) {
+@@ -473,6 +474,55 @@ inline std::vector<uint8_t> build_ebcot_codestream(
+                 comp_bytes += len_use;
+             }
+         }
++        comp_bytes_used[c] = comp_bytes;
++    }
++
++    /* V197b: second-pass leftover redistribution.  After the first pass each
++     * component is bounded by per_comp_target; if any component finished with
++     * comp_bytes_used[c] < per_comp_target it leaves bytes on the table.  For
++     * patterns like checker_64 the total used (727KB) was well under target
++     * (781KB).  Redistribute the global leftover across components in a
++     * single sweep, admitting EXTRA passes for CBs that had been truncated.
++     * Components keep their first-pass admissions; this only adds.  Hence
++     * cannot regress PSNR — only improve. */
++    if (target_bytes > 0) {
++        size_t total_target = static_cast<size_t>(target_bytes);
++        size_t total_used = comp_bytes_used[0] + comp_bytes_used[1] + comp_bytes_used[2];
++        if (total_used < total_target) {
++            size_t leftover = total_target - total_used;
++            for (int c = 0; c < 3 && leftover > 0; ++c) {
++                /* Walk subbands the same order as the first pass; for CBs that
++                 * were truncated (np_use < num_passes), try to admit additional
++                 * passes. */
++                for (size_t sb = 0; sb < subbands.size() && leftover > 0; ++sb) {
++                    int cb_start = subbands[sb].cb_start_idx;
++                    int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
++                    for (int i = 0; i < ncbs && leftover > 0; ++i) {
++                        int cb_idx = cb_start + i;
++                        uint8_t  np_full = num_passes[c][cb_idx];
++                        uint8_t  np_used = pcrd_np_use[c][cb_idx];
++                        if (np_used >= np_full) continue;
++                        uint16_t cb_len_full = coded_len[c][cb_idx];
++                        if (cb_len_full > static_cast<uint16_t>(cb_stride - 1))
++                            cb_len_full = static_cast<uint16_t>(cb_stride - 1);
++                        uint16_t len_used = pcrd_len_use[c][cb_idx];
++                        const uint16_t* pl = pass_lengths[c]
++                            + static_cast<size_t>(cb_idx) * MAX_PASSES;
++                        for (int p = np_used; p < np_full; ++p) {
++                            uint16_t cum = pl[p];
++                            if (cum > cb_len_full) cum = cb_len_full;
++                            uint16_t inc = (cum > len_used) ? (cum - len_used) : 0;
++                            if (inc == 0) continue;
++                            if (inc > leftover) break;
++                            np_used = static_cast<uint8_t>(p + 1);
++                            len_used = cum;
++                            leftover -= inc;
++                        }
++                        pcrd_np_use [c][cb_idx] = np_used;
++                        pcrd_len_use[c][cb_idx] = len_used;
++                    }
++                }
++            }
++        }
+     }
+
+     /* V181: build_tp fills pkt_by_res[comp][res] — one blob per (comp, res) pair.
