@@ -1,0 +1,55 @@
+# Phase 2 iter_queue. After phase 1 (Stage C parameter tweaks) finishes,
+# concatenate this onto iter_queue.txt. Phase 2 explores algorithmic
+# changes more likely to yield >2 % speedups.
+#
+# IMPORTANT: many of these are not testable as one-line sed edits — they
+# need actual code patches (apply: verb) or won't work. They're listed
+# here as research hooks for the next session.
+
+# F1: pipeline H2D upload on st_h2d while CPU builds CB table.  Currently
+# encode_ebcot is synchronous — the H2D blocks until done before the level
+# 0 launches. Moving to async on st_h2d + event sync overlaps with CPU work.
+# Estimated saving: 1-2 ms on 2K, ~3 ms on 4K.
+#noop: F1 needs apply: patch
+
+# F2: merge the 3 component stream-syncs at the end of T1 into a single
+# event/sync.  encode_ebcot has `for (int c = 0; c < 3; ++c) cudaStreamSync...`
+# which serializes. A single cudaEventRecord per stream + one
+# cudaEventSynchronize on a master event would match real waiting time.
+#noop: F2 needs apply: patch
+
+# F3: GPU-side D2H compaction.  Each CB's coded data lives in a CB_BUF_SIZE
+# slot; only `len` bytes are real.  CUB DeviceScan::ExclusiveSum + scatter
+# kernel could pack the actual data into a contiguous buffer and D2H only
+# the packed bytes (5-20% of the slot space).  Big change; needs new buffers.
+#noop: F3 needs apply: patch
+
+# F4: per-CB MAX_BP based on band importance.  LL5 needs many bit-planes;
+# HH1 needs few.  Currently we use one MAX_BP per template instantiation,
+# which over-allocates LMEM for the small-amplitude bands.
+#noop: F4 needs T1 kernel rework
+
+# F5: re-enable LAZY/BYPASS coding (V165 disabled).  Bypass mode raw-bit-codes
+# the lower bit-planes — much faster than MQ.  V165's bug was "segment too
+# long" decode failures; needs MQC_RESET emission after each bypass pass
+# and segment marker bookkeeping.
+#noop: F5 needs gpu_ebcot.h rework
+
+# F6: pipeline frame N+1 H2D + DWT with frame N T1 + T2.  Requires
+# encode_ebcot to expose a begin/flush API; currently each call is one
+# atomic sync block.  encode_from_rgb48 already does this for the legacy
+# path.
+#noop: F6 needs API rework
+
+# G1: investigate checker_64 (28 dB).  Hypotheses:
+# (a) V185 step×4 for HH bands too coarse — try ×3 or ×2
+# (b) level_weight[0]=1.20 unfair to checker — try uniform 1.0
+# (c) T1 produces correct bytes but PCRD-OPT layer formation is the issue
+# Use test/debug_checker.cc to inspect spatial error distribution.
+
+# G2: investigate gradient/bars residual ~24 dB gap.  Either real
+# precision loss (5 levels of 9/7 lifting × float = ~24-bit floor on
+# small detail-band coefficients) or test reference rounding.  Check
+# with debug_flat50k.cc-style direct decoder comparison.
+
+noop: phase 2 placeholder — convert to real apply: patches before queueing
