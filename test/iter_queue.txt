@@ -1,31 +1,28 @@
-# auto_iter queue. One change per line. Lines are popped after attempt.
+# auto_iter queue. One change per line. Lines popped after attempt.
 # Verbs: sed:<file>:<expr>  apply:<patch>  noop:<comment>
 #
-# Each change is regression-checked against test/baselines/v196c_post_stage_b.csv
-# and committed only if bench_modes timing improved by >2% with no PSNR
-# regression (>0.5 dB on correct, >1.0 dB on fast).
-#
-# Note: sed expressions use | as delimiter so `/` and `?` need no escaping;
-# `?` does need backslash because the shell still processes the line.
+# Run 2: hunt for algorithmic wins after Run 1 exhausted parameter space.
+# Most will fail one criterion or another — that's by design.
 
-# Stage C: fast-path optimisations.
+# === Quantization step exploration ===
 
-# C5: MAX_BP=11 for fast. Was 12, was 4 before V188.
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.04f|
 
-# C3: smaller max_cb_d2h for fast (640 -> 384).
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.05f|
 
-# C5b: MAX_BP=10 for fast (more aggressive). May regress h_gradient.
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.08f|
 
-# Fast: bump fast_step_mult 3.0 -> 3.5 (coarser quant, faster T1).
+# === V185 HH multiplier exploration (×2 already failed; try ×3 and ×3.5) ===
 
-# Fast: smaller fast_bitrate_mult 0.5 -> 0.4 (smaller target -> earlier truncation).
+sed:src/lib/gpu_ebcot_t2.h:s|t1_step = step \* 4.0f;|t1_step = step * 3.0f;|
 
-# Stage E: correct-mode timing tweaks (no quality change expected).
+sed:src/lib/gpu_ebcot_t2.h:s|t1_step = step \* 4.0f;|t1_step = step * 3.5f;|
 
-# Try EBCOT_THREADS = 32 (smaller block, more parallelism on small subbands).
+sed:src/lib/gpu_ebcot_t2.h:s|t1_step = step \* 2.0f;|t1_step = step * 1.5f;|
 
-# Try EBCOT_THREADS = 128.
+# === Uniform level weights ===
 
-# Stage F: combinations after best singletons land. Add more lines as needed.
+sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}|
 
-# A noop entry — used to re-baseline if previous iterations changed it.
+# === noop end ===
+noop: end-of-queue marker
