@@ -1,0 +1,39 @@
+# auto_iter queue. One change per line. Lines are popped after attempt.
+# Verbs: sed:<file>:<expr>  apply:<patch>  noop:<comment>
+#
+# Each change is regression-checked against test/baselines/v196c_post_stage_b.csv
+# and committed only if bench_modes timing improved by >2% with no PSNR
+# regression (>0.5 dB on correct, >1.0 dB on fast).
+#
+# Note: sed expressions use | as delimiter so `/` and `?` need no escaping;
+# `?` does need backslash because the shell still processes the line.
+
+# Stage C: fast-path optimisations.
+
+# C5: MAX_BP=11 for fast. Was 12, was 4 before V188.
+sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 11, __half>|
+
+# C3: smaller max_cb_d2h for fast (640 -> 384).
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 384 : CB_BUF_SIZE|
+
+# C5b: MAX_BP=10 for fast (more aggressive). May regress h_gradient.
+sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 10, __half>|
+
+# Fast: bump fast_step_mult 3.0 -> 3.5 (coarser quant, faster T1).
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.5f : 1.0f|
+
+# Fast: smaller fast_bitrate_mult 0.5 -> 0.4 (smaller target -> earlier truncation).
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.4f : 1.0f|
+
+# Stage E: correct-mode timing tweaks (no quality change expected).
+
+# Try EBCOT_THREADS = 32 (smaller block, more parallelism on small subbands).
+sed:src/lib/cuda_j2k_encoder.cu:s|constexpr int EBCOT_THREADS = 64;|constexpr int EBCOT_THREADS = 32;|
+
+# Try EBCOT_THREADS = 128.
+sed:src/lib/cuda_j2k_encoder.cu:s|constexpr int EBCOT_THREADS = 64;|constexpr int EBCOT_THREADS = 128;|
+
+# Stage F: combinations after best singletons land. Add more lines as needed.
+
+# A noop entry — used to re-baseline if previous iterations changed it.
+noop: end-of-queue marker
