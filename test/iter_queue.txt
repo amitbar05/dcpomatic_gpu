@@ -1,20 +1,27 @@
-# auto_iter queue. One change per line. Lines popped after attempt.
+# auto_iter queue — Run 3.  After V196d reference fix, retry experiments
+# whose old "regress" trigger may have been the off-by-one rounding artifact.
 # Verbs: sed:<file>:<expr>  apply:<patch>  noop:<comment>
-#
-# Run 2: hunt for algorithmic wins after Run 1 exhausted parameter space.
-# Most will fail one criterion or another — that's by design.
 
-# === Quantization step exploration ===
+# Try base_step × 0.05 again (was regress, partly artifact).
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.05f|
 
+# Try base_step × 0.07 — between current 0.06 and rejected 0.08.
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.07f|
 
+# Tighter clamp on base_step lower bound: 0.25 -> 0.5.
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.5f, 32.5f|
 
+# bp_skip 1 -> 2 in fast (was pass_no_speedup; recheck after reference fix
+# in case the false flat-regress was masking a real win).
+sed:src/lib/cuda_j2k_encoder.cu:s|int  bp_skip    = fast_mode \? 1 : 0;|int  bp_skip    = fast_mode ? 2 : 0;|
 
-# === V185 HH multiplier exploration (×2 already failed; try ×3 and ×3.5) ===
+# fast_step_mult 3.0 -> 2.5 (finer fast quant).
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.5f : 1.0f|
 
+# fast_bitrate_mult 0.5 -> 0.6.
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.6f : 1.0f|
 
+# Smaller max_cb_d2h for fast: 640 -> 512.
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 512 : CB_BUF_SIZE|
 
-
-# === Uniform level weights ===
-
-
-# === noop end ===
+noop: end-of-queue marker
