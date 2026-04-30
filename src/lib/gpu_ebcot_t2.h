@@ -391,7 +391,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     std::vector<std::vector<uint8_t>> pkt_by_res[3];
     for (int c = 0; c < 3; c++)
         pkt_by_res[c].resize(num_levels + 1);
-    size_t per_comp_budget = (target_bytes > 0) ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
     /* Compute per-subband p_max = band->numbps (OPJ tcd.c: eps+numgbits-1).
      * V192: numgbits depends on profile (1 for 2K, 2 for 4K).
@@ -404,30 +403,75 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         return (12 - log2s) + numgbits_for_pmax - 1;
     };
 
-    /* V189: per-component proportional truncation.  Compute total bytes for this
-     * comp at full precision; if exceeds budget, scale every CB's len to fit by
-     * truncating passes.  This gives smoother quality vs the previous all-or-
-     * nothing CB inclusion (which dropped whole CBs once the budget filled). */
-    float trunc_ratio[3] = {1.0f, 1.0f, 1.0f};
-    if (target_bytes > 0) {
-        for (int c = 0; c < 3; ++c) {
-            size_t total = 0;
-            int total_cbs = 0;
-            for (size_t sb = 0; sb < subbands.size(); ++sb) {
-                int cb_start = subbands[sb].cb_start_idx;
-                int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
-                for (int i = 0; i < ncbs; ++i) {
-                    uint16_t len = coded_len[c][cb_start + i];
-                    if (len > static_cast<uint16_t>(cb_stride - 1))
-                        len = static_cast<uint16_t>(cb_stride - 1);
-                    total += len;
-                    if (num_passes[c][cb_start + i] > 0 && len > 0) ++total_cbs;
+    /* V196: per-component sequential truncation, now reading correctly D2H'd
+     * pass_lengths.
+     *
+     * History: V189 added inline truncation that read pass_lengths but the
+     * D2H copy of that buffer was missing (V132 had skipped it as "unused").
+     * That meant V189 was reading uninitialized host memory, which made the
+     * truncation random and explains why checker_64 / noise_small / photos
+     * were stuck at low PSNR. Now that pass_lengths is correctly downloaded,
+     * the original V189 sequential-fit logic does the right thing: walk
+     * subbands LL→HL/LH/HH coarsest→finest, walk CBs in raster order, and
+     * for each CB include only the passes whose cumulative length still fits
+     * the remaining per-component budget. A full PCRD-OPT slope sort gave
+     * worse results in practice — without per-pass significance counts the
+     * naive (step × 2^bp)^2 / inc_len slope mis-ranks late passes against
+     * early CBs and starves photographic content of mid-frequency detail.
+     *
+     * Pre-compute pcrd_np_use[]/pcrd_len_use[] here so build_tp can just look
+     * them up rather than maintaining state across packets.
+     */
+    size_t total_cbs = 0;
+    if (!subbands.empty()) {
+        const SubbandGeom& sb_last = subbands.back();
+        total_cbs = static_cast<size_t>(sb_last.cb_start_idx)
+                  + static_cast<size_t>(sb_last.ncbx) * sb_last.ncby;
+    }
+    std::vector<uint8_t>  pcrd_np_use [3];
+    std::vector<uint16_t> pcrd_len_use[3];
+    for (int c = 0; c < 3; ++c) {
+        pcrd_np_use[c].assign(total_cbs, 0);
+        pcrd_len_use[c].assign(total_cbs, 0);
+    }
+
+    const size_t per_comp_target = (target_bytes > 0)
+        ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
+    for (int c = 0; c < 3; ++c) {
+        size_t comp_bytes = 0;
+        for (size_t sb = 0; sb < subbands.size(); ++sb) {
+            int cb_start = subbands[sb].cb_start_idx;
+            int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
+            for (int i = 0; i < ncbs; ++i) {
+                int cb_idx = cb_start + i;
+                uint8_t  np = num_passes[c][cb_idx];
+                uint16_t cb_len = coded_len[c][cb_idx];
+                if (cb_len > static_cast<uint16_t>(cb_stride - 1))
+                    cb_len = static_cast<uint16_t>(cb_stride - 1);
+                if (np == 0 || cb_len == 0) continue;
+
+                uint8_t  np_use  = np;
+                uint16_t len_use = cb_len;
+                if (comp_bytes + cb_len > per_comp_target) {
+                    /* Walk passes; admit prefix that fits remaining budget. */
+                    size_t remaining = (per_comp_target > comp_bytes)
+                        ? per_comp_target - comp_bytes : 0;
+                    const uint16_t* pl = pass_lengths[c]
+                        + static_cast<size_t>(cb_idx) * MAX_PASSES;
+                    np_use = 0; len_use = 0;
+                    for (int p = 0; p < np; ++p) {
+                        uint16_t cum = pl[p];
+                        if (cum > cb_len) cum = cb_len;
+                        if (static_cast<size_t>(cum) > remaining) break;
+                        np_use = static_cast<uint8_t>(p + 1);
+                        len_use = cum;
+                    }
                 }
+                if (np_use == 0 || len_use == 0) continue;
+                pcrd_np_use [c][cb_idx] = np_use;
+                pcrd_len_use[c][cb_idx] = len_use;
+                comp_bytes += len_use;
             }
-            size_t per_comp_target = target_bytes / 3;
-            if (total > per_comp_target && total > 0)
-                trunc_ratio[c] = static_cast<float>(per_comp_target) / static_cast<float>(total);
-            (void)total_cbs;
         }
     }
 
@@ -436,7 +480,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * sanitize is applied per-packet blob to ensure no 0xFF marker sequences. */
     auto build_tp = [&](int comp) {
         size_t comp_bytes = 0;
-        const float ratio_c = trunc_ratio[comp];
         std::vector<uint8_t> pkt_header_buf;
         std::vector<uint8_t> pkt_body;
         pkt_header_buf.reserve(8192);
@@ -479,41 +522,17 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                 incl_tree.build(ncbx, ncby);
                 zbp_tree.build(ncbx, ncby);
 
-                /* Pre-scan: set leaf values before encoding any bits.
-                 * Excluded CBs: incl=MAX (never included), zbp=pmax (all zero BPs).
-                 * V189: when full inclusion would exceed budget, truncate the CB's
-                 * passes to fit the remaining budget; keep at least 1 pass when
-                 * possible (better than excluding the CB outright). */
+                /* V196: PCRD pre-pass set the per-CB np_use / len_use globally.
+                 * Here we just consume those decisions: a CB is included iff
+                 * pcrd_np_use[comp][cb_idx] > 0. Excluded CBs: incl=MAX (never
+                 * included), zbp=pmax (all zero bit-planes). */
                 std::vector<bool> included(ncbs, false);
                 std::vector<uint16_t> cb_len_use(ncbs, 0);
                 std::vector<uint8_t>  cb_np_use(ncbs, 0);
                 for (int cbi = 0; cbi < ncbs; cbi++) {
                     int cb_idx = cb_start + cbi;
-                    uint16_t len = coded_len[comp][cb_idx];
-                    uint8_t  np  = num_passes[comp][cb_idx];
-                    if (len > static_cast<uint16_t>(cb_stride - 1))
-                        len = static_cast<uint16_t>(cb_stride - 1);
-                    if (np == 0 || len == 0) {
-                        incl_tree.set_leaf(cbi, 0x7FFFFFFF);
-                        zbp_tree.set_leaf(cbi, pmax);
-                        continue;
-                    }
-                    int np_use = np;
-                    uint16_t len_use = len;
-                    /* If full CB fits remaining budget, include it as-is. */
-                    if (comp_bytes + len > per_comp_budget) {
-                        /* Truncate passes to fit remaining budget. */
-                        size_t remaining = (per_comp_budget > comp_bytes)
-                            ? per_comp_budget - comp_bytes : 0;
-                        const uint16_t* pl = pass_lengths[comp]
-                            + (size_t)cb_idx * MAX_PASSES;
-                        np_use = 0; len_use = 0;
-                        for (int p = 0; p < np; ++p) {
-                            if ((size_t)pl[p] > remaining) break;
-                            np_use = p + 1;
-                            len_use = pl[p];
-                        }
-                    }
+                    uint8_t  np_use  = pcrd_np_use [comp][cb_idx];
+                    uint16_t len_use = pcrd_len_use[comp][cb_idx];
                     if (np_use == 0 || len_use == 0) {
                         incl_tree.set_leaf(cbi, 0x7FFFFFFF);
                         zbp_tree.set_leaf(cbi, pmax);
@@ -522,14 +541,13 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     included[cbi] = true;
                     comp_bytes += len_use;
                     cb_len_use[cbi] = len_use;
-                    cb_np_use[cbi]  = static_cast<uint8_t>(np_use);
+                    cb_np_use[cbi]  = np_use;
                     incl_tree.set_leaf(cbi, 0);
                     int nb = (cb_num_bp != nullptr) ? static_cast<int>(cb_num_bp[comp][cb_idx]) : 0;
                     int z  = pmax - nb;
                     if (z < 0) z = 0;
                     zbp_tree.set_leaf(cbi, z);
                 }
-                (void)ratio_c;
 
                 /* Encode packet header and body for each CB in order. */
                 for (int cbi = 0; cbi < ncbs; cbi++) {

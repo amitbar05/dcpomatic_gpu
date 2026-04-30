@@ -5545,7 +5545,15 @@ CudaJ2KEncoder::encode_ebcot(
                         num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
         cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
                         num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        /* V132: pass_lengths not used by T2 (single-layer CPRL) — skip D2H */
+        /* V196: PCRD-OPT in T2 reads per-pass cumulative byte lengths.  V132's
+         * "pass_lengths not used" optimization was wrong once V189 added the
+         * inline truncation that read this buffer — V189 was reading
+         * uninitialized host memory, which explains why checker_64 / noise_small
+         * were stuck at low PSNR (the truncation logic was making garbage
+         * decisions).  D2H the buffer here so T2 has correct data. */
+        cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
+                        (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
+                        cudaMemcpyDeviceToHost, _impl->stream[c]);
     }
 
     for (int c = 0; c < 3; ++c)
