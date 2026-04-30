@@ -66,13 +66,27 @@ static bool opj_decode(const std::vector<uint8_t>& cs,
     return ok;
 }
 
-/* Approximate sRGB → CIE XYZ Y component for an R=G=B input.  Matches
- * the LUT/matrix in build_params (identity LUT, ITU-R BT.709 matrix). */
+/* Encoder-matched sRGB → CIE XYZ Y component for an R=G=B input.
+ * Mirrors kernel_rgb48_xyz_hdwt0_1ch_2row exactly:
+ *   1. 16-bit RGB → 12-bit via truncation: v12 = min(input >> 4, 4095)
+ *   2. Linear LUT: rgb_norm = v12 / 4095.f
+ *   3. Matrix Y row: y = 0.2126*r + 0.7152*g + 0.0722*b (sum = 1.0 here)
+ *   4. saturate to [0,1]
+ *   5. output = static_cast<int>(y * 4095.5f) — TRUNCATE not round-half
+ *   6. (DC shift in encoder; cancelled by decoder; no effect on PSNR ref)
+ *
+ * Previous (rf*4095+0.5) gave off-by-one differences for some inputs
+ * (e.g., 50000 → ref 3124 vs encoder 3125), producing spurious 72 dB
+ * "ceilings" on flat patterns where the encoder is actually lossless. */
 static inline int rgb_to_xyz_y_12bit(int r16, int g16, int b16) {
-    float rf = r16 / 65535.f, gf = g16 / 65535.f, bf = b16 / 65535.f;
-    float y = 0.2126f*rf + 0.7152f*gf + 0.0722f*bf;
-    int yv = static_cast<int>(y * 4095.f + 0.5f);
-    if (yv < 0) yv = 0; if (yv > 4095) yv = 4095;
+    int r12 = std::min(r16 >> 4, 4095);
+    int g12 = std::min(g16 >> 4, 4095);
+    int b12 = std::min(b16 >> 4, 4095);
+    float r = r12 / 4095.f, g = g12 / 4095.f, b = b12 / 4095.f;
+    float y = 0.2126f*r + 0.7152f*g + 0.0722f*b;
+    if (y < 0.f) y = 0.f; if (y > 1.f) y = 1.f;
+    int yv = static_cast<int>(y * 4095.5f);
+    if (yv > 4095) yv = 4095;
     return yv;
 }
 

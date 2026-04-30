@@ -32,28 +32,39 @@ static void build_params(GpuColourParams& p) {
     p.valid = true;
 }
 
-static inline int rgb_to_xyz_y_12bit(int r16, int g16, int b16) {
-    float rf = r16 / 65535.f, gf = g16 / 65535.f, bf = b16 / 65535.f;
-    float y = 0.2126f*rf + 0.7152f*gf + 0.0722f*bf;
-    int yv = static_cast<int>(y * 4095.f + 0.5f);
-    if (yv < 0) yv = 0; if (yv > 4095) yv = 4095;
+/* Encoder-matched reference: 16-bit input -> 12-bit truncate, linear LUT,
+ * matrix, saturate, output truncate.  Mirrors kernel_rgb48_xyz_hdwt0_1ch_2row.
+ * Old version used (rf*4095+0.5) which differed by 1 unit on some inputs and
+ * gave spurious 72 dB ceilings on flat patterns the encoder actually handles
+ * losslessly. */
+static inline int matrix_y_12bit(int r12, int g12, int b12, float c0, float c1, float c2) {
+    float r = r12 / 4095.f, g = g12 / 4095.f, b = b12 / 4095.f;
+    float v = c0*r + c1*g + c2*b;
+    if (v < 0.f) v = 0.f; if (v > 1.f) v = 1.f;
+    int yv = static_cast<int>(v * 4095.5f);
+    if (yv > 4095) yv = 4095;
     return yv;
+}
+
+static inline int rgb_to_xyz_y_12bit(int r16, int g16, int b16) {
+    return matrix_y_12bit(std::min(r16 >> 4, 4095),
+                          std::min(g16 >> 4, 4095),
+                          std::min(b16 >> 4, 4095),
+                          0.2126f, 0.7152f, 0.0722f);
 }
 
 static inline int rgb_to_xyz_x_12bit(int r16, int g16, int b16) {
-    float rf = r16 / 65535.f, gf = g16 / 65535.f, bf = b16 / 65535.f;
-    float v = 0.4124f*rf + 0.3576f*gf + 0.1805f*bf;
-    int yv = static_cast<int>(v * 4095.f + 0.5f);
-    if (yv < 0) yv = 0; if (yv > 4095) yv = 4095;
-    return yv;
+    return matrix_y_12bit(std::min(r16 >> 4, 4095),
+                          std::min(g16 >> 4, 4095),
+                          std::min(b16 >> 4, 4095),
+                          0.4124f, 0.3576f, 0.1805f);
 }
 
 static inline int rgb_to_xyz_z_12bit(int r16, int g16, int b16) {
-    float rf = r16 / 65535.f, gf = g16 / 65535.f, bf = b16 / 65535.f;
-    float v = 0.0193f*rf + 0.1192f*gf + 0.9505f*bf;
-    int yv = static_cast<int>(v * 4095.f + 0.5f);
-    if (yv < 0) yv = 0; if (yv > 4095) yv = 4095;
-    return yv;
+    return matrix_y_12bit(std::min(r16 >> 4, 4095),
+                          std::min(g16 >> 4, 4095),
+                          std::min(b16 >> 4, 4095),
+                          0.0193f, 0.1192f, 0.9505f);
 }
 
 static bool opj_decode(const std::vector<uint8_t>& cs,
