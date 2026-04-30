@@ -1,19 +1,46 @@
-# auto_iter queue — Run 3.  After V196d reference fix, retry experiments
-# whose old "regress" trigger may have been the off-by-one rounding artifact.
-# Verbs: sed:<file>:<expr>  apply:<patch>  noop:<comment>
+# auto_iter queue — Run 5. Algorithmic + parameter exploration after first
+# 47 iterations exhausted obvious sweeps without finding a commit.
+# Verbs:
+#   sed:<file>:<expr>          — apply gnu sed expression
+#   apply:<patch>              — apply a unified diff
+#   script:<shell command>     — run arbitrary command that mutates src/
+#   noop:<comment>             — no-op (used for re-baselining / logging)
+# Auto-commit gating (auto_iter.sh):
+#   regression: any correct PSNR drop > 0.5 dB or fast > 1.0 dB rejects.
+#   commit     if speed +2% OR cumulative PSNR gain >= 1.0 dB.
 
-# Try base_step × 0.05 again (was regress, partly artifact).
+# === Stage K: T1 register count tuning ====================================
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(96, 8)|
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(48, 32)|
 
-# Try base_step × 0.07 — between current 0.06 and rejected 0.08.
+# === Stage K: HF/HL combined fine-tuning =================================
+script:sed -i 's|t1_step = step \* 2.0f;|t1_step = step * 1.9f;|; s|t1_step = step \* 4.0f;|t1_step = step * 4.1f;|' src/lib/gpu_ebcot_t2.h
+script:sed -i 's|t1_step = step \* 2.0f;|t1_step = step * 2.1f;|; s|t1_step = step \* 4.0f;|t1_step = step * 3.9f;|' src/lib/gpu_ebcot_t2.h
 
-# Tighter clamp on base_step lower bound: 0.25 -> 0.5.
+# === Stage K: more max_cb_d2h variants (correct mode) ===================
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1792|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1664|
 
-# bp_skip 1 -> 2 in fast (was pass_no_speedup; recheck after reference fix
-# in case the false flat-regress was masking a real win).
+# === Stage K: tail scaling fine sweep ====================================
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.225f, 32.5f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.275f, 32.5f|
 
-# fast_step_mult 3.0 -> 2.5 (finer fast quant).
+# === Stage K: very small ratio nudges ====================================
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0605f|
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0595f|
 
-# fast_bitrate_mult 0.5 -> 0.6.
+# === Stage L: level weights very small variations ========================
+sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.18f, 1.11f, 1.05f, 0.95f, 0.86f, 0.65f, 0.65f, 0.65f}|
+sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.22f, 1.13f, 1.06f, 0.96f, 0.86f, 0.65f, 0.65f, 0.65f}|
+sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.62f, 0.62f, 0.62f}|
+sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.68f, 0.68f, 0.68f}|
 
-# Smaller max_cb_d2h for fast: 640 -> 512.
+# === Stage M: combined LL5 + tail tweaks =================================
+script:sed -i 's|0.85f, 0.65f, 0.65f, 0.65f|0.85f, 0.62f, 0.62f, 0.62f|' src/lib/gpu_ebcot_t2.h && sed -i 's|, 0.25f, 32.5f|, 0.27f, 32.5f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|, 0.25f, 32.5f|, 0.30f, 32.5f|' src/lib/cuda_j2k_encoder.cu && sed -i 's|0.85f, 0.65f, 0.65f, 0.65f|0.85f, 0.60f, 0.60f, 0.60f|' src/lib/gpu_ebcot_t2.h
 
+# === Stage N: fast_step_mult tweaks =====================================
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.95f : 1.0f|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.05f : 1.0f|
+
+noop: end of Run 5 queue
