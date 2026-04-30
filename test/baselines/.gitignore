@@ -1,0 +1,3 @@
+*.log
+*_*.csv
+!v194_baseline.csv
