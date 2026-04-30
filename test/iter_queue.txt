@@ -1,36 +1,31 @@
-# auto_iter queue — Run 13. Final exploratory queue.
-# After 195 iters with only 1 commit (V198), V198d locked optimum.
+# auto_iter queue — Run 14. Combined V198-aware experiments.
 
-# === Stage RR: combined finer micro perturbations =====================
-# Try pairs that weren't tested
-script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.85f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.545f : 1.0f|' src/lib/cuda_j2k_encoder.cu
-script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.15f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.455f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+# === Try MAX_BP reductions for fast mode (currently 12) =====================
 
-# === Stage RR: combined ratio + tail clamp ========================
-script:sed -i 's|ratio \* 0.06f|ratio * 0.0599f|; s|, 0.25f, 32.5f|, 0.25f, 32.5f|' src/lib/cuda_j2k_encoder.cu
+# === Combined: V198 MAX_BP=13 + smaller fast MAX_BP =========================
+script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 11, __half>|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.55f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 11, __half>|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.45f : 1.0f|' src/lib/cuda_j2k_encoder.cu
 
-# === Stage SS: try per-component step factor variations ==========
-# Probably no effect since all components use same step.
+# === bp_skip combinations for fast ======================================
+sed:src/lib/cuda_j2k_encoder.cu:s|int  bp_skip    = fast_mode \? 1 : 0;|int  bp_skip    = fast_mode ? 0 : 0;|
 
-# === Stage SS: t1_step micro tweaks (HF + LF coordinated) ========
-script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 4.0f;|; s|t1_step = step \* 2.0f;|t1_step = step * 2.05f;|' src/lib/gpu_ebcot_t2.h
-script:sed -i 's|t1_step = step \* 4.0f;|t1_step = step * 4.0f;|; s|t1_step = step \* 2.0f;|t1_step = step * 1.95f;|' src/lib/gpu_ebcot_t2.h
+# === T1 single-component launch alternative (would be invalid sed) ======
+# Skip — too complex
 
-# === Stage SS: __launch_bounds__ now post-V198 (smaller LMEM) =====
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 21)|
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(80, 12)|
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(72, 14)|
+# === Pair: MAX_BP=13 + bp_skip (correct) ================================
+script:sed -i 's|int  bp_skip    = fast_mode \? 1 : 0;|int  bp_skip    = fast_mode ? 1 : 1;|' src/lib/cuda_j2k_encoder.cu
 
-# === Stage TT: more max_cb_d2h variations =========================
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 668 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 612 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 588 : CB_BUF_SIZE|
+# === Try fast_step_mult fine ============================================
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.8f : 1.0f|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.2f : 1.0f|
 
-# === Stage TT: MAX_BP = 13 + max_cb_d2h reductions paired =========
-script:sed -i 's|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1408|' src/lib/cuda_j2k_encoder.cu
+# === Combined fast tweaks ===============================================
+script:sed -i 's|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.9f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.52f : 1.0f|; s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 656 : CB_BUF_SIZE|' src/lib/cuda_j2k_encoder.cu
 
-# === Stage UU: explore tail clamp upper bound ====================
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.25f, 30.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.25f, 35.0f|
+# === Coordinated level weight (level-1 to level-3 only) =================
+sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.18f, 1.10f, 1.04f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|
+sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.22f, 1.14f, 1.06f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|
 
-noop: end of Run 13 queue
+# === Final rebaseline noops ==================
+noop: end of Run 14 queue 1
+noop: end of Run 14 queue 2
