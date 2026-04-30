@@ -1,36 +1,32 @@
-# auto_iter queue — Run 11. Build on V198 finding.
-# V198 (MAX_BP=13 for correct) committed: 0% PSNR cost, ~0.8% speed gain.
+# auto_iter queue — Run 12. Post-V198 exploration.
 
-# === Stage NN: try further MAX_BP variations now that 13 is the new base ===
-# At MAX_BP=12 we crashed. Let me try once more (with current state).
-# Also other small variations now that some headroom exists.
+# === Stage PP: MAX_BP 13 + max_cb_d2h reductions for correct =================
+# Now LMEM is smaller; D2H budget might align differently.
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1408|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1152|
 
-# === Stage NN: try max_cb_d2h reductions for correct mode ==================
-# Now that MAX_BP=13 reduces LMEM, may interact with D2H budget differently.
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1792|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1536|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1280|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1024|
+# === Stage PP: launch_bounds with new MAX_BP ============================
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 22)|
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 24)|
 
-# === Stage NN: combined MAX_BP reduction with bp_skip for correct ============
-script:sed -i 's|kernel_ebcot_t1<false, 13, float>|kernel_ebcot_t1<false, 12, float>|; s|int  bp_skip    = fast_mode \? 1 : 0;|int  bp_skip    = fast_mode ? 1 : 1;|' src/lib/cuda_j2k_encoder.cu
+# === Stage PP: Now-clean MAX_BP=13 + ratio fine sweep =================
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.05992f|
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.06008f|
 
-# === Stage NN: test bp_skip alone for correct mode ============================
-sed:src/lib/cuda_j2k_encoder.cu:s|int  bp_skip    = fast_mode \? 1 : 0;|int  bp_skip    = fast_mode ? 1 : 1;|
+# === Stage PP: tail clamp variations ==================================
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.249f, 32.5f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.251f, 32.5f|
 
-# === Stage NN: __launch_bounds__ now that LMEM is smaller =====================
-# Lower MAX_BP frees register/LMEM space; perhaps higher block-per-SM hint works.
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 17)|
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 19)|
+# === Stage PP: combined small steps =================================
+script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 11, __half>|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.495f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 13, __half>|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.505f : 1.0f|' src/lib/cuda_j2k_encoder.cu
 
-# === Stage NN: more level weight micros (now relative to V198) ================
-sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.66f, 0.66f, 0.66f}|
+# === Stage QQ: try fast_step variations ==============================
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.92f : 1.0f|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.08f : 1.0f|
 
-# === Stage NN: ratio fine sweep relative to V198 ==============================
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0599f|
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0601f|
+# === Stage QQ: max_cb_d2h fast variations ============================
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 696 : CB_BUF_SIZE|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 584 : CB_BUF_SIZE|
 
-# === Stage OO: combined V198 reductions ====================================
-script:sed -i 's|kernel_ebcot_t1<false, 13, float>|kernel_ebcot_t1<false, 13, float>|' src/lib/cuda_j2k_encoder.cu && sed -i 's|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1664|' src/lib/cuda_j2k_encoder.cu
-
-noop: end of Run 11 queue
+noop: end of Run 12 queue
