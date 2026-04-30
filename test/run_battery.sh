@@ -34,11 +34,27 @@ mkdir -p test/baselines
 NVCC_FLAGS="-O3 --use_fast_math -arch=sm_61 -std=c++17 -I src -I src/lib -I/usr/include/openjpeg-2.5"
 NVCC_LIBS="-lcudart -lopenjp2"
 
+# Build cuda_j2k_encoder.o ONCE per battery run, then link each test against it.
+# Cuts the per-iter wall time roughly in half: 5 nvcc compiles of the 5500-line
+# encoder dominated the iter cycle.
+ENCODER_OBJ="test/cuda_j2k_encoder.o"
+ENCODER_SRC="src/lib/cuda_j2k_encoder.cu"
+if [[ $REBUILD -eq 1 || ! -f "$ENCODER_OBJ" || "$ENCODER_SRC" -nt "$ENCODER_OBJ" \
+      || src/lib/gpu_ebcot.h -nt "$ENCODER_OBJ" \
+      || src/lib/gpu_ebcot_t2.h -nt "$ENCODER_OBJ" ]]; then
+    echo "  build: $ENCODER_OBJ (shared encoder TU)" >&2
+    if ! nvcc $NVCC_FLAGS -c -o "$ENCODER_OBJ" "$ENCODER_SRC" >>"$LOG" 2>&1; then
+        echo "  ENCODER BUILD FAILED (see $LOG)" >&2
+        exit 1
+    fi
+fi
+
 build_one() {
     local out=$1 src=$2 extra=${3:-}
-    if [[ $REBUILD -eq 1 || ! -x "$out" || "$src" -nt "$out" || "src/lib/cuda_j2k_encoder.cu" -nt "$out" ]]; then
+    if [[ $REBUILD -eq 1 || ! -x "$out" || "$src" -nt "$out" || "$ENCODER_OBJ" -nt "$out" ]]; then
         echo "  build: $out" >&2
-        if ! nvcc $NVCC_FLAGS $extra -o "$out" "$src" src/lib/cuda_j2k_encoder.cu $NVCC_LIBS >>"$LOG" 2>&1; then
+        # Link the test source against the shared encoder .o.
+        if ! nvcc $NVCC_FLAGS $extra -o "$out" "$src" "$ENCODER_OBJ" $NVCC_LIBS >>"$LOG" 2>&1; then
             echo "  BUILD FAILED: $out (see $LOG)" >&2
             return 1
         fi
