@@ -1,0 +1,42 @@
+git_sha,test,mode,pattern,res,psnr_db,bytes,ms_per_frame,extra
+48b3bd1f5,cmp_gpu_opj,gpu_correct,flat_30000,2K,99.0,605,,opj_psnr=99.0 opj_bytes=711
+48b3bd1f5,cmp_gpu_opj,gpu_correct,flat_50000,2K,72.2,683,,opj_psnr=99.0 opj_bytes=963
+48b3bd1f5,cmp_gpu_opj,gpu_correct,h_gradient,2K,69.1,26288,,opj_psnr=102.3 opj_bytes=17582
+48b3bd1f5,cmp_gpu_opj,gpu_correct,h_bars_8,2K,74.9,69273,,opj_psnr=99.0 opj_bytes=86271
+48b3bd1f5,cmp_gpu_opj,gpu_correct,v_bars_8,2K,72.3,114114,,opj_psnr=99.0 opj_bytes=136961
+48b3bd1f5,cmp_gpu_opj,gpu_correct,checker_64,2K,28.2,724734,,opj_psnr=91.9 opj_bytes=780427
+48b3bd1f5,cmp_gpu_opj,gpu_correct,two_value_split,2K,75.1,10144,,opj_psnr=99.0 opj_bytes=12284
+48b3bd1f5,psnr_battery,gpu_correct,flat_30000,2K,99.0,605,,
+48b3bd1f5,psnr_battery,gpu_correct,flat_50000,2K,72.2,683,,
+48b3bd1f5,psnr_battery,gpu_correct,flat_5000,2K,99.0,861,,
+48b3bd1f5,psnr_battery,gpu_correct,h_gradient_full,2K,69.1,26288,,
+48b3bd1f5,psnr_battery,gpu_correct,v_gradient_full,2K,77.5,27247,,
+48b3bd1f5,psnr_battery,gpu_correct,h_bars_8,2K,74.9,69273,,
+48b3bd1f5,psnr_battery,gpu_correct,v_bars_8,2K,72.3,114114,,
+48b3bd1f5,psnr_battery,gpu_correct,checker_64,2K,28.2,724734,,
+48b3bd1f5,psnr_battery,gpu_correct,single_impulse,2K,84.6,1861,,
+48b3bd1f5,psnr_battery,gpu_correct,noise_small,2K,47.1,786701,,
+48b3bd1f5,psnr_battery,gpu_correct,ramp_small_range,2K,74.0,38793,,
+48b3bd1f5,psnr_battery,gpu_correct,two_value_split,2K,75.1,10144,,
+48b3bd1f5,psnr_battery,gpu_correct,photo_synth,2K,57.4,788233,,
+48b3bd1f5,psnr_battery,gpu_fast,flat_30000,2K,99.0,394,,
+48b3bd1f5,psnr_battery,gpu_fast,flat_50000,2K,62.7,625,,
+48b3bd1f5,psnr_battery,gpu_fast,flat_5000,2K,62.7,669,,
+48b3bd1f5,psnr_battery,gpu_fast,h_gradient_full,2K,52.9,14032,,
+48b3bd1f5,psnr_battery,gpu_fast,v_gradient_full,2K,58.9,18429,,
+48b3bd1f5,psnr_battery,gpu_fast,h_bars_8,2K,56.3,35017,,
+48b3bd1f5,psnr_battery,gpu_fast,v_bars_8,2K,57.2,57535,,
+48b3bd1f5,psnr_battery,gpu_fast,checker_64,2K,29.6,378149,,
+48b3bd1f5,psnr_battery,gpu_fast,single_impulse,2K,81.4,1168,,
+48b3bd1f5,psnr_battery,gpu_fast,noise_small,2K,47.1,396923,,
+48b3bd1f5,psnr_battery,gpu_fast,ramp_small_range,2K,58.3,4605,,
+48b3bd1f5,psnr_battery,gpu_fast,two_value_split,2K,64.3,5499,,
+48b3bd1f5,psnr_battery,gpu_fast,photo_synth,2K,52.3,400188,,
+48b3bd1f5,verify_roundtrip,gpu,summary,2K,,,, pass=49 fail=2
+48b3bd1f5,bench_modes,gpu_correct,timing,2K,,,72.14,
+48b3bd1f5,bench_modes,gpu_fast,timing,2K,,,43.60,
+48b3bd1f5,cmp_dwt,gpu,dwt_stats,2K,,,, 
+48b3bd1f5,cmp_dwt,gpu,dwt_stats,2K,,,, Reference (post DC level shift): y_lo=-1423; y_hi=1077
+48b3bd1f5,cmp_dwt,gpu,dwt_stats,2K,,,, Each LL5 coefficient covers a 32x32 image block. For 256-px stripes; every LL5
+48b3bd1f5,cmp_dwt,gpu,dwt_stats,2K,,,, column maps to one full bar so LL5 should alternate between -1423 and 1077
+48b3bd1f5,cmp_dwt,gpu,dwt_stats,2K,,,, at column boundaries every 8 columns (= 256/32).
