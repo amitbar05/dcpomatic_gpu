@@ -6,23 +6,15 @@
 
 # === Quantization step exploration ===
 
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.04f|
 
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.05f|
 
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.08f|
 
 # === V185 HH multiplier exploration (×2 already failed; try ×3 and ×3.5) ===
 
-sed:src/lib/gpu_ebcot_t2.h:s|t1_step = step \* 4.0f;|t1_step = step * 3.0f;|
 
-sed:src/lib/gpu_ebcot_t2.h:s|t1_step = step \* 4.0f;|t1_step = step * 3.5f;|
 
-sed:src/lib/gpu_ebcot_t2.h:s|t1_step = step \* 2.0f;|t1_step = step * 1.5f;|
 
 # === Uniform level weights ===
 
-sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}|
 
 # === noop end ===
-noop: end-of-queue marker
