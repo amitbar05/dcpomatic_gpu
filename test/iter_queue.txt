@@ -1,37 +1,27 @@
-# auto_iter queue — Run 15. Speculative explorations.
-# 222 iters, V198 only commit.  V198 baseline (MAX_BP=13).
+# auto_iter queue — Run 16. After V199 commit (adaptive step).
 
-# Try paired changes that haven't been tried
-script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 11, __half>|; s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.5f : 1.0f|; s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.45f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+# === Stage VV: explore V199 thresholds ============================
+# Try slightly lower upper threshold so retry triggers more often
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.50f;|
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.60f;|
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.45f;|
 
-script:sed -i 's|kernel_ebcot_t1<true, 12, __half>|kernel_ebcot_t1<true, 13, __half>|; s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.85f : 1.0f|' src/lib/cuda_j2k_encoder.cu
+# === Stage VV: explore V199 lower threshold =======================
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.003f;|
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.01f;|
 
-# Test combined ratio + tail clamp
-script:sed -i 's|ratio \* 0.06f|ratio * 0.06f|; s|, 0.25f, 32.5f|, 0.25f, 32.0f|' src/lib/cuda_j2k_encoder.cu
+# === Stage VV: more attempts for V199 ============================
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_max_attempts = fast_mode \? 1 : 2;|adaptive_max_attempts = fast_mode ? 1 : 3;|
 
-# Final fast_step variations
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 2.7f : 1.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 3.0f : 1.0f|fast_mode ? 3.3f : 1.0f|
+# === Stage WW: post-V199 baseline rebaseline ====================
+noop: V199 baseline established
 
-# More max_cb_d2h
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1920|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 704 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 576 : CB_BUF_SIZE|
+# === Stage XX: combinations with V199 ============================
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1408|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1664|
 
-# Level weight bigger jumps
-sed:src/lib/gpu_ebcot_t2.h:s|{1.20f, 1.12f, 1.05f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|{1.25f, 1.16f, 1.07f, 0.95f, 0.85f, 0.65f, 0.65f, 0.65f}|
+# === Stage XX: ratio variations with V199 baseline ==============
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.058f|
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.062f|
 
-# Combined: V198 MAX_BP=13 with ratio adjustment
-script:sed -i 's|ratio \* 0.06f|ratio * 0.0605f|' src/lib/cuda_j2k_encoder.cu
-script:sed -i 's|ratio \* 0.06f|ratio * 0.0595f|' src/lib/cuda_j2k_encoder.cu
-
-noop: end of Run 15 queue
-
-# === Stage AAA: FAR perturbations to try escaping local optimum ===========
-# Maybe a substantially different config has equivalent PSNR but better speed.
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.075f|
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.045f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.40f : 1.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.65f : 1.0f|
-
-noop: end of Run 15 extended
+noop: end of Run 16 queue
