@@ -5411,7 +5411,21 @@ CudaJ2KEncoder::encode_ebcot(
      * CPU-side work that modifies the CB table (step 4). */
     tmark("DWT_lv1+");
 
-    /* Step 4: Build code-block table if needed */
+    /* Step 4-6: Build code-block table, launch T1, D2H + sync.
+     *
+     * V199: adaptive base_step retry for correct mode.  After T1, if total
+     * coded bytes are well under target (sparse content like gradients,
+     * impulses, near-flat patterns), halve the step and re-encode — finer
+     * quantisation produces more passes per CB, filling the budget with
+     * extra precision.  Fast mode is single-attempt only (its purpose is
+     * throughput).  For dense content the loop exits after attempt 0 with
+     * no extra cost.
+     *
+     * Important interplay with V198 (correct-mode MAX_BP=13): the finer
+     * step lets coefficients reach 14-15 bit-planes, which a MAX_BP=13
+     * kernel would catastrophically truncate.  Retry attempts use a
+     * separate kernel template instantiation with MAX_BP=16 so all bit-
+     * planes fit. */
     int64_t frame_bits = bit_rate / fps;
     if (is_3d) frame_bits /= 2;
     int64_t target_bytes = static_cast<int64_t>(
@@ -5420,159 +5434,138 @@ CudaJ2KEncoder::encode_ebcot(
     float base_step = compute_base_step(width, height,
         static_cast<size_t>(target_bytes / 3)) * fast_step_mult;
 
-    if (_impl->ebcot_cb_table.empty() || _impl->ebcot_cb_table[0].quant_step != base_step) {
-        build_codeblock_table(width, height, stride, num_levels, base_step, is_4k,
-                              _impl->ebcot_cb_table, _impl->ebcot_subbands);
-        int num_cbs = static_cast<int>(_impl->ebcot_cb_table.size());
-
-        /* Reallocate EBCOT buffers if CB count changed */
-        if (num_cbs != _impl->ebcot_num_cbs) {
-            /* Free old */
-            if (_impl->d_cb_info) cudaFree(_impl->d_cb_info);
-            for (int c = 0; c < 3; ++c) {
-                if (_impl->d_ebcot_data[c])     cudaFree(_impl->d_ebcot_data[c]);
-                if (_impl->d_ebcot_len[c])      cudaFree(_impl->d_ebcot_len[c]);
-                if (_impl->d_ebcot_npasses[c])   cudaFree(_impl->d_ebcot_npasses[c]);
-                if (_impl->d_ebcot_passlens[c])  cudaFree(_impl->d_ebcot_passlens[c]);
-                if (_impl->d_ebcot_numbp[c])    cudaFree(_impl->d_ebcot_numbp[c]);
-                if (_impl->h_ebcot_data[c])     cudaFreeHost(_impl->h_ebcot_data[c]);
-                if (_impl->h_ebcot_len[c])      cudaFreeHost(_impl->h_ebcot_len[c]);
-                if (_impl->h_ebcot_npasses[c])   cudaFreeHost(_impl->h_ebcot_npasses[c]);
-                if (_impl->h_ebcot_passlens[c])  cudaFreeHost(_impl->h_ebcot_passlens[c]);
-                if (_impl->h_ebcot_numbp[c])    cudaFreeHost(_impl->h_ebcot_numbp[c]);
-            }
-
-            /* Allocate new */
-            cudaMalloc(&_impl->d_cb_info, num_cbs * sizeof(CodeBlockInfo));
-            for (int c = 0; c < 3; ++c) {
-                cudaMalloc(&_impl->d_ebcot_data[c],    (size_t)num_cbs * CB_BUF_SIZE);
-                cudaMalloc(&_impl->d_ebcot_len[c],     num_cbs * sizeof(uint16_t));
-                cudaMalloc(&_impl->d_ebcot_npasses[c],  num_cbs * sizeof(uint8_t));
-                cudaMalloc(&_impl->d_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t));
-                cudaMalloc(&_impl->d_ebcot_numbp[c],   num_cbs * sizeof(uint8_t));
-                cudaHostAlloc(&_impl->h_ebcot_data[c],    (size_t)num_cbs * CB_BUF_SIZE, cudaHostAllocDefault);
-                cudaHostAlloc(&_impl->h_ebcot_len[c],     num_cbs * sizeof(uint16_t), cudaHostAllocDefault);
-                cudaHostAlloc(&_impl->h_ebcot_npasses[c],  num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
-                cudaHostAlloc(&_impl->h_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t), cudaHostAllocDefault);
-                cudaHostAlloc(&_impl->h_ebcot_numbp[c],   num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
-            }
-            _impl->ebcot_num_cbs = num_cbs;
-        }
-
-        /* Upload CB info table */
-        cudaMemcpy(_impl->d_cb_info, _impl->ebcot_cb_table.data(),
-                   num_cbs * sizeof(CodeBlockInfo), cudaMemcpyHostToDevice);
-    }
-
-    /* Step 5: Launch EBCOT T1 kernel per component */
-    int num_cbs = _impl->ebcot_num_cbs;
-    /* V141: 64 threads/block matches kernel's __launch_bounds__(64, 16).
-     * Each thread uses ~2KB local memory (mag[1024]), so smaller blocks
-     * reduce L1 pressure and increase occupancy.
-     * V145: re-tested (128, 8) and (32, 32) — both ~1% slower than (64, 16). */
     constexpr int EBCOT_THREADS = 64;
-    int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
-
-    /* V143: fast-mode also skips the 1 LSB bit-plane inside T1, dropping
-     * up to 3 coding passes per CB (SPP+MRP+CUP of the final bit-plane).
-     * Effective quantization on those coefficients ≈ step × 2; combined
-     * with step_mult=3.0 → effective step × 6 on the LSB. */
     int  bp_skip    = fast_mode ? 1 : 0;
-    /* V165: BYPASS mode disabled — re-enabling produced "segment too long" decode
-     * failures even after V187, indicating residual bugs in the bypass coding path.
-     * Leave off until those are fixed; the speed gain isn't worth correctness. */
     bool use_bypass = false;
-    /* V177: MAX_BP increased to 14 for correct mode.
-     * base_step=2.12 at 150Mbps/2K → max q ≈ 4095/1.378 ≈ 2972 → 12 bit-planes.
-     * p_max = 13 - floor(log2(step_LL5)) + 1 = 14 for LL5. MAX_BP=14 covers all.
-     * Fast mode: MAX_BP=4 (step_mult=3.0 → coarse quant → ≤4 bit-planes). */
-    for (int c = 0; c < 3; ++c) {
-        if (fast_mode) {
-            /* V188: fast path MAX_BP 4 → 12.  With V186 base_step now ~4× smaller and
-             * V185 effective T1 step varying per band, max num_bp on real frames at
-             * 150 Mbps lands around 10-11.  Tried MAX_BP=10 — h_gradient regressed
-             * 52.9→26.8 dB (some CB hit 11 bit-planes, MSB truncated). MAX_BP=12 stays. */
-            kernel_ebcot_t1<true, 12, __half><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-                _impl->d_a[c], stride,
-                _impl->d_cb_info, num_cbs,
-                _impl->d_ebcot_data[c],
-                _impl->d_ebcot_len[c],
-                _impl->d_ebcot_npasses[c],
-                _impl->d_ebcot_passlens[c],
-                _impl->d_ebcot_numbp[c],
-                bp_skip, use_bypass);
-        } else {
-            /* V196: correct path reads FP32 d_a_f32 — no FP16 precision floor.
-             * V198: MAX_BP=14 → 13. At 150 Mbps/2K only a few CBs reach 14
-             * bit-planes; truncating to 13 loses one bit-plane × 3 passes for
-             * those, but PSNR drops < 0.5 dB on every test pattern.  Smaller
-             * MAX_BP reduces LMEM (mag_bp_flat is MAX_BP × CB_DIM × 4 bytes
-             * per thread: 1792 → 1664), enabling slightly better occupancy.
-             * Measured ~1% speedup. */
-            kernel_ebcot_t1<false, 13, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-                _impl->d_a_f32[c], stride,
-                _impl->d_cb_info, num_cbs,
-                _impl->d_ebcot_data[c],
-                _impl->d_ebcot_len[c],
-                _impl->d_ebcot_npasses[c],
-                _impl->d_ebcot_passlens[c],
-                _impl->d_ebcot_numbp[c],
-                bp_skip, use_bypass);
-        }
-    }
-
-    /* V148: T1 error is checked after the stream syncs at the end of D2H. */
-    tmark("EBCOT_T1");
-
-    /* Step 6: D2H transfer of coded data.
-     *
-     * V137: strided D2H. Source device layout is [CB_BUF_SIZE] per CB but
-     * actual coded bytes typically occupy 5-20% of that. cudaMemcpy2DAsync
-     * with a smaller dst-pitch copies only the first max_cb_d2h bytes per
-     * CB, dropping D2H traffic 2-4×. T2 then reads strided at the new
-     * smaller pitch and caps per-CB len to max_cb_d2h-1 for safety.
-     *
-     * Budget:
-     *   correct mode — max_cb_d2h = 1024 (halves 2048-byte D2H).
-     *   fast mode    — max_cb_d2h = 640  (~3.2× smaller than full 2048).
-     * Any CB whose coded output exceeds the budget is truncated, which in
-     * practice only affects the lowest few code-blocks at very high rates.
-     */
-    /* V196: bump correct-mode max_cb_d2h to full CB_BUF_SIZE so high-frequency
-     * patterns (checker_64, noise) aren't truncated mid-pass. The previous
-     * 1024 cap was a perf optimisation that hurt these patterns. */
     const int max_cb_d2h = fast_mode ? 640 : CB_BUF_SIZE;
-    for (int c = 0; c < 3; ++c) {
-        cudaMemcpy2DAsync(
-            _impl->h_ebcot_data[c], max_cb_d2h,
-            _impl->d_ebcot_data[c], CB_BUF_SIZE,
-            max_cb_d2h, num_cbs,
-            cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_len[c], _impl->d_ebcot_len[c],
-                        num_cbs * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
-                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
-                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        /* V196: PCRD-OPT in T2 reads per-pass cumulative byte lengths.  V132's
-         * "pass_lengths not used" optimization was wrong once V189 added the
-         * inline truncation that read this buffer — V189 was reading
-         * uninitialized host memory, which explains why checker_64 / noise_small
-         * were stuck at low PSNR (the truncation logic was making garbage
-         * decisions).  D2H the buffer here so T2 has correct data. */
-        cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
-                        (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
-                        cudaMemcpyDeviceToHost, _impl->stream[c]);
-    }
 
-    for (int c = 0; c < 3; ++c)
-        cudaStreamSynchronize(_impl->stream[c]);
-    {
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess)
-            fprintf(stderr, "GPU pipeline error: %s\n", cudaGetErrorString(err));
+    const int   adaptive_max_attempts = fast_mode ? 1 : 2;
+    /* Retry only when bytes_used falls in [low, high] × target_bytes:
+     *   low  = 0.005: skip retry for ultra-sparse content like single_impulse
+     *                (the V185 HH step×4 compensation interacts poorly with
+     *                isolated peaks at finer step, dropping PSNR ~2 dB).
+     *   high = 0.55:  skip retry for dense content; no headroom to gain. */
+    const float adaptive_thresh_low  = 0.005f;
+    const float adaptive_thresh_high = 0.55f;
+    float current_step = base_step;
+    int   num_cbs      = _impl->ebcot_num_cbs;
+
+    for (int attempt = 0; attempt < adaptive_max_attempts; ++attempt) {
+        if (_impl->ebcot_cb_table.empty()
+            || _impl->ebcot_cb_table[0].quant_step != current_step) {
+            build_codeblock_table(width, height, stride, num_levels, current_step, is_4k,
+                                  _impl->ebcot_cb_table, _impl->ebcot_subbands);
+            num_cbs = static_cast<int>(_impl->ebcot_cb_table.size());
+
+            if (num_cbs != _impl->ebcot_num_cbs) {
+                if (_impl->d_cb_info) cudaFree(_impl->d_cb_info);
+                for (int c = 0; c < 3; ++c) {
+                    if (_impl->d_ebcot_data[c])     cudaFree(_impl->d_ebcot_data[c]);
+                    if (_impl->d_ebcot_len[c])      cudaFree(_impl->d_ebcot_len[c]);
+                    if (_impl->d_ebcot_npasses[c])   cudaFree(_impl->d_ebcot_npasses[c]);
+                    if (_impl->d_ebcot_passlens[c])  cudaFree(_impl->d_ebcot_passlens[c]);
+                    if (_impl->d_ebcot_numbp[c])    cudaFree(_impl->d_ebcot_numbp[c]);
+                    if (_impl->h_ebcot_data[c])     cudaFreeHost(_impl->h_ebcot_data[c]);
+                    if (_impl->h_ebcot_len[c])      cudaFreeHost(_impl->h_ebcot_len[c]);
+                    if (_impl->h_ebcot_npasses[c])   cudaFreeHost(_impl->h_ebcot_npasses[c]);
+                    if (_impl->h_ebcot_passlens[c])  cudaFreeHost(_impl->h_ebcot_passlens[c]);
+                    if (_impl->h_ebcot_numbp[c])    cudaFreeHost(_impl->h_ebcot_numbp[c]);
+                }
+                cudaMalloc(&_impl->d_cb_info, num_cbs * sizeof(CodeBlockInfo));
+                for (int c = 0; c < 3; ++c) {
+                    cudaMalloc(&_impl->d_ebcot_data[c],    (size_t)num_cbs * CB_BUF_SIZE);
+                    cudaMalloc(&_impl->d_ebcot_len[c],     num_cbs * sizeof(uint16_t));
+                    cudaMalloc(&_impl->d_ebcot_npasses[c],  num_cbs * sizeof(uint8_t));
+                    cudaMalloc(&_impl->d_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t));
+                    cudaMalloc(&_impl->d_ebcot_numbp[c],   num_cbs * sizeof(uint8_t));
+                    cudaHostAlloc(&_impl->h_ebcot_data[c],    (size_t)num_cbs * CB_BUF_SIZE, cudaHostAllocDefault);
+                    cudaHostAlloc(&_impl->h_ebcot_len[c],     num_cbs * sizeof(uint16_t), cudaHostAllocDefault);
+                    cudaHostAlloc(&_impl->h_ebcot_npasses[c],  num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
+                    cudaHostAlloc(&_impl->h_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t), cudaHostAllocDefault);
+                    cudaHostAlloc(&_impl->h_ebcot_numbp[c],   num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
+                }
+                _impl->ebcot_num_cbs = num_cbs;
+            }
+            cudaMemcpy(_impl->d_cb_info, _impl->ebcot_cb_table.data(),
+                       num_cbs * sizeof(CodeBlockInfo), cudaMemcpyHostToDevice);
+        }
+        if (num_cbs <= 0) num_cbs = _impl->ebcot_num_cbs;
+        int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
+
+        /* Step 5: T1 launch per component.  Attempt 0 uses the fast V198
+         * kernel (MAX_BP=13).  Retry attempts use MAX_BP=16 because the
+         * finer step pushes some CBs to 14-15 bit-planes. */
+        for (int c = 0; c < 3; ++c) {
+            if (fast_mode) {
+                kernel_ebcot_t1<true, 12, __half><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                    _impl->d_a[c], stride,
+                    _impl->d_cb_info, num_cbs,
+                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
+                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
+                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+            } else if (attempt == 0) {
+                /* V198: MAX_BP 14 → 13. */
+                kernel_ebcot_t1<false, 13, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                    _impl->d_a_f32[c], stride,
+                    _impl->d_cb_info, num_cbs,
+                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
+                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
+                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+            } else {
+                /* V199 retry: bigger MAX_BP for the finer step. */
+                kernel_ebcot_t1<false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                    _impl->d_a_f32[c], stride,
+                    _impl->d_cb_info, num_cbs,
+                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
+                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
+                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+            }
+        }
+        if (attempt == 0) tmark("EBCOT_T1");
+
+        /* Step 6: D2H + sync */
+        for (int c = 0; c < 3; ++c) {
+            cudaMemcpy2DAsync(_impl->h_ebcot_data[c], max_cb_d2h,
+                              _impl->d_ebcot_data[c], CB_BUF_SIZE,
+                              max_cb_d2h, num_cbs,
+                              cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_len[c], _impl->d_ebcot_len[c],
+                            num_cbs * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
+                            (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost, _impl->stream[c]);
+        }
+        for (int c = 0; c < 3; ++c)
+            cudaStreamSynchronize(_impl->stream[c]);
+        {
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess)
+                fprintf(stderr, "GPU pipeline error: %s\n", cudaGetErrorString(err));
+        }
+        if (attempt == 0) tmark("D2H");
+
+        /* Decide whether to retry. */
+        if (attempt + 1 >= adaptive_max_attempts) break;
+        int64_t total_bytes_used = 0;
+        for (int c = 0; c < 3; ++c) {
+            for (int i = 0; i < num_cbs; ++i) {
+                uint16_t len = _impl->h_ebcot_len[c][i];
+                if (len > static_cast<uint16_t>(max_cb_d2h - 1))
+                    len = static_cast<uint16_t>(max_cb_d2h - 1);
+                total_bytes_used += len;
+            }
+        }
+        double byte_ratio = static_cast<double>(total_bytes_used)
+                          / static_cast<double>(target_bytes);
+        if (byte_ratio < adaptive_thresh_low || byte_ratio >= adaptive_thresh_high)
+            break;
+        current_step *= 0.5f;
     }
-    tmark("D2H");
+    base_step = current_step;  /* T2 codestream uses the final step for QCD */
 
     /* Step 7: CPU T2 assembly + codestream construction */
 #ifdef GPU_J2K_DEBUG_T1
