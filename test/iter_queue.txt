@@ -1,26 +1,29 @@
-# auto_iter queue — Run 19. After V199.
+# auto_iter queue — Run 20. Final long sweep before user return.
 
-# === Stage EEE: V199 with MAX_BP=14 retry (smaller LMEM) ====
-sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<false, 16, float>|kernel_ebcot_t1<false, 14, float>|
+# === Stage GGG: V199 retry MAX_BP search ====
+sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<false, 16, float>|kernel_ebcot_t1<false, 13, float>|
+sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<false, 16, float>|kernel_ebcot_t1<false, 12, float>|
 
-# === Stage EEE: try fast V200 with smaller MAX_BP for retry ====
-script:sed -i 's|adaptive_max_attempts = fast_mode \? 1 : 2;|adaptive_max_attempts = 2;|; s|kernel_ebcot_t1<true, 12, __half><<<|kernel_ebcot_t1<true, attempt == 0 ? 12 : 14, __half><<<|' src/lib/cuda_j2k_encoder.cu
+# === Stage GGG: tail clamp variations after V199 ====
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.245f, 32.5f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.255f, 32.5f|
 
-# === Stage EEE: V199 only correct mode improvements ====
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.65f;|
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.40f;|
+# === Stage HHH: max_cb_d2h various ====
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1664|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1920|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 668 : CB_BUF_SIZE|
+sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 612 : CB_BUF_SIZE|
 
-# === Stage EEE: explore halving ratios near 0.5 ====
-sed:src/lib/cuda_j2k_encoder.cu:s|current_step \*= 0.5f|current_step *= 0.55f|
-sed:src/lib/cuda_j2k_encoder.cu:s|current_step \*= 0.5f|current_step *= 0.45f|
+# === Stage HHH: ratio fine ====
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0598f|
+sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0602f|
 
-# === Stage EEE: V199 with various adaptive_thresh_low ====
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.002f;|
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.008f;|
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.0001f;|
+# === Stage III: combined V199 thresholds ====
+script:sed -i 's|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.50f;|; s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.003f;|' src/lib/cuda_j2k_encoder.cu
+script:sed -i 's|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.60f;|; s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.008f;|' src/lib/cuda_j2k_encoder.cu
 
-# === Stage FFF: post-V199 misc ====
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.495f : 1.0f|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 0.5f : 1.0f|fast_mode ? 0.505f : 1.0f|
+# === Stage JJJ: __launch_bounds__ on V199 baseline ====
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 18)|
+sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 14)|
 
-noop: end of Run 19 queue
+noop: end of Run 20 queue
