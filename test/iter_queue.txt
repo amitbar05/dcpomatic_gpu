@@ -1,13 +1,15 @@
-# auto_iter queue — Run 21. Final small experiments.
+# auto_iter queue — Run 22. Long-form noop sweep + occasional probes.
+# Auto_iter has exhausted parameter space. V198+V199 are committed.
 
-# Try V199 with no V198 (revert MAX_BP to 14)
-sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<false, 13, float>|kernel_ebcot_t1<false, 14, float>|
+# A few more variations
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.52f;|
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.58f;|
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.004f;|
+sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.006f;|
+sed:src/lib/cuda_j2k_encoder.cu:s|current_step \*= 0.5f|current_step *= 0.48f|
+sed:src/lib/cuda_j2k_encoder.cu:s|current_step \*= 0.5f|current_step *= 0.52f|
 
-# Tail clamp very small variations
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.247f, 32.5f|
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.253f, 32.5f|
-
-# Re-baseline noops to confirm timing stability
-noop: re-baseline 1
-noop: re-baseline 2
-noop: re-baseline 3
+# noop placeholders — waste no GPU cycles
+noop: end Run 22 - p1
+noop: end Run 22 - p2
+noop: end Run 22 - p3
