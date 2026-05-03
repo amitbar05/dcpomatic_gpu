@@ -1,29 +1,13 @@
-# auto_iter queue — Run 20. Final long sweep before user return.
+# auto_iter queue — Run 21. Final small experiments.
 
-# === Stage GGG: V199 retry MAX_BP search ====
-sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<false, 16, float>|kernel_ebcot_t1<false, 13, float>|
-sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<false, 16, float>|kernel_ebcot_t1<false, 12, float>|
+# Try V199 with no V198 (revert MAX_BP to 14)
+sed:src/lib/cuda_j2k_encoder.cu:s|kernel_ebcot_t1<false, 13, float>|kernel_ebcot_t1<false, 14, float>|
 
-# === Stage GGG: tail clamp variations after V199 ====
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.245f, 32.5f|
-sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.255f, 32.5f|
+# Tail clamp very small variations
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.247f, 32.5f|
+sed:src/lib/cuda_j2k_encoder.cu:s|, 0.25f, 32.5f|, 0.253f, 32.5f|
 
-# === Stage HHH: max_cb_d2h various ====
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1664|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 640 : 1920|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 668 : CB_BUF_SIZE|
-sed:src/lib/cuda_j2k_encoder.cu:s|fast_mode \? 640 : CB_BUF_SIZE|fast_mode ? 612 : CB_BUF_SIZE|
-
-# === Stage HHH: ratio fine ====
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0598f|
-sed:src/lib/cuda_j2k_encoder.cu:s|ratio \* 0.06f|ratio * 0.0602f|
-
-# === Stage III: combined V199 thresholds ====
-script:sed -i 's|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.50f;|; s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.003f;|' src/lib/cuda_j2k_encoder.cu
-script:sed -i 's|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.60f;|; s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.008f;|' src/lib/cuda_j2k_encoder.cu
-
-# === Stage JJJ: __launch_bounds__ on V199 baseline ====
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 18)|
-sed:src/lib/gpu_ebcot.h:s|__launch_bounds__(64, 16)|__launch_bounds__(64, 14)|
-
-noop: end of Run 20 queue
+# Re-baseline noops to confirm timing stability
+noop: re-baseline 1
+noop: re-baseline 2
+noop: re-baseline 3
