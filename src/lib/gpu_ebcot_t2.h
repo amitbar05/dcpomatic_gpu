@@ -324,7 +324,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     /* SIZ */
     w16(J2K_SIZ_M);
     w16(2 + 2 + 32 + 2 + 3*3);
-    w16(is_4k ? 0x0004 : 0x0003);
+    w16(0x0000);  /* Rsiz: no profile (DCP-spec) */
     w32(width); w32(height);
     w32(0); w32(0);
     w32(width); w32(height);
@@ -403,25 +403,30 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         return (12 - log2s) + numgbits_for_pmax - 1;
     };
 
-    /* V196: per-component sequential truncation, now reading correctly D2H'd
-     * pass_lengths.
+    /* V200: PCRD-OPT with integer slopes.
      *
-     * History: V189 added inline truncation that read pass_lengths but the
-     * D2H copy of that buffer was missing (V132 had skipped it as "unused").
-     * That meant V189 was reading uninitialized host memory, which made the
-     * truncation random and explains why checker_64 / noise_small / photos
-     * were stuck at low PSNR. Now that pass_lengths is correctly downloaded,
-     * the original V189 sequential-fit logic does the right thing: walk
-     * subbands LL→HL/LH/HH coarsest→finest, walk CBs in raster order, and
-     * for each CB include only the passes whose cumulative length still fits
-     * the remaining per-component budget. A full PCRD-OPT slope sort gave
-     * worse results in practice — without per-pass significance counts the
-     * naive (step × 2^bp)^2 / inc_len slope mis-ranks late passes against
-     * early CBs and starves photographic content of mid-frequency detail.
+     * Collect all coding passes from all code-blocks, compute an integer
+     * rate-distortion slope per pass, sort by slope (descending), and
+     * greedily include passes until the per-component byte budget is met.
      *
-     * Pre-compute pcrd_np_use[]/pcrd_len_use[] here so build_tp can just look
-     * them up rather than maintaining state across packets.
+     * Integer slope:  slope = (step² × 2²⁰ × 2^(2×bp_idx)) / inc_len
+     *
+     * - step² is pre-scaled by 2²⁰ to preserve precision in int64_t.
+     * - bp_idx = pass_idx / 3  (bit-plane index; 3 passes per bit-plane).
+     * - Slopes are enforced non-increasing within each CB so that passes
+     *   are always encountered in the correct sequential order during the
+     *   sorted walk (convex RD-curve guarantee).
+     *
+     * Sorting:  insertion sort for < 100 candidates (avoids std::sort
+     * function-call overhead), std::sort otherwise.  The 16-byte PassCand
+     * struct uses int64_t slope instead of double, making comparisons
+     * cheaper and avoiding floating-point issues.
+     *
+     * The candidate vector is pre-allocated once and reused across all
+     * three components to avoid repeated heap allocations.
      */
+
+    /* Pre-compute total_cbs for allocation sizing */
     size_t total_cbs = 0;
     if (!subbands.empty()) {
         const SubbandGeom& sb_last = subbands.back();
@@ -435,45 +440,180 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         pcrd_len_use[c].assign(total_cbs, 0);
     }
 
+    /* PassCand: 16-byte struct with integer slope.
+     * Replaces the old 32-byte {int,int,uint16_t,double+padding} layout. */
+    struct PassCand {
+        int64_t  slope;     // integer RD slope (higher = better)
+        uint16_t inc_len;   // incremental byte length of this pass
+        uint16_t cb_idx;    // global code-block index
+        uint8_t  pass_idx;  // which pass within the CB (0-based)
+    };
+    static_assert(sizeof(PassCand) == 16, "PassCand should be 16 bytes");
+
+    /* Precompute step_sq_i for each subband (step^2 x 2^20).
+     * Done once outside the component loop — steps are component-independent. */
+    std::vector<int64_t> sb_step_sq(subbands.size());
+    for (size_t sb = 0; sb < subbands.size(); ++sb)
+        sb_step_sq[sb] = static_cast<int64_t>(subbands[sb].step * subbands[sb].step * (1 << 20));
+
+    /* Precompute bit-plane weights: bp_weight[bp] = 2^(2×bp).
+     * Covers all MAX_BPLANES (16) possible bit-planes. */
+    int64_t bp_weight[MAX_BPLANES];
+    for (int bp = 0; bp < MAX_BPLANES; ++bp)
+        bp_weight[bp] = 1ULL << (2 * bp);
+
+    /* Insertion sort for small N (< 100).  Faster than std::sort on tiny
+     * arrays because it avoids indirect function calls and has zero
+     * overhead for nearly-sorted data (slopes within each CB are already
+     * monotonic, so the list is partially sorted). */
+    auto insertion_sort_desc = [](PassCand* begin, PassCand* end) {
+        for (PassCand* i = begin + 1; i < end; ++i) {
+            PassCand key = *i;
+            PassCand* j = i;
+            while (j > begin && (j - 1)->slope < key.slope) {
+                *j = *(j - 1);
+                --j;
+            }
+            *j = key;
+        }
+    };
+
     const size_t per_comp_target = (target_bytes > 0)
         ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
-    for (int c = 0; c < 3; ++c) {
-        size_t comp_bytes = 0;
+
+    /* V200: PCRD-OPT lambda — processes one component independently.
+     * Launched in parallel across all 3 components via std::async. */
+    auto pcrd_scan_comp = [&](int c) {
+        /* Per-component candidate vector (not shared — parallel-safe). */
+        std::vector<PassCand> candidates;
+        candidates.reserve(total_cbs * MAX_PASSES);
+
+        /* Track total bytes across ALL passes for early-exit check */
+        size_t total_all_bytes = 0;
+        /* Track minimum inc_len for early Phase-3 exit */
+        uint16_t min_inc = UINT16_MAX;
+
+        /* ── Phase 1: collect all pass candidates ── */
         for (size_t sb = 0; sb < subbands.size(); ++sb) {
+            int64_t step_sq_i = sb_step_sq[sb];
             int cb_start = subbands[sb].cb_start_idx;
             int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
+
             for (int i = 0; i < ncbs; ++i) {
                 int cb_idx = cb_start + i;
-                uint8_t  np = num_passes[c][cb_idx];
+                uint8_t np = num_passes[c][cb_idx];
                 uint16_t cb_len = coded_len[c][cb_idx];
                 if (cb_len > static_cast<uint16_t>(cb_stride - 1))
                     cb_len = static_cast<uint16_t>(cb_stride - 1);
                 if (np == 0 || cb_len == 0) continue;
 
-                uint8_t  np_use  = np;
-                uint16_t len_use = cb_len;
-                if (comp_bytes + cb_len > per_comp_target) {
-                    /* Walk passes; admit prefix that fits remaining budget. */
-                    size_t remaining = (per_comp_target > comp_bytes)
-                        ? per_comp_target - comp_bytes : 0;
-                    const uint16_t* pl = pass_lengths[c]
-                        + static_cast<size_t>(cb_idx) * MAX_PASSES;
-                    np_use = 0; len_use = 0;
-                    for (int p = 0; p < np; ++p) {
-                        uint16_t cum = pl[p];
-                        if (cum > cb_len) cum = cb_len;
-                        if (static_cast<size_t>(cum) > remaining) break;
-                        np_use = static_cast<uint8_t>(p + 1);
-                        len_use = cum;
-                    }
+                total_all_bytes += cb_len;
+
+                const uint16_t* pl = pass_lengths[c]
+                    + static_cast<size_t>(cb_idx) * MAX_PASSES;
+
+                uint16_t prev_cum = 0;
+                int64_t prev_slope = INT64_MAX;
+
+                for (int p = 0; p < np; ++p) {
+                    uint16_t cum = pl[p];
+                    if (cum > cb_len) cum = cb_len;
+                    uint16_t inc = cum - prev_cum;
+                    prev_cum = cum;
+                    if (inc == 0) continue;
+
+                    if (inc < min_inc) min_inc = inc;
+
+                    int bp_idx = p / 3;
+                    int64_t slope = (step_sq_i * bp_weight[bp_idx]) / inc;
+
+                    /* Enforce convexity: later passes must have
+                     * non-increasing slopes so they appear in order. */
+                    if (slope > prev_slope) slope = prev_slope;
+                    prev_slope = slope;
+
+                    candidates.push_back(PassCand{
+                        slope, inc,
+                        static_cast<uint16_t>(cb_idx),
+                        static_cast<uint8_t>(p)});
                 }
-                if (np_use == 0 || len_use == 0) continue;
-                pcrd_np_use [c][cb_idx] = np_use;
-                pcrd_len_use[c][cb_idx] = len_use;
-                comp_bytes += len_use;
             }
         }
-    }
+
+        /* Early exit: if all passes fit in budget, include everything
+         * without sorting.  Saves both the sort and the Phase-3 scan. */
+        if (per_comp_target == SIZE_MAX
+            || total_all_bytes <= per_comp_target) {
+            /* Include all passes for all CBs */
+            for (size_t sb = 0; sb < subbands.size(); ++sb) {
+                int cb_start = subbands[sb].cb_start_idx;
+                int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
+                for (int i = 0; i < ncbs; ++i) {
+                    int cb_idx = cb_start + i;
+                    uint8_t np = num_passes[c][cb_idx];
+                    uint16_t cb_len = coded_len[c][cb_idx];
+                    if (cb_len > static_cast<uint16_t>(cb_stride - 1))
+                        cb_len = static_cast<uint16_t>(cb_stride - 1);
+                    if (np == 0 || cb_len == 0) continue;
+                    pcrd_np_use[c][cb_idx] = np;
+                    pcrd_len_use[c][cb_idx] = cb_len;
+                }
+            }
+            return;
+        }
+
+        /* ── Phase 2: sort by slope descending ── */
+        if (candidates.size() < 100) {
+            insertion_sort_desc(candidates.data(),
+                                candidates.data() + candidates.size());
+        } else if (!candidates.empty()) {
+            std::sort(candidates.begin(), candidates.end(),
+                [](const PassCand& a, const PassCand& b) {
+                    return a.slope > b.slope;
+                });
+        }
+
+        /* ── Phase 3: greedy inclusion by slope order ──
+         * Since slopes within each CB are non-increasing, passes are
+         * encountered in sequential order (pass 0 before pass 1, etc.).
+         * We verify: pass_idx must equal current np_use for this CB.
+         * Early exit when remaining budget < minimum possible inc_len. */
+        size_t comp_bytes = 0;
+
+        for (const PassCand& cand : candidates) {
+            /* Early exit: even the smallest pass won't fit */
+            if (comp_bytes + min_inc > per_comp_target) break;
+
+            uint16_t cb_idx = cand.cb_idx;
+
+            /* Only include if this is the next expected pass for this CB */
+            if (cand.pass_idx != pcrd_np_use[c][cb_idx]) continue;
+
+            if (comp_bytes + cand.inc_len > per_comp_target)
+                continue;
+
+            /* Include this pass: update np_use and len_use */
+            pcrd_np_use[c][cb_idx] = static_cast<uint8_t>(cand.pass_idx + 1);
+
+            uint16_t new_len = pass_lengths[c][
+                static_cast<size_t>(cb_idx) * MAX_PASSES + cand.pass_idx];
+            uint16_t cb_len = coded_len[c][cb_idx];
+            if (cb_len > static_cast<uint16_t>(cb_stride - 1))
+                cb_len = static_cast<uint16_t>(cb_stride - 1);
+            if (new_len > cb_len) new_len = cb_len;
+            pcrd_len_use[c][cb_idx] = new_len;
+
+            comp_bytes += cand.inc_len;
+        }
+    };
+
+    /* Launch PCRD-OPT in parallel across all 3 components.
+     * Components 0 and 1 run asynchronously; component 2 runs inline. */
+    auto pcrd_fut0 = std::async(std::launch::async, [&]() { pcrd_scan_comp(0); });
+    auto pcrd_fut1 = std::async(std::launch::async, [&]() { pcrd_scan_comp(1); });
+    pcrd_scan_comp(2);
+    pcrd_fut0.wait();
+    pcrd_fut1.wait();
 
     /* V181: build_tp fills pkt_by_res[comp][res] — one blob per (comp, res) pair.
      * Packets are then interleaved in LRCP order: for each res, comp 0, 1, 2.
