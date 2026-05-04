@@ -324,7 +324,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     /* SIZ */
     w16(J2K_SIZ_M);
     w16(2 + 2 + 32 + 2 + 3*3);
-    w16(is_4k ? 0x0004 : 0x0003);
+    w16(0x0000);  /* Rsiz: no profile (DCP-spec) */
     w32(width); w32(height);
     w32(0); w32(0);
     w32(width); w32(height);

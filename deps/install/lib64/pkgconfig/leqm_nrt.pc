@@ -1,0 +1,9 @@
+prefix=/home/amit/dcp-o-matic-gpu/deps/install
+libdir=/home/amit/dcp-o-matic-gpu/deps/install/lib64
+includedir=/home/amit/dcp-o-matic-gpu/deps/install/include/libdcp[]
+
+Name: libleqm_nrt
+Description: LEQ calculation library
+Version: 
+Libs: -L${libdir} -lleqm_nrt
+Cflags: -I${includedir}

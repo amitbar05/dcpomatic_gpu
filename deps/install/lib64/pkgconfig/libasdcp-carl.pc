@@ -1,0 +1,10 @@
+prefix=/home/amit/dcp-o-matic-gpu/deps/install
+libdir=/home/amit/dcp-o-matic-gpu/deps/install/lib64
+includedir=/home/amit/dcp-o-matic-gpu/deps/install/include/libasdcp-carl
+
+Name: asdcplib-carl
+Description: asdcplib with patches by cth@carlh.net
+Version: 0.1.6devel
+Requires: openssl
+Libs: -L${libdir} -lasdcp-carl -lkumu-carl -lboost_system
+Cflags: -I${includedir} 

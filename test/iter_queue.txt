@@ -2,14 +2,5 @@
 # Auto_iter has exhausted parameter space. V198+V199 are committed.
 
 # A few more variations
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.52f;|
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_high = 0.55f;|adaptive_thresh_high = 0.58f;|
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.004f;|
-sed:src/lib/cuda_j2k_encoder.cu:s|adaptive_thresh_low  = 0.005f;|adaptive_thresh_low  = 0.006f;|
-sed:src/lib/cuda_j2k_encoder.cu:s|current_step \*= 0.5f|current_step *= 0.48f|
-sed:src/lib/cuda_j2k_encoder.cu:s|current_step \*= 0.5f|current_step *= 0.52f|
 
 # noop placeholders — waste no GPU cycles
-noop: end Run 22 - p1
-noop: end Run 22 - p2
-noop: end Run 22 - p3

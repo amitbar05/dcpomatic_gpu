@@ -1,0 +1,10 @@
+prefix=/home/amit/dcp-o-matic-gpu/deps/install
+libdir=/home/amit/dcp-o-matic-gpu/deps/install/lib64
+includedir=/home/amit/dcp-o-matic-gpu/deps/install/include/libasdcp-dcpomatic
+
+Name: asdcplib-dcpomatic
+Description: asdcplib with patches by carl@dcpomatic.com
+Version: 1.0.9
+Requires: openssl
+Libs: -L${libdir} -lasdcp-dcpomatic -lkumu-dcpomatic
+Cflags: -I${includedir} 

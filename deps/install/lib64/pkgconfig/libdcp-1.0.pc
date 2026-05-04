@@ -1,0 +1,10 @@
+prefix=/home/amit/dcp-o-matic-gpu/deps/install
+libdir=/home/amit/dcp-o-matic-gpu/deps/install/lib64
+includedir=/home/amit/dcp-o-matic-gpu/deps/install/include/libdcp-1.0
+
+Name: libdcp
+Description: DCP reading and writing library
+Version: 1.9.22
+Requires: openssl libxml++-2.6 xmlsec1 libasdcp-dcpomatic xerces-c libavutil libavcodec fmt
+Libs: -L${libdir} -ldcp-1.0 -lcxml  -lboost_system -lhpdf -ldl
+Cflags: -I${includedir}

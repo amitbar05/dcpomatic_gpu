@@ -4682,7 +4682,7 @@ build_j2k_codestream(
     {
         cs.write_marker(J2K_SIZ);
         cs.write_u16(2 + 2 + 32 + 2 + 3 * 3);
-        cs.write_u16(is_4k ? 0x0004 : 0x0003);
+        cs.write_u16(0x0000);  /* Rsiz: no profile (DCP-spec) */
         cs.write_u32(width); cs.write_u32(height);
         cs.write_u32(0);     cs.write_u32(0);
         cs.write_u32(width); cs.write_u32(height);
@@ -4838,7 +4838,7 @@ run_dwt_and_build_codestream(
     {
         cs.write_marker(J2K_SIZ);
         cs.write_u16(2 + 2 + 32 + 2 + 3 * 3);
-        cs.write_u16(is_4k ? 0x0004 : 0x0003);  /* Rsiz: OPJ_PROFILE_CINEMA_4K / 2K */
+        cs.write_u16(0x0000);  /* Rsiz: no profile (DCP-spec) */
         cs.write_u32(width); cs.write_u32(height);
         cs.write_u32(0);     cs.write_u32(0);
         cs.write_u32(width); cs.write_u32(height);

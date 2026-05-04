@@ -1,0 +1,10 @@
+prefix=/home/amit/dcp-o-matic-gpu/deps/install
+libdir=/home/amit/dcp-o-matic-gpu/deps/install/lib64
+includedir=/home/amit/dcp-o-matic-gpu/deps/install/include/libsub-1.0
+
+Name: libsub-1.0
+Description: Subtitle reading and writing library
+Version: 1.6.49
+Requires: 
+Libs: -L${libdir} -lsub-1.0 -lboost_system
+Cflags: -I${includedir}
