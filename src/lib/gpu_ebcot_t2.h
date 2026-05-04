@@ -462,6 +462,38 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     for (int bp = 0; bp < MAX_BPLANES; ++bp)
         bp_weight[bp] = 1ULL << (2 * bp);
 
+    /* LSD radix sort for large N (>= 5000).  Sorts int64_t slopes in
+     * descending order via 8 counting passes.  O(8*N) vs O(N log N).
+     * Converts signed int64_t to unsigned by flipping the sign bit
+     * (XOR with INT64_MIN), then does descending unsigned LSD sort.
+     * This correctly handles negative slopes in two's complement. */
+    auto radix_sort_desc = [](PassCand* begin, PassCand* end) {
+        const size_t n = static_cast<size_t>(end - begin);
+        if (n < 2) return;
+        std::vector<PassCand> tmp(n);
+        for (int byte_idx = 0; byte_idx < 8; ++byte_idx) {
+            size_t count[256] = {};
+            const int shift = byte_idx * 8;
+            for (size_t i = 0; i < n; ++i) {
+                uint64_t u = static_cast<uint64_t>(begin[i].slope ^ INT64_MIN);
+                uint8_t b = static_cast<uint8_t>((u >> shift) & 0xFF);
+                ++count[255 - b];
+            }
+            size_t total = 0;
+            for (int b = 0; b < 256; ++b) {
+                size_t c = count[b];
+                count[b] = total;
+                total += c;
+            }
+            for (size_t i = 0; i < n; ++i) {
+                uint64_t u = static_cast<uint64_t>(begin[i].slope ^ INT64_MIN);
+                uint8_t b = static_cast<uint8_t>((u >> shift) & 0xFF);
+                tmp[count[255 - b]++] = begin[i];
+            }
+            std::memcpy(begin, tmp.data(), n * sizeof(PassCand));
+        }
+    };
+
     /* Insertion sort for small N (< 100).  Faster than std::sort on tiny
      * arrays because it avoids indirect function calls and has zero
      * overhead for nearly-sorted data (slopes within each CB are already
@@ -562,15 +594,21 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             return;
         }
 
-        /* ── Phase 2: sort by slope descending ── */
+        /* ── Phase 2: sort by slope descending ──
+         * - N < 100:     insertion sort (zero overhead for tiny arrays)
+         * - 100..<5000:  std::sort (introsort, good for medium N)
+         * - N >= 5000:   LSD radix sort (O(8N), faster for large N) */
         if (candidates.size() < 100) {
             insertion_sort_desc(candidates.data(),
                                 candidates.data() + candidates.size());
-        } else if (!candidates.empty()) {
+        } else if (candidates.size() < 5000) {
             std::sort(candidates.begin(), candidates.end(),
                 [](const PassCand& a, const PassCand& b) {
                     return a.slope > b.slope;
                 });
+        } else {
+            radix_sort_desc(candidates.data(),
+                            candidates.data() + candidates.size());
         }
 
         /* ── Phase 3: greedy inclusion by slope order ──
