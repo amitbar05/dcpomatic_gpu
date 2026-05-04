@@ -526,11 +526,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                 }
 #endif
 
-                /* Build hierarchical tag trees for this subband.
-                 * Flat 1-bit-per-CB encoding was wrong: for HL1 (32×17=544 CBs)
-                 * the tree has 745 total nodes; the 201-bit discrepancy caused
-                 * OpenJPEG to read ZBP/body bytes as inclusion bits, corrupting
-                 * the entire AC packet stream and producing ~12 dB PSNR. */
                 incl_tree.build(ncbx, ncby);
                 zbp_tree.build(ncbx, ncby);
 
