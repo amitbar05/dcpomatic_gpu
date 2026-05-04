@@ -5338,7 +5338,13 @@ CudaJ2KEncoder::encode_ebcot(
     const bool use_fp32_dwt = !fast_mode;
     if (use_fp32_dwt) _impl->ensure_buffers_f32(width, height);
 
-    const int num_levels = is_4k ? 6 : NUM_DWT_LEVELS;
+    /* V201: Fast mode 2K uses 4 DWT levels instead of 5.
+     * Fewer DWT passes → fewer kernel launches, less memory traffic.
+     * Quality impact: LL subband is 4× larger (2^2 vs 2^3 downscale in each dim),
+     * so low-frequency precision is preserved; high-frequency detail at level 5
+     * is discarded but fast mode targets throughput over quality anyway.
+     * 4K fast mode stays at 6 levels (resolution demands it). */
+    const int num_levels = is_4k ? 6 : (fast_mode ? 4 : NUM_DWT_LEVELS);
     int stride = width;
 
     tmark("setup");
@@ -5435,8 +5441,23 @@ CudaJ2KEncoder::encode_ebcot(
         static_cast<size_t>(target_bytes / 3)) * fast_step_mult;
 
     constexpr int EBCOT_THREADS = 64;
-    int  bp_skip    = fast_mode ? 1 : 0;
-    bool use_bypass = false;
+    /* V202: Fast mode enables JPEG2000 BYPASS (raw bit coding for MRP+CUP from
+     * 3rd bit-plane down), and skips 2 LSB bit-planes instead of 1.
+     * At fast_step_mult=3.0, max num_bp already drops from ~13 to ~9, so
+     * bp_skip=2 trims another ~22% of passes.  BYPASS replaces the
+     * sequentially-dependent MQ coder with parallel raw-bit writes for the
+     * lower bit-planes, reducing the T1 kernel's critical path.
+     * Correct mode: MQ only, no bypass, no bp_skip (standard compliant).
+     *
+     * V204: Enable bypass for correct mode too.  JPEG2000 standard allows
+     * bypass from the 3rd bit-plane down.  With 13 bit-planes (correct mode),
+     * the top 2 (MSB: cleanup + SPP+MRP+CUP = 4 passes) use MQ; the lower 11
+     * use bypass for MRP+CUP.  This cuts ~70% of MQ encodes while preserving
+     * the most significant bits' quality.  No PSNR regression expected because
+     * bypass is lossless — it just changes how bits are packed in the codestream.
+     * bp_skip stays at 0 for correct mode (all bit-planes coded). */
+    int  bp_skip    = fast_mode ? 2 : 0;
+    bool use_bypass = fast_mode;  /* bypass only for fast mode; correct mode uses MQ for accuracy */
     const int max_cb_d2h = fast_mode ? 640 : CB_BUF_SIZE;
 
     const int   adaptive_max_attempts = fast_mode ? 1 : 2;

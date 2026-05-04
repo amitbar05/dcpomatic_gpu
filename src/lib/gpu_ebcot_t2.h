@@ -176,14 +176,19 @@ struct BitWriter {
     int      acc_n;  /* number of valid bits in acc */
     bool     prev_ff; /* was the last flushed byte 0xFF? */
 
-    BitWriter(std::vector<uint8_t>& b) : buf(b), acc(0), acc_n(0), prev_ff(false) {}
+    /* V205: Local batch buffer avoids per-byte vector push_back overhead.
+     * Flushed to buf in chunks of 256 bytes. */
+    uint8_t  local[256];
+    int      local_n;
+
+    BitWriter(std::vector<uint8_t>& b) : buf(b), acc(0), acc_n(0), prev_ff(false), local_n(0) {}
 
     void flush_byte() {
-        /* After 0xFF, only 7 bits fit (bit 7 must be 0). */
         int bits = prev_ff ? 7 : 8;
         acc_n -= bits;
         uint8_t byte = static_cast<uint8_t>((acc >> acc_n) & (prev_ff ? 0x7Fu : 0xFFu));
-        buf.push_back(byte);
+        local[local_n++] = byte;
+        if (local_n == 256) { buf.insert(buf.end(), local, local + 256); local_n = 0; }
         prev_ff = (byte == 0xFF);
     }
 
@@ -200,11 +205,13 @@ struct BitWriter {
         if (acc_n > 0) {
             int bits = prev_ff ? 7 : 8;
             uint8_t byte = static_cast<uint8_t>((acc << (bits - acc_n)) & (prev_ff ? 0x7Fu : 0xFFu));
-            buf.push_back(byte);
+            local[local_n++] = byte;
+            if (local_n == 256) { buf.insert(buf.end(), local, local + 256); local_n = 0; }
             prev_ff = (byte == 0xFF);
             acc_n = 0;
             acc = 0;
         }
+        if (local_n > 0) { buf.insert(buf.end(), local, local + local_n); local_n = 0; }
     }
 };
 
@@ -482,8 +489,13 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         size_t comp_bytes = 0;
         std::vector<uint8_t> pkt_header_buf;
         std::vector<uint8_t> pkt_body;
-        pkt_header_buf.reserve(8192);
-        pkt_body.reserve(512 * 1024);
+        /* V203: Pre-size buffers based on target_bytes to avoid reallocations.
+         * Correct mode at 150Mbps: per_comp ~260KB, header ~16KB.
+         * Fast mode: per_comp ~72KB, header ~4KB. */
+        const size_t est_hdr = (target_bytes > 0) ? (target_bytes / 48 + 4096) : 16384;
+        const size_t est_body = (target_bytes > 0) ? (target_bytes / 3 + 16384) : (512 * 1024);
+        pkt_header_buf.reserve(est_hdr);
+        pkt_body.reserve(est_body);
 
         TagTree incl_tree, zbp_tree;
 
