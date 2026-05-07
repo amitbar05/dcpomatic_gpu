@@ -721,7 +721,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
         for (int c = 0; c < cbw; c++) {
             float val = dwt_load(row_ptr + c);
-            int q = __float2int_rn(fabsf(val) * inv_step);
+            int q = __float2int_rd(fabsf(val) * inv_step)  /* V211 */;
             if (val < 0.0f) sb |= (1u << c);
             max_mag |= q;  /* bitwise OR — captures all bits for num_bp */
         }
@@ -762,7 +762,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         uint32_t rmask = 1u << r;
         const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
         for (int c = 0; c < cbw; c++) {
-            int q = __float2int_rn(fabsf(dwt_load(row_ptr + c)) * inv_step);
+            int q = __float2int_rd(fabsf(dwt_load(row_ptr + c)) * inv_step)  /* V211 */;
             if (q == 0) continue;
             for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
                 if ((q >> (num_bp - 1 - bp_idx)) & 1)
@@ -867,8 +867,8 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             }
         }
         }
-        /* V165: Terminate MQ to byte boundary before bypass MRP/CUP. */
-        if (bp_bypass) mq_align(&mq);
+        /* V165: Terminate MQ (with SETBITS) before bypass MRP/CUP per T.800 C.3.8. */
+        if (bp_bypass) mq_flush(&mq);
         pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
         } /* end SPP */
 

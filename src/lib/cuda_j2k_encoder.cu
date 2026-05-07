@@ -2357,7 +2357,7 @@ kernel_quantize_and_pack(
 
     /* Pack 4 sign-magnitude bytes into uint32_t, one 4-byte store vs four 1-byte stores. */
     auto pack_byte = [inv_step](float fv) -> uint8_t {
-        int q   = __float2int_rn(fv * inv_step);
+        int q   = __float2int_rd(fv * inv_step)  /* V211: floor for dead-zone quantization */;
         uint8_t sign = (q < 0) ? 0x80u : 0x00u;
         /* Cap magnitude at 126: prevents 0xFF (would require byte stuffing). */
         uint8_t mag  = static_cast<uint8_t>(min(126, abs(q)));
@@ -2394,7 +2394,7 @@ kernel_quantize_and_pack_h(
     float inv_step = __frcp_rn(step_size);
 
     auto pack_byte = [inv_step](__half hv) -> uint8_t {
-        int q   = __float2int_rn(__half2float(hv) * inv_step);
+        int q   = __float2int_rd(__half2float(hv) * inv_step)  /* V211 */;
         uint8_t sign = (q < 0) ? 0x80u : 0x00u;
         uint8_t mag  = static_cast<uint8_t>(min(126, abs(q)));
         return sign | mag;
@@ -2448,7 +2448,7 @@ kernel_quantize_subband_h(
 
     for (int col = threadIdx.x; col < stride; col += blockDim.x) {
         float val = __half2float(__ldg(&d_comp[row * stride + col]));
-        int q = __float2int_rn(val * inv_step);
+        int q = __float2int_rd(val * inv_step)  /* V211 */;
         uint8_t sign = (q < 0) ? 0x80u : 0x00u;
         uint8_t mag  = static_cast<uint8_t>(min(126, abs(q)));
         d_packed[row * stride + col] = sign | mag;
@@ -2509,7 +2509,7 @@ kernel_quantize_subband_2d(
             inv_step = inv_hf;                          /* higher-frequency subbands */
 
         float val = __half2float(__ldg(&d_comp[row * stride + col]));
-        int q = __float2int_rn(val * inv_step);
+        int q = __float2int_rd(val * inv_step)  /* V211 */;
         uint8_t sign = (q < 0) ? 0x80u : 0x00u;
         uint8_t mag  = static_cast<uint8_t>(min(126, abs(q)));
         d_packed[row * stride + col] = sign | mag;
@@ -2630,14 +2630,14 @@ void kernel_quantize_subband_ml(
             __builtin_memcpy(&hv2, &a23x, 4);
             __builtin_memcpy(&hv3, &a23y, 4);
             /* Quantize absolute values — all ≥ 0, no abs() needed in magnitude computation. */
-            int aq0 = __float2int_rn(__half2float(hv0.x) * inv);
-            int aq1 = __float2int_rn(__half2float(hv0.y) * inv);
-            int aq2 = __float2int_rn(__half2float(hv1.x) * inv);
-            int aq3 = __float2int_rn(__half2float(hv1.y) * inv);
-            int aq4 = __float2int_rn(__half2float(hv2.x) * inv);
-            int aq5 = __float2int_rn(__half2float(hv2.y) * inv);
-            int aq6 = __float2int_rn(__half2float(hv3.x) * inv);
-            int aq7 = __float2int_rn(__half2float(hv3.y) * inv);
+            int aq0 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv0.x) * inv);
+            int aq1 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv0.y) * inv);
+            int aq2 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv1.x) * inv);
+            int aq3 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv1.y) * inv);
+            int aq4 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv2.x) * inv);
+            int aq5 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv2.y) * inv);
+            int aq6 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv3.x) * inv);
+            int aq7 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv3.y) * inv);
             /* Pack magnitudes (≤126, safe in bits[6:0]) then OR in sign bits (bit 7 each byte). */
             const uint32_t lo = lo_signs | (uint32_t(min(aq0,126)) | (uint32_t(min(aq1,126))<<8) | (uint32_t(min(aq2,126))<<16) | (uint32_t(min(aq3,126))<<24));
             const uint32_t hi = hi_signs | (uint32_t(min(aq4,126)) | (uint32_t(min(aq5,126))<<8) | (uint32_t(min(aq6,126))<<16) | (uint32_t(min(aq7,126))<<24));
@@ -2661,10 +2661,10 @@ void kernel_quantize_subband_ml(
             raw0 &= 0x7FFF7FFFu; raw1 &= 0x7FFF7FFFu;
             __builtin_memcpy(&hv0, &raw0, 4);
             __builtin_memcpy(&hv1, &raw1, 4);
-            int aq0 = __float2int_rn(__half2float(hv0.x) * inv);
-            int aq1 = __float2int_rn(__half2float(hv0.y) * inv);
-            int aq2 = __float2int_rn(__half2float(hv1.x) * inv);
-            int aq3 = __float2int_rn(__half2float(hv1.y) * inv);
+            int aq0 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv0.x) * inv);
+            int aq1 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv0.y) * inv);
+            int aq2 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv1.x) * inv);
+            int aq3 = __float2int_rd  /* V211: floor for dead-zone quantization */(__half2float(hv1.y) * inv);
             { uint32_t packed = signs |
                 (uint32_t(min(126,aq0)) | (uint32_t(min(126,aq1))<<8)
                 | (uint32_t(min(126,aq2))<<16) | (uint32_t(min(126,aq3))<<24));
@@ -3898,6 +3898,46 @@ kernel_rgb48_to_xyz12(
     d_out_z[i] = __ldg(&d_lut_out[zi]);
 }
 
+/* ===== V209: Irreversible Component Transform (ICT) =====
+ * JPEG2000 Part 1 Annex G — applied for DCP MCT=1 compliance.
+ * Forward ICT: decorrelates XYZ components before DWT, improving compression.
+ *
+ *   Y  =  0.299*C0 + 0.587*C1 + 0.114*C2
+ *   Cb = -0.16875*C0 - 0.33126*C1 + 0.5*C2 + DC_OFFSET  (shifted to unsigned)
+ *   Cr =  0.5*C0 - 0.41869*C1 - 0.08131*C2 + DC_OFFSET
+ *
+ * All values are FP32 (float) for the high-precision path.
+ * For the FP16 path, values are __half (Cb/Cr may lose sub-1 LSB precision
+ * but the DWT dominates total error).
+ *
+ * Kernel applied in-place on the 3 component planes (d_c0/d_c1/d_c2).
+ * Each thread handles one pixel across all 3 components. */
+template<typename T>
+__global__ void
+kernel_ict_fwd(
+    T* __restrict__ d_c0,    /* in/out: component 0 (X→Y) */
+    T* __restrict__ d_c1,    /* in/out: component 1 (Y→Cb) */
+    T* __restrict__ d_c2,    /* in/out: component 2 (Z→Cr) */
+    int pixels,
+    int stride)               /* row stride in pixels */
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= pixels) return;
+
+    float c0 = static_cast<float>(d_c0[idx]);
+    float c1 = static_cast<float>(d_c1[idx]);
+    float c2 = static_cast<float>(d_c2[idx]);
+
+    /* ICT forward (JPEG2000 Part 1 Annex G.2.1) */
+    float y  =  0.299f    * c0 + 0.587f    * c1 + 0.114f    * c2;
+    float cb = -0.16875f  * c0 - 0.33126f  * c1 + 0.5f      * c2 + 2048.0f;
+    float cr =  0.5f      * c0 - 0.41869f  * c1 - 0.08131f  * c2 + 2048.0f;
+
+    d_c0[idx] = static_cast<T>(roundf(y));
+    d_c1[idx] = static_cast<T>(roundf(cb));
+    d_c2[idx] = static_cast<T>(roundf(cr));
+}
+
 
 /* ===== Encoder Implementation ===== */
 
@@ -4059,6 +4099,36 @@ struct CudaJ2KEncoderImpl
         return true;
     }
 
+    /* V207: Lazy allocator for encode_ebcot — only allocates DWT + single RGB buffer.
+     * Skips d_in (unused when skip_hdwt=true), d_packed, d_rgb12, h_rgb12_pinned,
+     * h_rgb16_pinned, h_packed_pinned — saving ~105 MB host+device RAM at 2K.
+     * V209: Also allocates d_xyz[3] for the ICT-correct pixel-domain pipeline. */
+    void ensure_buffers_ebcot(int width, int height) {
+        size_t pixels = static_cast<size_t>(width) * height;
+        if (pixels > buf_pixels) {
+            cleanup_dwt_buffers();
+            size_t pad = static_cast<size_t>(width) * 8 * sizeof(__half) + 64;
+            for (int c = 0; c < 3; ++c) {
+                cudaMalloc(&d_a[c],  pixels * sizeof(__half) + pad);
+                cudaMalloc(&d_b[c],  pixels * sizeof(__half) + pad);
+            }
+            buf_pixels = pixels;
+        }
+        /* V209: XYZ pixel buffers for RGB→XYZ→ICT pipeline (correct mode) */
+        if (pixels > xyz_buf_pixels) {
+            for (int c = 0; c < 3; ++c) {
+                if (d_xyz[c]) { cudaFree(d_xyz[c]); d_xyz[c] = nullptr; }
+                cudaMalloc(&d_xyz[c], pixels * sizeof(int32_t));
+            }
+            xyz_buf_pixels = pixels;
+        }
+        if (pixels > rgb_buf_pixels) {
+            if (d_rgb16[0]) { cudaFree(d_rgb16[0]); d_rgb16[0] = nullptr; }
+            cudaMalloc(&d_rgb16[0], pixels * 3 * sizeof(uint16_t));
+            rgb_buf_pixels = pixels;
+        }
+    }
+
     void ensure_buffers(int width, int height) {
         size_t pixels = static_cast<size_t>(width) * height;
         if (pixels <= buf_pixels) return;
@@ -4202,10 +4272,34 @@ struct CudaJ2KEncoderImpl
         cg_width = cg_height = 0; cg_per_comp = 0;
     }
 
+    /* V213: Free EBCOT T1 buffers to prevent GPU memory leaks.
+     * Previously these were only freed during reallocation inside encode_ebcot(),
+     * causing ~270 MB leak per encoder instance (3 comps × (device + host pinned) ×
+     * CB_BUF_SIZE bytes per CB). Tests creating multiple encoders would OOM. */
+    void cleanup_ebcot_buffers() {
+        if (d_cb_info) { cudaFree(d_cb_info); d_cb_info = nullptr; }
+        for (int c = 0; c < 3; ++c) {
+            if (d_ebcot_data[c])     { cudaFree(d_ebcot_data[c]);     d_ebcot_data[c]     = nullptr; }
+            if (d_ebcot_len[c])      { cudaFree(d_ebcot_len[c]);      d_ebcot_len[c]      = nullptr; }
+            if (d_ebcot_npasses[c])   { cudaFree(d_ebcot_npasses[c]);   d_ebcot_npasses[c]   = nullptr; }
+            if (d_ebcot_passlens[c])  { cudaFree(d_ebcot_passlens[c]);  d_ebcot_passlens[c]  = nullptr; }
+            if (d_ebcot_numbp[c])    { cudaFree(d_ebcot_numbp[c]);    d_ebcot_numbp[c]    = nullptr; }
+            if (h_ebcot_data[c])     { cudaFreeHost(h_ebcot_data[c]);     h_ebcot_data[c]     = nullptr; }
+            if (h_ebcot_len[c])      { cudaFreeHost(h_ebcot_len[c]);      h_ebcot_len[c]      = nullptr; }
+            if (h_ebcot_npasses[c])   { cudaFreeHost(h_ebcot_npasses[c]);   h_ebcot_npasses[c]   = nullptr; }
+            if (h_ebcot_passlens[c])  { cudaFreeHost(h_ebcot_passlens[c]);  h_ebcot_passlens[c]  = nullptr; }
+            if (h_ebcot_numbp[c])    { cudaFreeHost(h_ebcot_numbp[c]);    h_ebcot_numbp[c]    = nullptr; }
+        }
+        ebcot_num_cbs = 0;
+        ebcot_cb_table.clear();
+        ebcot_subbands.clear();
+    }
+
     ~CudaJ2KEncoderImpl() {
         destroy_v42_graphs();
         destroy_comp_graphs();
         cleanup_dwt_buffers();
+        cleanup_ebcot_buffers();  /* V213: prevent GPU memory leak */
         for (int i = 0; i < 2; ++i) {
             if (d_rgb16[i])         { cudaFree(d_rgb16[i]);             d_rgb16[i]         = nullptr; }
             if (d_rgb12[i])         { cudaFree(d_rgb12[i]);             d_rgb12[i]         = nullptr; }
@@ -4215,8 +4309,16 @@ struct CudaJ2KEncoderImpl
             if (h2d_done[i])        { cudaEventDestroy(h2d_done[i]);    h2d_done[i]        = nullptr; }
         }
         if (d_lut_in)  { cudaFree(d_lut_in);  d_lut_in  = nullptr; }
+        if (d_lut_in_f32) { cudaFree(d_lut_in_f32); d_lut_in_f32 = nullptr; }
         if (d_lut_out) { cudaFree(d_lut_out); d_lut_out = nullptr; }
         if (d_matrix)  { cudaFree(d_matrix);  d_matrix  = nullptr; }
+        /* V213: also free XYZ conversion scratch buffers */
+        for (int c = 0; c < 3; ++c) {
+            if (d_xyz[c]) { cudaFree(d_xyz[c]); d_xyz[c] = nullptr; }
+        }
+        xyz_buf_pixels = 0;
+        if (h_xyz_pinned) { cudaFreeHost(h_xyz_pinned); h_xyz_pinned = nullptr; }
+        if (d_rgb16_xyz)  { cudaFree(d_rgb16_xyz);  d_rgb16_xyz  = nullptr; }
         for (int c = 0; c < 3; ++c)
             if (stream[c]) cudaStreamDestroy(stream[c]);
         if (st_h2d) cudaStreamDestroy(st_h2d);
@@ -4964,20 +5066,30 @@ CudaJ2KEncoder::encode(
     bool is_4k
 )
 {
+    /* V211: Route through encode_ebcot for full EBCOT T1/T2 + ICT + MCT=1 + CPRL.
+     * The caller provides XYZ int32 planes.  We convert to uint16_t RGB48-like
+     * interleaved format and pass to encode_ebcot, which performs the full pipeline:
+     * RGB\u2192XYZ\u2192ICT\u2192DWT\u2192EBCOT.  With an identity colour LUT, the
+     * double conversion is lossless (shift-left-4 then shift-right-4 in the GPU kernel). */
     if (!_initialized) return {};
 
     size_t pixels = static_cast<size_t>(width) * height;
-    _impl->ensure_buffers(width, height);
+    /* Single allocation in caller thread - freed at return */
+    std::vector<uint16_t> rgb16(pixels * 3);
 
-    /* Upload XYZ planes on component streams */
-    for (int c = 0; c < 3; ++c) {
-        cudaMemcpyAsync(_impl->d_in[c], xyz_planes[c],
-                        pixels * sizeof(int32_t), cudaMemcpyHostToDevice,
-                        _impl->stream[c]);
+    /* Convert int32_t XYZ [0,4095] to uint16_t interleaved.
+     * Shift left 4 bits to fill 16-bit range; GPU kernel shifts right 4 to recover. */
+    for (size_t i = 0; i < pixels; ++i) {
+        rgb16[i * 3 + 0] = static_cast<uint16_t>(
+            std::min(4095, std::max(0, xyz_planes[0][i])) << 4);
+        rgb16[i * 3 + 1] = static_cast<uint16_t>(
+            std::min(4095, std::max(0, xyz_planes[1][i])) << 4);
+        rgb16[i * 3 + 2] = static_cast<uint16_t>(
+            std::min(4095, std::max(0, xyz_planes[2][i])) << 4);
     }
 
-    return run_dwt_and_build_codestream(_impl.get(), width, height,
-                                        bit_rate, fps, is_3d, is_4k);
+    return encode_ebcot(rgb16.data(), width, height, width * 3,
+                        bit_rate, fps, is_3d, is_4k, false /* correct mode */);
 }
 
 
@@ -5058,143 +5170,11 @@ CudaJ2KEncoder::encode_from_rgb48(
     bool is_4k
 )
 {
-    if (!_initialized || !_colour_params_valid) return {};
-
-    _impl->ensure_buffers(width, height);
-    _impl->ensure_rgb_buffer(width, height);
-    _impl->ensure_pinned_buffer(width, height);
-
-    int64_t frame_bits = bit_rate / fps;
-    if (is_3d) frame_bits /= 2;
-    size_t pixels = static_cast<size_t>(width) * height;
-    size_t per_comp = std::min(
-        std::max(static_cast<size_t>(frame_bits / 8) / 3, static_cast<size_t>(1)), pixels);
-
-    size_t rgb_bytes = static_cast<size_t>(height) * rgb_stride_pixels * sizeof(uint16_t);
-
-    /* V42: 1-frame pipeline with H2D-compute overlap.
-     * new_buf: write slot for this frame (RGB staging + D2H destination).
-     * cur_buf: previous frame's slot (GPU currently executing or finished compute).
-     *
-     * Timeline (steady state):
-     *   CPU memcpy(new_buf, 1.2ms) concurrent with GPU compute(cur_buf, 0.5ms on SM).
-     *   H2D(new_buf, 1.66ms on PCIe st_h2d) starts after memcpy, overlaps with anything.
-     *   sync(stream[0]) collects cur_buf result; compute(new_buf) kicks off after h2d_done.
-     *   Steady-state bottleneck = H2D(1.66ms) + sync_tail(0.5ms) ≈ 1.73ms → ~578fps. */
-    int new_buf = 1 - _impl->cur_buf;
-
-    /* V56: Merged Steps 1+2 — per-channel pack+H2D pipeline.
-     * Pack one colour plane (4 threads), then immediately submit H2D for that plane before
-     * packing the next channel.  H2D for ch0 starts at ~0.075ms instead of ~0.3ms;
-     * pack+H2D total latency: 0.075ms + 1.26ms = 1.335ms (was 1.56ms). */
-    _impl->ensure_rgb12_buffer(width, height);
-    {
-        static constexpr int N_PACK = 4;
-        const int packed_row_stride = (width / 2) * 3;
-        const size_t plane_bytes    = static_cast<size_t>(packed_row_stride) * height;
-        const int    chunk_rows     = (height + N_PACK - 1) / N_PACK;
-        uint8_t*     dst            = _impl->h_rgb12_pinned[new_buf];
-
-        for (int ch = 0; ch < 3; ++ch) {
-            uint8_t* ch_plane = dst + ch * plane_bytes;
-            std::future<void> futs[N_PACK - 1];
-            for (int i = 1; i < N_PACK; ++i) {
-                int y0 = i * chunk_rows, y1 = std::min(y0 + chunk_rows, height);
-                futs[i - 1] = std::async(std::launch::async,
-                    [=]{ pack_rgb12_plane(rgb16, rgb_stride_pixels, ch_plane,
-                                          width, packed_row_stride, y0, y1, ch); });
-            }
-            pack_rgb12_plane(rgb16, rgb_stride_pixels, ch_plane,
-                             width, packed_row_stride, 0, std::min(chunk_rows, height), ch);
-            for (int i = 0; i < N_PACK - 1; ++i) futs[i].wait();
-
-            /* H2D this channel immediately — runs on st_h2d while next channel is packed. */
-            cudaMemcpyAsync(_impl->d_rgb12[new_buf] + ch * plane_bytes,
-                            ch_plane, plane_bytes,
-                            cudaMemcpyHostToDevice, _impl->st_h2d);
-        }
-        cudaEventRecord(_impl->h2d_done[new_buf], _impl->st_h2d);
-    }
-
-    /* Step 3: Rebuild comp graphs for new_buf if geometry/bitrate changed. */
-    /* V54: packed_row_stride depends only on width (already tracked by cg_v42_width).
-     * cg_v42_rgb_stride still stored for API compat but checked against packed_row_stride. */
-    int v54_packed_stride = (width / 2) * 3;
-    bool v42_valid = (_impl->cg_v42[new_buf][0] != nullptr                     &&
-                      _impl->cg_v42_width[new_buf]      == width               &&
-                      _impl->cg_v42_height[new_buf]     == height              &&
-                      _impl->cg_v42_rgb_stride[new_buf] == v54_packed_stride   &&
-                      _impl->cg_v42_per_comp[new_buf]   == per_comp            &&
-                      _impl->cg_v42_is_4k[new_buf]      == is_4k               &&
-                      _impl->cg_v42_is_3d[new_buf]      == is_3d);
-    /* V125: Skip graph capture entirely — direct kernel launches are more robust
-     * across GPU architectures and avoid misaligned-address errors during capture. */
-    (void)v42_valid;  /* suppress unused warning */
-
-    /* Step 4: Sync all 3 component streams for cur_buf (V49: was only stream[0]).
-     * V49 race fix: all 3 streams write to h_packed_pinned[cur_buf]; syncing only
-     * stream[0] could race with stream[1] and stream[2]'s D2H still in flight. */
-    std::vector<uint8_t> result;
-    if (_impl->pipeline_active) {
-        cudaStreamSynchronize(_impl->stream[0]);
-        cudaStreamSynchronize(_impl->stream[1]);  /* V49: race fix */
-        cudaStreamSynchronize(_impl->stream[2]);  /* V49: race fix */
-    }
-
-    /* Step 5: Launch pipeline for new_buf.
-     * V125: If graphs are available, use cudaGraphLaunch. Otherwise, fall back to
-     * direct kernel launches (handles graph capture failures on older GPUs). */
-    {
-        /* V125: Direct kernel launch — no CUDA Graphs (robust across all GPU architectures). */
-        float base_step_fb = compute_base_step(width, height, per_comp);
-        int packed_row_stride_fb = (width / 2) * 3;
-        const int num_levels_fb = is_4k ? 6 : NUM_DWT_LEVELS;
-        size_t ch_smem_2row = static_cast<size_t>(2 * width) * sizeof(__half);
-        size_t ch_smem_1row = static_cast<size_t>(1 * width) * sizeof(__half);
-        int rgb_grid_2row = (height + 1) / 2;
-        int rgb_grid_1row = height;
-        bool use_1row_4k = (width > 2048);
-        for (int c = 0; c < 3; ++c) {
-            float step_c = base_step_fb * (c == 1 ? 1.0f : 1.1f);
-            cudaStreamWaitEvent(_impl->stream[c], _impl->h2d_done[new_buf], 0);
-            if (use_1row_4k) {
-                kernel_rgb48_xyz_hdwt0_1ch_1row_p12<<<rgb_grid_1row, H_THREADS_FUSED, ch_smem_1row, _impl->stream[c]>>>(
-                    _impl->d_rgb12[new_buf],
-                    _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
-                    _impl->d_b[c], c,
-                    width, height, packed_row_stride_fb, width);
-            } else {
-                kernel_rgb48_xyz_hdwt0_1ch_2row_p12<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem_2row, _impl->stream[c]>>>(
-                    _impl->d_rgb12[new_buf],
-                    _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
-                    _impl->d_b[c], c,
-                    width, height, packed_row_stride_fb, width);
-            }
-            launch_comp_pipeline(_impl.get(), c, width, height, per_comp, step_c, true,
-                                 _impl->stream[c], _impl->h_packed_pinned[new_buf],
-                                 num_levels_fb);
-        }
-    }
-
-    /* Step 6: Sync cur_buf, then build codestream while GPU computes new_buf. */
-    if (_impl->pipeline_active) {
-        for (int c2 = 0; c2 < 3; ++c2)
-            cudaStreamSynchronize(_impl->stream[c2]);
-        result = build_j2k_codestream(_impl.get(),
-            _impl->p_width, _impl->p_height,
-            _impl->p_per_comp, _impl->p_is_4k, _impl->p_is_3d,
-            _impl->h_packed_pinned[_impl->cur_buf]);
-    }
-
-    _impl->cur_buf         = new_buf;
-    _impl->pipeline_active = true;
-    _impl->p_width         = width;
-    _impl->p_height        = height;
-    _impl->p_per_comp      = per_comp;
-    _impl->p_is_4k         = is_4k;
-    _impl->p_is_3d         = is_3d;
-
-    return result;  /* empty on first call; caller must call flush() at end */
+    /* V211: Route through encode_ebcot for full correctness.
+     * Identical pipeline: RGB\u2192XYZ\u2192ICT\u2192FP32 DWT\u2192EBCOT T1/T2.
+     * Only difference: caller supplies RGB stride (may differ from width*3). */
+    return encode_ebcot(rgb16, width, height, rgb_stride_pixels,
+                        bit_rate, fps, is_3d, is_4k, false /* correct mode */);
 }
 
 
@@ -5329,8 +5309,7 @@ CudaJ2KEncoder::encode_ebcot(
         t_prev = now;
     };
 
-    _impl->ensure_buffers(width, height);
-    _impl->ensure_rgb_buffer(width, height);
+    _impl->ensure_buffers_ebcot(width, height);
 
     /* V196: high-precision FP32 DWT path for the "correct" (non-fast) mode.
      * Lazily allocates float twins of d_a/d_b. Removes the ~60 dB FP16 ceiling
@@ -5358,37 +5337,61 @@ CudaJ2KEncoder::encode_ebcot(
     cudaMemcpy(_impl->d_rgb16[0], rgb16, rgb_bytes, cudaMemcpyHostToDevice);
     tmark("H2D");
 
-    /* Step 2: GPU colour conversion + H-DWT level 0 (fused kernel).
-     * V146: switch from 1-row to 2-row kernel when height is even (always true
-     * for DCI 1080/2160).  Grid halves: 1080→540 blocks for 2K, 2160→1080 for
-     * 4K.  smem doubles (2·w·sizeof(__half)) but still fits PreferL1 at 2K and
-     * PreferNone at 4K.  Matrix/lut register state amortised over 2× the work;
-     * adjacent-row L2 locality improves.  encode_from_rgb48's p12 path used
-     * this pattern for years; encode_ebcot simply never caught up. */
+    /* ===== V209: Correct-Mode Pipeline (RGB→XYZ→ICT→DWT) =====
+     * Operations ordered per JPEG2000 Part 1 / DCP SMPTE 429-4:
+     *   1. RGB→XYZ colour conversion → d_xyz[0..2] (int32 planar)
+     *   2. ICT forward transform on XYZ pixel values (component decorrelation)
+     *   3. H-DWT level 0 on each ICT-transformed component
+     *   4. Remaining DWT levels 1..N (H-DWT + V-DWT per level)
+     *   5. Dead-zone quantization
+     *   6. EBCOT T1 + T2
+     *
+     * The old fused RGB+HDWT0 kernel is NOT used in correct mode because
+     * ICT must be applied to pixel-domain XYZ values, not wavelet coefficients. */
     int rgb_grid_2row = (height + 1) / 2;
 
+    /* Step 2a: RGB→XYZ colour conversion → d_xyz[0..2] (int32_t planar) */
+    {
+        int pix = width * height;
+        int blk = (pix + 255) / 256;
+        kernel_rgb48_to_xyz12<<<blk, 256, 0, _impl->stream[0]>>>(
+            _impl->d_rgb16[0],
+            _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
+            _impl->d_xyz[0], _impl->d_xyz[1], _impl->d_xyz[2],
+            width, height, rgb_stride_pixels);
+    }
+    tmark("RGB\u2192XYZ");
+
+    /* Step 2b: ICT forward on XYZ pixel values (in-place on d_xyz[0..2]).
+     * Uses int32_t since XYZ values are 12-bit integers.  ICT operates
+     * in float internally; result rounded back to int32_t for H-DWT0. */
+    {
+        int ict_pixels = width * height;
+        int ict_grid = (ict_pixels + 255) / 256;
+        kernel_ict_fwd<int32_t><<<ict_grid, 256, 0, _impl->stream[0]>>>(
+            _impl->d_xyz[0], _impl->d_xyz[1], _impl->d_xyz[2],
+            ict_pixels, width);
+    }
+    tmark("ICT");
+
+    /* Step 2c: H-DWT level 0 — int32→float/__half conversion + horizontal DWT.
+     * Reads ICT-transformed planes from d_xyz[c], writes to d_b[c] / d_b_f32[c]. */
     if (use_fp32_dwt) {
-        /* V196: FP32 RGB+H-DWT0 fused kernel writes to d_b_f32. */
-        size_t ch_smem_f32 = static_cast<size_t>(2 * width) * sizeof(float);
         for (int c = 0; c < 3; ++c) {
-            kernel_rgb48_xyz_hdwt0_1ch_2row_fp32<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem_f32, _impl->stream[c]>>>(
-                _impl->d_rgb16[0],
-                _impl->d_lut_in_f32, _impl->d_lut_out, _impl->d_matrix,
-                _impl->d_b_f32[c], c,
-                width, height, rgb_stride_pixels, stride);
+            int h_blk = (height + 1) / 2;
+            size_t ch_smem_f32 = static_cast<size_t>(2 * width) * sizeof(float);
+            kernel_fused_i2f_horz_dwt_fp32<<<h_blk, H_THREADS_FUSED, ch_smem_f32, _impl->stream[c]>>>(
+                _impl->d_xyz[c], _impl->d_b_f32[c], width, height, width);
         }
     } else {
-        size_t ch_smem = static_cast<size_t>(2 * width) * sizeof(__half);
         for (int c = 0; c < 3; ++c) {
-            kernel_rgb48_xyz_hdwt0_1ch_2row<<<rgb_grid_2row, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
-                _impl->d_rgb16[0],
-                _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
-                _impl->d_b[c], c,
-                width, height, rgb_stride_pixels, stride);
+            int h_blk = (height + 1) / 2;
+            size_t ch_smem = static_cast<size_t>(2 * width) * sizeof(__half);
+            kernel_fused_i2f_horz_dwt_half_out<<<h_blk, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
+                _impl->d_xyz[c], _impl->d_b[c], width, height, width);
         }
     }
-
-    tmark("RGB+HDWT0");
+    tmark("HDWT0");
 
     /* Step 3: DWT levels 1+ (H-DWT + V-DWT per level per component) */
     for (int c = 0; c < 3; ++c) {

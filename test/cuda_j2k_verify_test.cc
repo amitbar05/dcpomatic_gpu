@@ -228,30 +228,13 @@ int main(int argc, char* argv[])
         std::cout << "GPU:         " << prop.name << std::endl;
     }
 
-    /* Load frames */
-    std::cout << "\nLoading frames..." << std::endl;
+    /* V207: Stream-process frames instead of loading all into RAM.
+     * Old code stored all raw_frames + xyz_frames simultaneously:
+     * 48 frames x (6.33 MB RGB24 + 25.31 MB int32 XYZ) = ~1.48 GB RAM.
+     * New code: one frame buffer, encode, discard, repeat. */
+    std::cout << "\nStreaming frames (low memory mode)..." << std::endl;
     std::ifstream fin(input, std::ios::binary);
     if (!fin) { std::cerr << "Cannot open " << input << std::endl; return 1; }
-
-    std::vector<std::vector<uint8_t>> raw_frames;
-    for (int i = 0; i < num_frames; ++i) {
-        std::vector<uint8_t> f(frame_bytes);
-        fin.read(reinterpret_cast<char*>(f.data()), frame_bytes);
-        if (fin.gcount() != static_cast<std::streamsize>(frame_bytes)) { num_frames = i; break; }
-        raw_frames.push_back(std::move(f));
-    }
-    std::cout << "Loaded " << num_frames << " frames" << std::endl;
-
-    /* Convert to XYZ planes */
-    std::cout << "Converting to XYZ..." << std::endl;
-    struct XYZFrame {
-        std::vector<int32_t> x, y, z;
-    };
-    std::vector<XYZFrame> xyz_frames(num_frames);
-    for (int i = 0; i < num_frames; ++i) {
-        rgb_to_xyz_planes(raw_frames[i].data(), width, height,
-                         xyz_frames[i].x, xyz_frames[i].y, xyz_frames[i].z);
-    }
 
     /* ===== GPU J2K Encoding ===== */
     std::cout << "\n--- GPU JPEG2000 Encoding (CUDA DWT + J2K) ---" << std::endl;
@@ -262,20 +245,24 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    /* Warm up */
-    {
-        const int32_t* planes[3] = { xyz_frames[0].x.data(), xyz_frames[0].y.data(), xyz_frames[0].z.data() };
-        gpu_encoder.encode(planes, width, height, 100000000, 24, false, false);
-    }
+    /* Single-frame buffers reused across iterations */
+    std::vector<uint8_t> raw_frame(frame_bytes);
+    std::vector<int32_t> x_plane, y_plane, z_plane;
 
     std::vector<double> gpu_times;
     size_t gpu_total_bytes = 0;
     int gpu_valid = 0;
     std::vector<uint8_t> first_j2k;
+    int actual_frames = 0;
 
     auto gpu_start = Clock::now();
     for (int i = 0; i < num_frames; ++i) {
-        const int32_t* planes[3] = { xyz_frames[i].x.data(), xyz_frames[i].y.data(), xyz_frames[i].z.data() };
+        fin.read(reinterpret_cast<char*>(raw_frame.data()), frame_bytes);
+        if (fin.gcount() != static_cast<std::streamsize>(frame_bytes)) { num_frames = i; break; }
+        actual_frames = i + 1;
+
+        rgb_to_xyz_planes(raw_frame.data(), width, height, x_plane, y_plane, z_plane);
+        const int32_t* planes[3] = { x_plane.data(), y_plane.data(), z_plane.data() };
 
         auto t0 = Clock::now();
         auto encoded = gpu_encoder.encode(planes, width, height, 100000000, 24, false, false);
@@ -288,7 +275,14 @@ int main(int argc, char* argv[])
         auto vr = verify_j2k(encoded);
         if (vr.valid) ++gpu_valid;
 
-        if (i == 0) first_j2k = encoded;
+        if (i == 0) {
+            first_j2k = encoded;
+            auto vr_detail = verify_j2k(first_j2k);
+            vr_detail.print("GPU Frame 1");
+            std::ofstream fout("test/gpu_frame_sample.j2c", std::ios::binary);
+            fout.write(reinterpret_cast<const char*>(first_j2k.data()), first_j2k.size());
+            std::cout << "    Saved to: test/gpu_frame_sample.j2c" << std::endl;
+        }
 
         if (i == 0 || (i + 1) % 10 == 0) {
             std::cout << "  Frame " << (i + 1) << "/" << num_frames
@@ -302,33 +296,28 @@ int main(int argc, char* argv[])
     double gpu_total_ms = duration_cast<milliseconds>(gpu_end - gpu_start).count();
     double gpu_avg = std::accumulate(gpu_times.begin(), gpu_times.end(), 0.0) / gpu_times.size();
 
-    /* Verify first frame in detail */
-    if (!first_j2k.empty()) {
-        auto vr = verify_j2k(first_j2k);
-        vr.print("GPU Frame 1");
-
-        /* Save sample J2K file */
-        std::ofstream fout("test/gpu_frame_sample.j2c", std::ios::binary);
-        fout.write(reinterpret_cast<const char*>(first_j2k.data()), first_j2k.size());
-        std::cout << "    Saved to: test/gpu_frame_sample.j2c" << std::endl;
-    }
-
     std::cout << "\n  GPU Results:" << std::endl;
     std::cout << "    Total time:     " << gpu_total_ms << " ms" << std::endl;
     std::cout << "    Avg/frame:      " << gpu_avg << " ms" << std::endl;
-    std::cout << "    FPS:            " << (num_frames * 1000.0 / gpu_total_ms) << std::endl;
-    std::cout << "    Valid J2K:      " << gpu_valid << "/" << num_frames << std::endl;
+    std::cout << "    FPS:            " << (actual_frames * 1000.0 / gpu_total_ms) << std::endl;
+    std::cout << "    Valid J2K:      " << gpu_valid << "/" << actual_frames << std::endl;
     std::cout << "    Total output:   " << (gpu_total_bytes / 1024.0 / 1024.0) << " MB" << std::endl;
 
     /* ===== CPU J2K Encoding (simulated) ===== */
+    /* V207: Rewind file for CPU path instead of holding frames in RAM */
+    fin.clear();
+    fin.seekg(0, std::ios::beg);
+
     std::cout << "\n--- CPU JPEG2000 Encoding (simulated) ---" << std::endl;
 
     std::vector<double> cpu_times;
     size_t cpu_total_bytes = 0;
 
     auto cpu_start = Clock::now();
-    for (int i = 0; i < num_frames; ++i) {
-        const int32_t* planes[3] = { xyz_frames[i].x.data(), xyz_frames[i].y.data(), xyz_frames[i].z.data() };
+    for (int i = 0; i < actual_frames; ++i) {
+        fin.read(reinterpret_cast<char*>(raw_frame.data()), frame_bytes);
+        rgb_to_xyz_planes(raw_frame.data(), width, height, x_plane, y_plane, z_plane);
+        const int32_t* planes[3] = { x_plane.data(), y_plane.data(), z_plane.data() };
 
         auto t0 = Clock::now();
         auto encoded = cpu_j2k_simulate(planes, width, height);
@@ -339,7 +328,7 @@ int main(int argc, char* argv[])
         cpu_total_bytes += encoded.size();
 
         if (i == 0 || (i + 1) % 10 == 0) {
-            std::cout << "  Frame " << (i + 1) << "/" << num_frames
+            std::cout << "  Frame " << (i + 1) << "/" << actual_frames
                       << " - " << std::fixed << std::setprecision(2) << ms << " ms"
                       << std::endl;
         }
@@ -351,7 +340,7 @@ int main(int argc, char* argv[])
     std::cout << "\n  CPU Results:" << std::endl;
     std::cout << "    Total time:     " << cpu_total_ms << " ms" << std::endl;
     std::cout << "    Avg/frame:      " << cpu_avg << " ms" << std::endl;
-    std::cout << "    FPS:            " << (num_frames * 1000.0 / cpu_total_ms) << std::endl;
+    std::cout << "    FPS:            " << (actual_frames * 1000.0 / cpu_total_ms) << std::endl;
 
     /* ===== Comparison ===== */
     double speedup = cpu_total_ms / gpu_total_ms;
@@ -359,13 +348,13 @@ int main(int argc, char* argv[])
     std::cout << "\n================================================" << std::endl;
     std::cout << "              COMPARISON" << std::endl;
     std::cout << "================================================" << std::endl;
-    std::cout << "  CPU total:   " << cpu_total_ms << " ms (" << (num_frames * 1000.0 / cpu_total_ms) << " fps)" << std::endl;
-    std::cout << "  GPU total:   " << gpu_total_ms << " ms (" << (num_frames * 1000.0 / gpu_total_ms) << " fps)" << std::endl;
+    std::cout << "  CPU total:   " << cpu_total_ms << " ms (" << (actual_frames * 1000.0 / cpu_total_ms) << " fps)" << std::endl;
+    std::cout << "  GPU total:   " << gpu_total_ms << " ms (" << (actual_frames * 1000.0 / gpu_total_ms) << " fps)" << std::endl;
     std::cout << "  Speedup:     " << std::setprecision(2) << speedup << "x" << std::endl;
-    std::cout << "  J2K valid:   " << gpu_valid << "/" << num_frames << std::endl;
+    std::cout << "  J2K valid:   " << gpu_valid << "/" << actual_frames << std::endl;
     std::cout << std::endl;
 
-    bool all_pass = (gpu_valid == num_frames);
+    bool all_pass = (gpu_valid == actual_frames);
     std::cout << "  OVERALL: " << (all_pass ? "ALL J2K FRAMES VALID - PASS" : "SOME FRAMES INVALID - FAIL") << std::endl;
     std::cout << "================================================" << std::endl;
 

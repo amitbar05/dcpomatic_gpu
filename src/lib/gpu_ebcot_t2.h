@@ -3,9 +3,9 @@
  * CPU-side code for assembling EBCOT T1-coded data into a valid J2K codestream.
  *
  * Called after GPU EBCOT T1 kernel produces coded bytes per code-block.
- * V181: LRCP progression order (Layer-Resolution-Component-Position).
+ * V210: CPRL progression order (Component-Position-Resolution-Layer).
  * Packets interleaved as: for each res r, write packets for comp 0, 1, 2.
- * This avoids CPRL OpenJPEG quirk where all 18 packets were assigned to comp 0
+ * DCP SMPTE 429-4 requires CPRL; Scod=0x00 makes this straightforward.
  * (decoded comp 0 std=1337 vs expected 763; comp 1/2 nearly all-2048).
  */
 
@@ -130,9 +130,10 @@ inline void build_codeblock_table(
              * To compensate, T1 must quantize with step × inv_dwt_gain so dequantized
              * coefficients are pre-scaled smaller; the inverse DWT then amplifies them
              * back to the right magnitude.  QCD writes the unscaled `step`. */
+            /* V211: No per-band step scaling — forward DWT applies NORM_L/NORM_H
+             * normalization so analysis+synthesis cascade has unity gain.
+             * The old 2x/4x multipliers were an OpenJPEG BUG_WEIRD_TWO_INVK workaround. */
             float t1_step = step;
-            if (defs[s].type == SUBBAND_HL || defs[s].type == SUBBAND_LH) t1_step = step * 2.0f;
-            else if (defs[s].type == SUBBAND_HH) t1_step = step * 4.0f;
             for (int cby = 0; cby < sg.ncby; cby++) {
                 for (int cbx = 0; cbx < sg.ncbx; cbx++) {
                     CodeBlockInfo cbi;
@@ -304,7 +305,7 @@ struct TagTree {
 
 
 /* Build a complete J2K codestream from EBCOT T1 coded data.
- * This is a simplified single-tile, single-layer, LRCP implementation. */
+ * This is a single-tile, single-layer, CPRL implementation. */
 inline std::vector<uint8_t> build_ebcot_codestream(
     int width, int height, bool is_4k, bool is_3d,
     int num_levels, float base_step,
@@ -340,22 +341,15 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w16(3);
     for (int c = 0; c < 3; c++) { w8(11); w8(1); w8(1); }
 
-    /* COD — V179: Scod=0x00 (no precinct partition, default 2^15×2^15 precincts).
-     * Our build_tp writes one packet per resolution covering all codeblocks.
-     * With Scod=0x01 (explicit precincts, 256×256), HL1 (1024×540) required
-     * 4×3=12 packets per resolution but we wrote only 1, causing OpenJPEG to
-     * read packet bodies as headers and report "segment too long" → ~12 dB PSNR.
-     * With Scod=0x00, each resolution is one precinct → one packet per resolution. */
+    /* V212: Scod=0x01 precinct partition enabled per DCP SMPTE 429-4 */
+    int num_precincts = num_levels + 1;
     w16(J2K_COD_M);
-    w16(2 + 1 + 4 + 5);  /* no precinct partition bytes */
-    w8(0x00); /* Scod=0: no precinct partition → default 2^15×2^15 per resolution */
-    /* V193 attempt failed: announcing CPRL caused 512×512 noise content to fail
-     * decode in OpenJPEG ("segment too long").  Reverting to LRCP for now;
-     * proper CPRL likely needs the precinct partition (Scod=1) too, since OPJ
-     * may interpret the CPRL ordering relative to precincts. */
-    w8(0x00); /* LRCP progression */
+    w16(static_cast<uint16_t>(2 + 1 + 4 + 5 + num_precincts));
+    w8(0x01); /* V212: Scod=1 */
+    /* V210: CPRL progression per DCP SMPTE 429-4 */
+    w8(0x02); /* V210: CPRL progression (DCP SMPTE 429-4) */
     w16(1);   /* 1 quality layer */
-    w8(0);    /* MCT=0: XYZ stored directly, no ICT component transform */
+    w8(1);    /* V209: MCT=1: ICT applied for DCP SMPTE 429-4 compliance */
     w8(static_cast<uint8_t>(num_levels));
     w8(3);    /* xcb' = 3 → code-block width = 32 */
     w8(3);    /* ycb' = 3 → code-block height = 32 */
@@ -363,6 +357,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * Previous SPcod=0x00 was correct for correct mode (MQ-only) but incorrect for fast mode. */
     w8(use_bypass ? 0x01 : 0x00); /* SPcod: BYPASS bit 0 */
     w8(0x00); /* filter = 0 (9/7 irreversible) */
+    /* V212: Precinct sizes PPx=PPy=15 = one precinct per resolution */
+    for (int p = 0; p < num_precincts; ++p)
+        w8(0xFF);
 
     /* QCD — per-subband step sizes (matching T1 quantization) */
     {
@@ -395,7 +392,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * mismatch (decoder dequantizes with the wrong step for comp 0/2). */
 
     /* V182: Build per-component, per-resolution packet blobs.
-     * LRCP order: for each resolution r, write packets for comp 0, 1, 2.
+     * CPRL order: for each component c, write packets for res 0..N.
      * Simple rate control: limit each component to target_bytes/3. */
     /* pkt_by_res[comp][res] = packet bytes (header + body) for that (comp, res) pair */
     std::vector<std::vector<uint8_t>> pkt_by_res[3];
@@ -486,7 +483,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     }
 
     /* V181: build_tp fills pkt_by_res[comp][res] — one blob per (comp, res) pair.
-     * Packets are then interleaved in LRCP order: for each res, comp 0, 1, 2.
+     * Packets are then interleaved in CPRL order: for each comp, res 0..N.
      * sanitize is applied per-packet blob to ensure no 0xFF marker sequences. */
     auto build_tp = [&](int comp) {
         size_t comp_bytes = 0;
@@ -610,9 +607,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     fut0.wait();
     fut1.wait();
 
-    /* V181: Interleave packets in LRCP order: for each resolution, write comp 0, 1, 2.
-     * This replaces CPRL (comp outer) which caused OpenJPEG to read all 18 packets
-     * as component 0 data — leaving comp 1 and comp 2 all-zero (decoded as 2048). */
+    /* V210: Interleave packets in CPRL order: for each component, write res 0..N.
+     * DCP SMPTE 429-4 requires CPRL; decoder restores XYZ via inverse ICT first.
+     * With Scod=0x00 each resolution=1 precinct, packet assignment is unambiguous. */
 #ifdef GPU_J2K_DEBUG_PACKETS
     for (int r = 0; r <= num_levels; r++)
         for (int c = 0; c < 3; c++)
@@ -620,14 +617,14 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 #endif
     /* V194: split packets across DCP-required tile-parts (3 for 2K, 6 for 4K).
      * Each TP: SOT (12 bytes) + SOD (2 bytes) + its share of packet bytes.
-     * Pack packets into TPs in LRCP order, splitting on byte boundaries. */
+     * Pack packets into TPs in CPRL order, splitting on byte boundaries. */
     int n_tile_parts = is_4k ? 6 : 3;
 
-    /* Build a flat ordered list of (comp, res) packet blobs in LRCP order. */
+    /* Build a flat ordered list of (comp, res) packet blobs in CPRL order. */
     std::vector<const std::vector<uint8_t>*> ordered_pkts;
     ordered_pkts.reserve((num_levels + 1) * 3);
-    for (int r = 0; r <= num_levels; r++)
-        for (int c = 0; c < 3; c++)
+    for (int c = 0; c < 3; c++)
+        for (int r = 0; r <= num_levels; r++)
             ordered_pkts.push_back(&pkt_by_res[c][r]);
 
     size_t total_pkt = 0;
