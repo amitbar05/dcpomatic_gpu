@@ -132,6 +132,24 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V217: Fix COD progression order byte: was 0x02 (RPCL) must be 0x04 (CPRL).
+          Packets are written in CPRL order (component outer, resolution inner) but
+          the COD marker said 0x02=RPCL; OPJ parsed the bitstream in RPCL order
+          causing complete packet ordering mismatch → DECODE FAIL on all patterns.
+    V216: Fix two root-cause PSNR bugs in the encode_ebcot ICT pipeline.
+          Bug 1 — half-image: kernel_fused_i2f_horz_dwt_fp32 in step 2c was launched
+          with (height+1)/2 = 540 blocks for a 1080-row image, covering only rows 0..539.
+          Rows 540..1079 of d_b_f32 were left uninitialized (stale/garbage), causing
+          the V-DWT to see a non-flat signal and produce large spurious H-band energy.
+          Fix: launch with `height` blocks and width floats of shared memory.
+          Bug 2 — missing DC shift: kernel_ict_fwd wrote Y/Cb/Cr values in [0, 4095]
+          (unsigned) into d_xyz[]; the DWT processed these without subtracting 2048.
+          JPEG 2000 requires unsigned-to-signed DC shift before DWT.  Fix: kernel_ict_fwd
+          now outputs Y-2048, Cb (natural signed, +2048 offset cancels), Cr (same).
+          Bug 3 — V211 mistakenly removed the ×2/×4 OPJ two_invK compensation in
+          build_codeblock_table; restored here.  NORM_L/NORM_H only correct the L→L
+          round-trip; OPJ still applies two_invK=2/K to H subbands on decode.
+          Expected PSNR improvement: from 6–10 dB to 40+ dB on flat/smooth patterns.
     V187: Fix tiled V-DWT out-of-bounds load at image bottom — 14-39 dB PSNR jump.
           kernel_fused_vert_dwt_tiled_ho_2col's `interior` flag only checked
           tile_start + V_TILE <= height, but the LOAD reads V_TILE_FL=32 rows
@@ -3928,10 +3946,14 @@ kernel_ict_fwd(
     float c1 = static_cast<float>(d_c1[idx]);
     float c2 = static_cast<float>(d_c2[idx]);
 
-    /* ICT forward (JPEG2000 Part 1 Annex G.2.1) */
-    float y  =  0.299f    * c0 + 0.587f    * c1 + 0.114f    * c2;
-    float cb = -0.16875f  * c0 - 0.33126f  * c1 + 0.5f      * c2 + 2048.0f;
-    float cr =  0.5f      * c0 - 0.41869f  * c1 - 0.08131f  * c2 + 2048.0f;
+    /* ICT forward (JPEG2000 Part 1 Annex G.2.1).
+     * V216: outputs are DC-shifted (subtract 2048) so the DWT processes centered
+     * values in [-2048, 2047].  For Cb/Cr the +2048 offset and -2048 DC shift cancel,
+     * leaving naturally signed chroma values.  OpenJPEG decoder:
+     *   IDWT → inverse ICT → add 2048 (DC un-shift) → XYZ in [0, 4095]. */
+    float y  =  0.299f * c0 + 0.587f * c1 + 0.114f * c2 - 2048.0f;
+    float cb = -0.16875f * c0 - 0.33126f * c1 + 0.5f * c2;   /* +2048 - 2048 = 0 */
+    float cr =  0.5f * c0 - 0.41869f * c1 - 0.08131f * c2;
 
     d_c0[idx] = static_cast<T>(roundf(y));
     d_c1[idx] = static_cast<T>(roundf(cb));
@@ -3981,6 +4003,7 @@ struct CudaJ2KEncoderImpl
      * Steady-state bottleneck = H2D alone = 1.66ms/frame → ~602fps. */
     cudaStream_t st_h2d = nullptr;
     cudaEvent_t h2d_done[2] = {nullptr, nullptr};
+    cudaEvent_t ict_done    = nullptr;  /* V215: sync ICT (stream[0]) → HDWT0 (stream[1,2]) */
 
     /* V42: Per-buf per-channel comp graphs for RGB pipeline.
      * cg_v42[buf][c] captures skip_l0_hdwt=true path; D2H writes to h_packed_pinned[buf]. */
@@ -4020,7 +4043,8 @@ struct CudaJ2KEncoderImpl
     int32_t*  d_xyz[3]        = {nullptr, nullptr, nullptr};  /* device XYZ planar output */
     int32_t*  h_xyz_pinned    = nullptr;  /* pinned host buffer for D2H (3 * pixels int32_t) */
     uint16_t* d_rgb16_xyz     = nullptr;  /* device RGB input for XYZ conversion */
-    size_t    xyz_buf_pixels  = 0;
+    size_t    xyz_buf_pixels     = 0;  /* tracks d_xyz[c] allocation size (shared with ensure_buffers_ebcot) */
+    size_t    rgb_xyz_buf_pixels = 0;  /* tracks d_rgb16_xyz + h_xyz_pinned sizes (gpu_rgb_to_xyz only) */
     size_t    rgb_buf_pixels = 0;
     bool      colour_loaded  = false;
 
@@ -4062,6 +4086,7 @@ struct CudaJ2KEncoderImpl
         if (cudaStreamCreate(&st_h2d) != cudaSuccess) return false;
         for (int i = 0; i < 2; ++i)
             if (cudaEventCreateWithFlags(&h2d_done[i], cudaEventDisableTiming) != cudaSuccess) return false;
+        if (cudaEventCreateWithFlags(&ict_done, cudaEventDisableTiming) != cudaSuccess) return false;
         /* V59: prefer L1 cache over shared memory for memory-BW-bound kernels.
          * V-DWT tiled: no smem — larger L1 lets adjacent tiles share loaded rows.
          * RGB+HDWT0 1-row: smem=3.84KB → PreferL1 → 16KB smem/SM → 4 blk/SM = 100% occ. */
@@ -4102,16 +4127,12 @@ struct CudaJ2KEncoderImpl
     /* V207: Lazy allocator for encode_ebcot — only allocates DWT + single RGB buffer.
      * Skips d_in (unused when skip_hdwt=true), d_packed, d_rgb12, h_rgb12_pinned,
      * h_rgb16_pinned, h_packed_pinned — saving ~105 MB host+device RAM at 2K.
-     * V209: Also allocates d_xyz[3] for the ICT-correct pixel-domain pipeline. */
+     * V209: Also allocates d_xyz[3] for the ICT-correct pixel-domain pipeline.
+     * V214: FP16 d_a/d_b buffers removed (fast mode gone; only FP32 path used). */
     void ensure_buffers_ebcot(int width, int height) {
         size_t pixels = static_cast<size_t>(width) * height;
         if (pixels > buf_pixels) {
             cleanup_dwt_buffers();
-            size_t pad = static_cast<size_t>(width) * 8 * sizeof(__half) + 64;
-            for (int c = 0; c < 3; ++c) {
-                cudaMalloc(&d_a[c],  pixels * sizeof(__half) + pad);
-                cudaMalloc(&d_b[c],  pixels * sizeof(__half) + pad);
-            }
             buf_pixels = pixels;
         }
         /* V209: XYZ pixel buffers for RGB→XYZ→ICT pipeline (correct mode) */
@@ -4317,11 +4338,13 @@ struct CudaJ2KEncoderImpl
             if (d_xyz[c]) { cudaFree(d_xyz[c]); d_xyz[c] = nullptr; }
         }
         xyz_buf_pixels = 0;
+        rgb_xyz_buf_pixels = 0;
         if (h_xyz_pinned) { cudaFreeHost(h_xyz_pinned); h_xyz_pinned = nullptr; }
         if (d_rgb16_xyz)  { cudaFree(d_rgb16_xyz);  d_rgb16_xyz  = nullptr; }
         for (int c = 0; c < 3; ++c)
             if (stream[c]) cudaStreamDestroy(stream[c]);
-        if (st_h2d) cudaStreamDestroy(st_h2d);
+        if (st_h2d)    cudaStreamDestroy(st_h2d);
+        if (ict_done)  cudaEventDestroy(ict_done);
     }
 };
 
@@ -5089,7 +5112,7 @@ CudaJ2KEncoder::encode(
     }
 
     return encode_ebcot(rgb16.data(), width, height, width * 3,
-                        bit_rate, fps, is_3d, is_4k, false /* correct mode */);
+                        bit_rate, fps, is_3d, is_4k);
 }
 
 
@@ -5170,11 +5193,9 @@ CudaJ2KEncoder::encode_from_rgb48(
     bool is_4k
 )
 {
-    /* V211: Route through encode_ebcot for full correctness.
-     * Identical pipeline: RGB\u2192XYZ\u2192ICT\u2192FP32 DWT\u2192EBCOT T1/T2.
-     * Only difference: caller supplies RGB stride (may differ from width*3). */
+    /* V211: Route through encode_ebcot. */
     return encode_ebcot(rgb16, width, height, rgb_stride_pixels,
-                        bit_rate, fps, is_3d, is_4k, false /* correct mode */);
+                        bit_rate, fps, is_3d, is_4k);
 }
 
 
@@ -5215,18 +5236,27 @@ CudaJ2KEncoder::gpu_rgb_to_xyz(
     size_t pixels = static_cast<size_t>(width) * height;
     size_t rgb_bytes = static_cast<size_t>(height) * rgb_stride_pixels * sizeof(uint16_t);
 
-    /* Ensure device buffers */
+    /* Ensure device d_xyz[c] buffers (xyz_buf_pixels shared with ensure_buffers_ebcot).
+     * Only grow — ensure_buffers_ebcot may have already allocated a larger buffer. */
     if (pixels > _impl->xyz_buf_pixels) {
-        if (_impl->d_rgb16_xyz) cudaFree(_impl->d_rgb16_xyz);
-        for (int c = 0; c < 3; ++c)
+        for (int c = 0; c < 3; ++c) {
             if (_impl->d_xyz[c]) { cudaFree(_impl->d_xyz[c]); _impl->d_xyz[c] = nullptr; }
-        if (_impl->h_xyz_pinned) cudaFreeHost(_impl->h_xyz_pinned);
-
-        cudaMalloc(&_impl->d_rgb16_xyz, rgb_bytes);
+        }
         for (int c = 0; c < 3; ++c)
             cudaMalloc(&_impl->d_xyz[c], pixels * sizeof(int32_t));
-        cudaHostAlloc(&_impl->h_xyz_pinned, 3 * pixels * sizeof(int32_t), cudaHostAllocDefault);
         _impl->xyz_buf_pixels = pixels;
+    }
+
+    /* Ensure d_rgb16_xyz and h_xyz_pinned with their own counter.
+     * These are NOT touched by ensure_buffers_ebcot, so they must be checked
+     * independently.  A stale xyz_buf_pixels (grown by ensure_buffers_ebcot to a
+     * larger image) would otherwise skip this realloc and cause a buffer overflow. */
+    if (pixels > _impl->rgb_xyz_buf_pixels) {
+        if (_impl->d_rgb16_xyz) cudaFree(_impl->d_rgb16_xyz);
+        if (_impl->h_xyz_pinned) cudaFreeHost(_impl->h_xyz_pinned);
+        cudaMalloc(&_impl->d_rgb16_xyz, rgb_bytes);
+        cudaHostAlloc(&_impl->h_xyz_pinned, 3 * pixels * sizeof(int32_t), cudaHostAllocDefault);
+        _impl->rgb_xyz_buf_pixels = pixels;
     }
 
     /* H2D: upload RGB48LE to GPU */
@@ -5269,33 +5299,11 @@ std::vector<uint8_t>
 CudaJ2KEncoder::encode_ebcot(
     const uint16_t* rgb16,
     int width, int height, int rgb_stride_pixels,
-    int64_t bit_rate, int fps, bool is_3d, bool is_4k,
-    bool fast_mode)
+    int64_t bit_rate, int fps, bool is_3d, bool is_4k)
 {
     if (!_initialized || !_colour_params_valid) return {};
 
-    /* V134: fast_mode quality knobs.
-     * - fast_step_mult: multiplies base_step → coarser quantization → more
-     *   zero coefficients → fewer significant bit-planes → fewer T1 passes
-     *   per code-block → faster EBCOT T1. Output remains standard J2K
-     *   because QCD markers are derived from the same step.
-     * - fast_bitrate_mult: target_bytes scaled down so T2 truncates earlier.
-     */
-    /* V135: balanced fast_mode — 3x step is ~1.6 fewer bit-planes (~5 fewer
-     * T1 passes per CB) and 0.5x target bytes. GTX 1050 Ti @ 2048×1080:
-     * ~2.2x faster, ~25-30% of the correct-mode output size. Output is
-     * still a standard J2K codestream (QCD markers carry the coarser step),
-     * so it decodes in any J2K decoder — just with visible quality loss. */
-    /* V188: fast mode revival.
-     * After V186 lowered base_step by ~4× and V185 made HH bands use a finer T1 step
-     * (compared to QCD value), fast_mode with MAX_BP=4 became severely under-coded —
-     * LL band coefficients have num_bp ~ 10, dropping 6 MSBs to fit MAX_BP=4 → 7 dB PSNR.
-     *
-     * Compromise: keep fast_step_mult = 3.0 (modest coarsening), bump fast template
-     * MAX_BP to 8 below.  Output will be slightly larger than the pre-V188 fast path
-     * but quality recovers to ~50+ dB. */
-    const float fast_step_mult    = fast_mode ? 3.0f : 1.0f;
-    const float fast_bitrate_mult = fast_mode ? 0.5f : 1.0f;
+    /* V214: correct mode only — FP32 DWT, MQ coder, full bit-planes, adaptive retry. */
 
     static const bool s_bench = (getenv("DCP_GPU_BENCH") != nullptr);
     using Clk = std::chrono::high_resolution_clock;
@@ -5311,19 +5319,10 @@ CudaJ2KEncoder::encode_ebcot(
 
     _impl->ensure_buffers_ebcot(width, height);
 
-    /* V196: high-precision FP32 DWT path for the "correct" (non-fast) mode.
-     * Lazily allocates float twins of d_a/d_b. Removes the ~60 dB FP16 ceiling
-     * that limited correct-mode PSNR. fast_mode keeps the FP16 path. */
-    const bool use_fp32_dwt = !fast_mode;
-    if (use_fp32_dwt) _impl->ensure_buffers_f32(width, height);
+    /* V196: FP32 DWT path — removes the ~60 dB FP16 ceiling. */
+    _impl->ensure_buffers_f32(width, height);
 
-    /* V201: Fast mode 2K uses 4 DWT levels instead of 5.
-     * Fewer DWT passes → fewer kernel launches, less memory traffic.
-     * Quality impact: LL subband is 4× larger (2^2 vs 2^3 downscale in each dim),
-     * so low-frequency precision is preserved; high-frequency detail at level 5
-     * is discarded but fast mode targets throughput over quality anyway.
-     * 4K fast mode stays at 6 levels (resolution demands it). */
-    const int num_levels = is_4k ? 6 : (fast_mode ? 4 : NUM_DWT_LEVELS);
+    const int num_levels = is_4k ? 6 : NUM_DWT_LEVELS;
     int stride = width;
 
     tmark("setup");
@@ -5372,24 +5371,23 @@ CudaJ2KEncoder::encode_ebcot(
             _impl->d_xyz[0], _impl->d_xyz[1], _impl->d_xyz[2],
             ict_pixels, width);
     }
+    /* V215: ICT runs on stream[0] and writes all 3 d_xyz[] planes.
+     * HDWT0 for components 1 and 2 run on stream[1]/stream[2] and read d_xyz[1]/d_xyz[2].
+     * Without explicit synchronization those kernels could start before ICT completes,
+     * causing non-deterministic output and ~8 dB PSNR.  Record the ICT completion
+     * event on stream[0] and make stream[1]/stream[2] wait before launching HDWT0. */
+    cudaEventRecord(_impl->ict_done, _impl->stream[0]);
+    cudaStreamWaitEvent(_impl->stream[1], _impl->ict_done, 0);
+    cudaStreamWaitEvent(_impl->stream[2], _impl->ict_done, 0);
     tmark("ICT");
 
-    /* Step 2c: H-DWT level 0 — int32→float/__half conversion + horizontal DWT.
-     * Reads ICT-transformed planes from d_xyz[c], writes to d_b[c] / d_b_f32[c]. */
-    if (use_fp32_dwt) {
-        for (int c = 0; c < 3; ++c) {
-            int h_blk = (height + 1) / 2;
-            size_t ch_smem_f32 = static_cast<size_t>(2 * width) * sizeof(float);
-            kernel_fused_i2f_horz_dwt_fp32<<<h_blk, H_THREADS_FUSED, ch_smem_f32, _impl->stream[c]>>>(
-                _impl->d_xyz[c], _impl->d_b_f32[c], width, height, width);
-        }
-    } else {
-        for (int c = 0; c < 3; ++c) {
-            int h_blk = (height + 1) / 2;
-            size_t ch_smem = static_cast<size_t>(2 * width) * sizeof(__half);
-            kernel_fused_i2f_horz_dwt_half_out<<<h_blk, H_THREADS_FUSED, ch_smem, _impl->stream[c]>>>(
-                _impl->d_xyz[c], _impl->d_b[c], width, height, width);
-        }
+    /* Step 2c: H-DWT level 0 — int32→float conversion + horizontal DWT.
+     * V216 fix: launch one block per row (was (height+1)/2, covering only top half).
+     * V216 fix: smem is width floats, not 2*width (kernel only needs one row). */
+    for (int c = 0; c < 3; ++c) {
+        size_t ch_smem_f32 = static_cast<size_t>(width) * sizeof(float);
+        kernel_fused_i2f_horz_dwt_fp32<<<height, H_THREADS_FUSED, ch_smem_f32, _impl->stream[c]>>>(
+            _impl->d_xyz[c], _impl->d_b_f32[c], width, height, width);
     }
     tmark("HDWT0");
 
@@ -5397,15 +5395,9 @@ CudaJ2KEncoder::encode_ebcot(
     for (int c = 0; c < 3; ++c) {
         int w = width, h = height;
         for (int level = 0; level < num_levels; ++level) {
-            if (use_fp32_dwt) {
-                gpu_dwt97_level_fp32(_impl->d_a_f32[c], _impl->d_b_f32[c],
-                                     _impl->d_in[c], w, h, stride, level, _impl->stream[c],
-                                     level == 0 /* skip H-DWT for level 0 */);
-            } else {
-                gpu_dwt97_level(_impl->d_a[c], _impl->d_b[c], nullptr,
-                                _impl->d_in[c], w, h, stride, level, _impl->stream[c],
-                                level == 0 /* skip H-DWT for level 0 */);
-            }
+            gpu_dwt97_level_fp32(_impl->d_a_f32[c], _impl->d_b_f32[c],
+                                 _impl->d_in[c], w, h, stride, level, _impl->stream[c],
+                                 level == 0 /* skip H-DWT for level 0 */);
             w = (w + 1) / 2;
             h = (h + 1) / 2;
         }
@@ -5437,33 +5429,17 @@ CudaJ2KEncoder::encode_ebcot(
      * planes fit. */
     int64_t frame_bits = bit_rate / fps;
     if (is_3d) frame_bits /= 2;
-    int64_t target_bytes = static_cast<int64_t>(
-        static_cast<double>(frame_bits / 8) * fast_bitrate_mult);
+    int64_t target_bytes = frame_bits / 8;
 
     float base_step = compute_base_step(width, height,
-        static_cast<size_t>(target_bytes / 3)) * fast_step_mult;
+        static_cast<size_t>(target_bytes / 3));
 
     constexpr int EBCOT_THREADS = 64;
-    /* V202: Fast mode enables JPEG2000 BYPASS (raw bit coding for MRP+CUP from
-     * 3rd bit-plane down), and skips 2 LSB bit-planes instead of 1.
-     * At fast_step_mult=3.0, max num_bp already drops from ~13 to ~9, so
-     * bp_skip=2 trims another ~22% of passes.  BYPASS replaces the
-     * sequentially-dependent MQ coder with parallel raw-bit writes for the
-     * lower bit-planes, reducing the T1 kernel's critical path.
-     * Correct mode: MQ only, no bypass, no bp_skip (standard compliant).
-     *
-     * V204: Enable bypass for correct mode too.  JPEG2000 standard allows
-     * bypass from the 3rd bit-plane down.  With 13 bit-planes (correct mode),
-     * the top 2 (MSB: cleanup + SPP+MRP+CUP = 4 passes) use MQ; the lower 11
-     * use bypass for MRP+CUP.  This cuts ~70% of MQ encodes while preserving
-     * the most significant bits' quality.  No PSNR regression expected because
-     * bypass is lossless — it just changes how bits are packed in the codestream.
-     * bp_skip stays at 0 for correct mode (all bit-planes coded). */
-    int  bp_skip    = fast_mode ? 2 : 0;
-    bool use_bypass = fast_mode;  /* bypass only for fast mode; correct mode uses MQ for accuracy */
-    const int max_cb_d2h = fast_mode ? 640 : CB_BUF_SIZE;
-
-    const int   adaptive_max_attempts = fast_mode ? 1 : 2;
+    /* Correct mode: MQ coder, all bit-planes, full D2H. */
+    const int  bp_skip    = 0;
+    const bool use_bypass = false;
+    const int  max_cb_d2h = CB_BUF_SIZE;
+    const int  adaptive_max_attempts = 2;
     /* Retry only when bytes_used falls in [low, high] × target_bytes:
      *   low  = 0.005: skip retry for ultra-sparse content like single_impulse
      *                (the V185 HH step×4 compensation interacts poorly with
@@ -5516,19 +5492,10 @@ CudaJ2KEncoder::encode_ebcot(
         if (num_cbs <= 0) num_cbs = _impl->ebcot_num_cbs;
         int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
-        /* Step 5: T1 launch per component.  Attempt 0 uses the fast V198
-         * kernel (MAX_BP=13).  Retry attempts use MAX_BP=16 because the
-         * finer step pushes some CBs to 14-15 bit-planes. */
+        /* Step 5: T1 launch per component.
+         * Attempt 0: MAX_BP=13 (V198). Retry: MAX_BP=16 (finer step may yield 14-15 bps). */
         for (int c = 0; c < 3; ++c) {
-            if (fast_mode) {
-                kernel_ebcot_t1<true, 12, __half><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-                    _impl->d_a[c], stride,
-                    _impl->d_cb_info, num_cbs,
-                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
-                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
-            } else if (attempt == 0) {
-                /* V198: MAX_BP 14 → 13. */
+            if (attempt == 0) {
                 kernel_ebcot_t1<false, 13, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,

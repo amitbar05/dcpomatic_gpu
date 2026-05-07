@@ -203,8 +203,8 @@ int main()
             }
 
         /* GPU */
-        enc.encode_ebcot(rgb.data(), W, H, W*3, BR, 24, false, false, false);
-        auto cs_gpu = enc.encode_ebcot(rgb.data(), W, H, W*3, BR, 24, false, false, false);
+        enc.encode_ebcot(rgb.data(), W, H, W*3, BR, 24, false, false);
+        auto cs_gpu = enc.encode_ebcot(rgb.data(), W, H, W*3, BR, 24, false, false);
         std::vector<std::vector<int>> dec_gpu; int dW, dH;
         double psnr_g = -1;
         size_t sz_gpu = cs_gpu.size();

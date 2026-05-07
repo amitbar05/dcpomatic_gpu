@@ -122,10 +122,9 @@ static void run(CudaJ2KEncoder& enc, const char* name,
             rgb[((size_t)y*W + x)*3 + 1] = v;
             rgb[((size_t)y*W + x)*3 + 2] = v;
         }
-    bool use_fast = (getenv("USE_FAST") != nullptr);
     /* warmup + measured */
-    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, use_fast);
-    auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, use_fast);
+    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false);
+    auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false);
 
     std::vector<std::vector<int>> comps; int dW, dH;
     if (!opj_decode(cs, comps, dW, dH, 0)) {

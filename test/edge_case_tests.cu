@@ -632,7 +632,7 @@ static void test_rgb_to_xyz_via_encode_ebcot()
     /* Just verify the codestream is valid — the colour conversion inside
        encode_ebcot uses the same LUT/matrix params */
     auto cs = g_enc->encode_ebcot(rgb.data(), W, H, stride,
-                               150000000LL, 24, false, false, false);
+                               150000000LL, 24, false, false);
     CHECK(cs.size() > 100, "encode_ebcot returned empty/small codestream");
 
     auto info = parse_j2k(cs);
@@ -675,7 +675,7 @@ static void test_odd_dimension(const OddDimTestCase& tc)
 
     /* Test via encode_ebcot */
     auto cs = g_enc->encode_ebcot(rgb.data(), tc.width, tc.height, tc.width * 3,
-                               tc.bitrate, 24, false, tc.is_4k, false);
+                               tc.bitrate, 24, false, tc.is_4k);
     CHECK(cs.size() > 100, "encode_ebcot returned small/empty codestream (%zu bytes)", cs.size());
 
     auto info = parse_j2k(cs);
@@ -740,7 +740,7 @@ static void test_extreme_black()
 
     /* Encode via EBCOT */
     auto cs = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                               150000000LL, 24, false, false, false);
+                               150000000LL, 24, false, false);
     auto info = parse_j2k(cs);
     print_j2k_info(info, "black");
 
@@ -790,7 +790,7 @@ static void test_extreme_white()
 
     /* Encode */
     auto cs = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                               150000000LL, 24, false, false, false);
+                               150000000LL, 24, false, false);
     auto info = parse_j2k(cs);
     print_j2k_info(info, "white");
 
@@ -838,7 +838,7 @@ static void test_extreme_impulse()
 
     /* Encode */
     auto cs = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                               100000000LL, 24, false, false, false);
+                               100000000LL, 24, false, false);
     auto info = parse_j2k(cs);
     print_j2k_info(info, "impulse");
 
@@ -870,7 +870,7 @@ static void test_bitrate_extremes()
     /* ---- Very low bitrate: 10 Mbps ---- */
     printf("    --- 10 Mbps (very low) ---\n");
     auto cs_low = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                                   10000000LL, 24, false, false, false);
+                                   10000000LL, 24, false, false);
     auto info_low = parse_j2k(cs_low);
     print_j2k_info(info_low, "10Mbps");
     CHECK(info_low.valid, "Low bitrate J2K invalid");
@@ -880,7 +880,7 @@ static void test_bitrate_extremes()
     /* ---- Very high bitrate: 500 Mbps ---- */
     printf("\n    --- 500 Mbps (very high) ---\n");
     auto cs_high = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                                    500000000LL, 24, false, false, false);
+                                    500000000LL, 24, false, false);
     auto info_high = parse_j2k(cs_high);
     print_j2k_info(info_high, "500Mbps");
     CHECK(info_high.valid, "High bitrate J2K invalid");
@@ -920,7 +920,7 @@ static void test_3d_mode()
     /* 2D encode */
     printf("    --- 2D mode ---\n");
     auto cs_2d = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                                  bitrate, 24, false, false, false);
+                                  bitrate, 24, false, false);
     auto info_2d = parse_j2k(cs_2d);
     print_j2k_info(info_2d, "2D");
     CHECK(info_2d.valid, "2D J2K invalid");
@@ -929,7 +929,7 @@ static void test_3d_mode()
     /* 3D encode (same image, but half bandwidth per eye) */
     printf("\n    --- 3D mode (is_3d=true) ---\n");
     auto cs_3d = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                                  bitrate, 24, true, false, false);
+                                  bitrate, 24, true, false);
     auto info_3d = parse_j2k(cs_3d);
     print_j2k_info(info_3d, "3D");
     CHECK(info_3d.valid, "3D J2K invalid");
@@ -1085,7 +1085,7 @@ static void test_encode_consistency()
     bool all_valid = true;
     for (int i = 0; i < N; ++i) {
         auto cs = g_enc->encode_ebcot(rgb.data(), W, H, W*3,
-                                   100000000LL, 24, false, false, false);
+                                   100000000LL, 24, false, false);
         sizes[i] = cs.size();
         auto info = parse_j2k(cs);
         if (!info.valid) { all_valid = false; printf("    Iter %d: J2K INVALID\n", i); }

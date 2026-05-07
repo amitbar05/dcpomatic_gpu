@@ -93,18 +93,6 @@ echo "  run: psnr_battery (correct, 2K)" >&2
         printf "%s,psnr_battery,%s,%s,2K,%s,%s,,\n", sha, mode, pat, psnr, bytes
     }' >> "$OUT"
 
-echo "  run: psnr_battery (fast, 2K)" >&2
-USE_FAST=1 ./test/psnr_battery 2>>"$LOG" | awk -v sha="$SHA" -v mode=gpu_fast '
-    /PSNR_Y/ {
-        n = split($0, f, /[ \t]+/);
-        pat=f[2]; bytes=""; psnr="";
-        for (i=1; i<=n; i++) {
-            if (f[i] ~ /^cs=/) { sub(/^cs=/,"",f[i]); bytes=f[i] }
-            if (f[i-1] == "=" && f[i] ~ /^[0-9.]+$/) psnr=f[i];
-        }
-        printf "%s,psnr_battery,%s,%s,2K,%s,%s,,\n", sha, mode, pat, psnr, bytes
-    }' >> "$OUT"
-
 # ---- 3. verify_roundtrip: aggregated pass/fail counts -------------------
 build_one test/verify_roundtrip test/verify_roundtrip.cc || exit 1
 echo "  run: verify_roundtrip" >&2
@@ -124,12 +112,11 @@ echo "  run: verify_roundtrip" >&2
 build_one test/bench_modes test/bench_modes.cc || exit 1
 echo "  run: bench_modes" >&2
 ./test/bench_modes 2>>"$LOG" | tee -a "$LOG" | awk -v sha="$SHA" '
-    /CORRECT|FAST/ {
+    /CORRECT/ {
         # "CORRECT: 81.66 ms/frame  size=785222"
         ms="";
         for (i=1;i<=NF;i++) if ($i ~ /^[0-9.]+$/ && ms == "") ms=$i;
-        mode = ($0 ~ /CORRECT/) ? "gpu_correct" : "gpu_fast";
-        printf "%s,bench_modes,%s,timing,2K,,,%s,\n", sha, mode, ms
+        printf "%s,bench_modes,gpu_correct,timing,2K,,,%s,\n", sha, ms
     }' >> "$OUT"
 
 # ---- 5. cmp_dwt: DWT-domain stats -------------------------------------
@@ -159,8 +146,6 @@ fi
 echo >&2
 echo "Wrote $OUT" >&2
 MIN_CORRECT=$(awk -F, '$3=="gpu_correct" && $6 != "" {print $6}' "$OUT" | sort -n | head -1)
-MIN_FAST=$(awk -F, '$3=="gpu_fast" && $6 != "" {print $6}' "$OUT" | sort -n | head -1)
 echo "min(gpu_correct PSNR) = ${MIN_CORRECT:-n/a}" >&2
-echo "min(gpu_fast    PSNR) = ${MIN_FAST:-n/a}" >&2
 
 echo "$OUT"

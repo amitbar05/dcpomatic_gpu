@@ -26,7 +26,7 @@ int main() {
     int input_val = 50000;
     std::vector<uint16_t> rgb((size_t)W*H*3, uint16_t(input_val));
     printf("=== Flat input %d → expected: LL5 = constant, all detail = 0 ===\n", input_val);
-    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000LL, 24, false, false, false);
+    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000LL, 24, false, false);
 
     /* d_a layout after DWT: nested rectangles.
      * LL5 is at [0..64) x [0..34); origin (0,0).

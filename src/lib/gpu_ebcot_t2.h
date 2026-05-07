@@ -129,11 +129,11 @@ inline void build_codeblock_table(
              * (OPJ uses two_invK = 2/K instead of invK; see opj dwt.c "BUG_WEIRD_TWO_INVK").
              * To compensate, T1 must quantize with step × inv_dwt_gain so dequantized
              * coefficients are pre-scaled smaller; the inverse DWT then amplifies them
-             * back to the right magnitude.  QCD writes the unscaled `step`. */
-            /* V211: No per-band step scaling — forward DWT applies NORM_L/NORM_H
-             * normalization so analysis+synthesis cascade has unity gain.
-             * The old 2x/4x multipliers were an OpenJPEG BUG_WEIRD_TWO_INVK workaround. */
-            float t1_step = step;
+             * back to the right magnitude.  QCD writes the unscaled `step`.
+             * V216: restored — V211 removal was wrong; NORM_L/NORM_H only make the
+             * L→L round-trip unity; OPJ two_invK still doubles H subbands. */
+            float gain = (defs[s].type == SUBBAND_HH) ? 4.0f : 2.0f;
+            float t1_step = step * gain;
             for (int cby = 0; cby < sg.ncby; cby++) {
                 for (int cbx = 0; cbx < sg.ncbx; cbx++) {
                     CodeBlockInfo cbi;
@@ -347,7 +347,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w16(static_cast<uint16_t>(2 + 1 + 4 + 5 + num_precincts));
     w8(0x01); /* V212: Scod=1 */
     /* V210: CPRL progression per DCP SMPTE 429-4 */
-    w8(0x02); /* V210: CPRL progression (DCP SMPTE 429-4) */
+    w8(0x04); /* CPRL progression order (T.800 Table A.16: 0x04=CPRL) */
     w16(1);   /* 1 quality layer */
     w8(1);    /* V209: MCT=1: ICT applied for DCP SMPTE 429-4 compliance */
     w8(static_cast<uint8_t>(num_levels));

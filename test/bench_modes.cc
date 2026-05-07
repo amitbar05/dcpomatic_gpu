@@ -1,4 +1,4 @@
-/* Benchmark fast vs correct mode end-to-end timing. */
+/* Benchmark correct-mode end-to-end timing. */
 #include <chrono>
 #include <cstdio>
 #include <vector>
@@ -33,29 +33,17 @@ int main() {
 
     using Clk = std::chrono::high_resolution_clock;
     /* Warmup */
-    for (int i = 0; i < 3; ++i) enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, false);
+    for (int i = 0; i < 3; ++i) enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false);
 
     auto t0 = Clk::now();
     int N = 10;
     for (int i = 0; i < N; ++i) {
-        auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, false);
+        auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false);
     }
     auto t1 = Clk::now();
     double ms_correct = std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count() / 1000.0 / N;
-    auto cs_correct = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, false);
-
-    /* Warmup fast */
-    for (int i = 0; i < 3; ++i) enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, true);
-    auto t2 = Clk::now();
-    for (int i = 0; i < N; ++i) {
-        auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, true);
-    }
-    auto t3 = Clk::now();
-    double ms_fast = std::chrono::duration_cast<std::chrono::microseconds>(t3-t2).count() / 1000.0 / N;
-    auto cs_fast = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false, true);
+    auto cs_correct = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000, 24, false, false);
 
     printf("CORRECT: %.2f ms/frame  size=%zu\n", ms_correct, cs_correct.size());
-    printf("FAST:    %.2f ms/frame  size=%zu  (speedup %.2fx)\n",
-           ms_fast, cs_fast.size(), ms_correct / ms_fast);
     return 0;
 }
