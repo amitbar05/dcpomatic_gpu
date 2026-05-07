@@ -651,13 +651,13 @@ struct CodeBlockInfo {
  * For __half storage we go via __half2float; for float storage we just use __ldg.
  * Marked __forceinline__ so the dispatch is purely compile-time. */
 template<typename DWT_T>
-__device__ __forceinline__ float dwt_load(const DWT_T* p) { return __half2float(__ldg(p)); }
+__device__ __forceinline__ float dwt_load(const DWT_T* p) { return __half2float(__ldg(p)); }  /* fp16 fallback (unused) */
 template<>
 __device__ __forceinline__ float dwt_load<float>(const float* p) { return __ldg(p); }
 
 /* V196: kernel_ebcot_t1 templated on DWT_T to support both FP16 (existing fast
  * path) and FP32 (new high-precision correct path) DWT input. */
-template<bool FAST4, int MAX_BP = (FAST4 ? 4 : 10), typename DWT_T = __half>
+template<bool FAST4, int MAX_BP = (FAST4 ? 4 : 10), typename DWT_T = float>
 __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     const DWT_T* __restrict__ d_dwt,    /* DWT output coefficients (d_a[c]) */
     int dwt_stride,                      /* row stride of DWT array (= image width) */

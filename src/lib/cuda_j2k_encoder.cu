@@ -3879,8 +3879,8 @@ void kernel_rgb48_xyz_hdwt0_1ch_1row_p12(
 __global__ void
 kernel_rgb48_to_xyz12(
     const uint16_t* __restrict__ d_rgb16,
-    const __half*   __restrict__ d_lut_in,   /* V55: was float */
-    const uint16_t* __restrict__ d_lut_out,  /* V48: was int32_t; 8KB vs 16KB GPU texture */
+    const float*    __restrict__ d_lut_in,
+    const uint16_t* __restrict__ d_lut_out,
     const float*    __restrict__ d_matrix,
     int32_t* __restrict__ d_out_x,
     int32_t* __restrict__ d_out_y,
@@ -3894,15 +3894,13 @@ kernel_rgb48_to_xyz12(
     int py = i / width;
     int base = py * rgb_stride + px * 3;
 
-    /* Load RGB48LE → 12-bit index (shift right 4) */
     int ri = min((__ldg(&d_rgb16[base + 0]) >> 4), 4095);
     int gi = min((__ldg(&d_rgb16[base + 1]) >> 4), 4095);
     int bi = min((__ldg(&d_rgb16[base + 2]) >> 4), 4095);
 
-    /* Input LUT: linearize gamma (V55: __half→float) */
-    float r = __half2float(__ldg(&d_lut_in[ri]));
-    float g = __half2float(__ldg(&d_lut_in[gi]));
-    float b = __half2float(__ldg(&d_lut_in[bi]));
+    float r = __ldg(&d_lut_in[ri]);
+    float g = __ldg(&d_lut_in[gi]);
+    float b = __ldg(&d_lut_in[bi]);
 
     /* Bradford + RGB→XYZ matrix multiply (row-major) */
     float xv = __ldg(&d_matrix[0]) * r + __ldg(&d_matrix[1]) * g + __ldg(&d_matrix[2]) * b;
@@ -3974,9 +3972,7 @@ kernel_ict_fwd(
 struct CudaJ2KEncoderImpl
 {
     /* DWT buffers */
-    __half*  d_a[3]  = {nullptr};  /* V36: half: V-DWT output (was float; saves 2B/pixel) */
-    __half*  d_b[3]  = {nullptr};  /* V26: half: H-DWT output (saves 50% DRAM vs float) */
-    /* d_half[3] removed in V30: V29 tiled kernel uses registers, no fp16 workspace */
+    /* fp16 d_a/d_b removed — all paths use d_a_f32/d_b_f32 */
 
     /* V196: FP32 DWT buffers for the high-precision "correct" encode_ebcot path.
      * Allocated lazily — only when fast_mode=false uses the FP32 DWT route.
@@ -4042,8 +4038,7 @@ struct CudaJ2KEncoderImpl
 
     /* V18: colour conversion device buffers */
     uint16_t* d_rgb16[2]   = {nullptr, nullptr};  /* V42: double-buffered GPU RGB48LE input */
-    __half*   d_lut_in     = nullptr;  /* V55: 4096-entry input gamma LUT (was float; halves L1 cache 16KB→8KB) */
-    float*    d_lut_in_f32 = nullptr;  /* V127: full-precision input LUT for XYZ conversion */
+    float*    d_lut_in_f32 = nullptr;  /* 4096-entry input gamma LUT (fp32) */
     uint16_t* d_lut_out    = nullptr;  /* V48: 4096-entry output gamma LUT (was int32_t; saves 8KB GPU texture cache) */
     float*    d_matrix     = nullptr;  /* 9-float Bradford+RGB→XYZ matrix */
 
@@ -4164,15 +4159,8 @@ struct CudaJ2KEncoderImpl
 
         cleanup_dwt_buffers();
 
-        /* V126: generous padding — V-DWT tiled kernel reads up to V_TILE_FL rows past
-         * the last valid tile, and int __ldg reads 2 extra bytes at row ends.
-         * Padding = stride * V_OVERLAP * sizeof(__half) + 64 to cover worst-case overshoot. */
-        size_t pad = static_cast<size_t>(width) * 8 * sizeof(__half) + 64;
         for (int c = 0; c < 3; ++c) {
-            cudaMalloc(&d_a[c],  pixels * sizeof(__half) + pad);
-            cudaMalloc(&d_b[c],  pixels * sizeof(__half) + pad);
-            cudaMalloc(&d_in[c], pixels * sizeof(int32_t)); /* used by non-RGB encode() path */
-            /* V30: d_half[c] workspace removed — V29 tiled kernel no longer uses it */
+            cudaMalloc(&d_in[c], pixels * sizeof(int32_t));
         }
         cudaMalloc(&d_packed, pixels * 3 * sizeof(uint8_t));
         buf_pixels = pixels;
@@ -4248,28 +4236,21 @@ struct CudaJ2KEncoderImpl
     }
 
     void upload_colour_params(GpuColourParams const& p) {
-        if (!d_lut_in)     cudaMalloc(&d_lut_in,     4096 * sizeof(__half));
-        if (!d_lut_in_f32) cudaMalloc(&d_lut_in_f32, 4096 * sizeof(float));  /* V127: full-precision for XYZ */
+        if (!d_lut_in_f32) cudaMalloc(&d_lut_in_f32, 4096 * sizeof(float));
         if (!d_lut_out)    cudaMalloc(&d_lut_out,    4096 * sizeof(uint16_t));
         if (!d_matrix)     cudaMalloc(&d_matrix,     9    * sizeof(float));
 
-        /* V55: convert float→__half before upload; host array stays float for precision */
-        __half h_lut_in_tmp[4096];
-        for (int i = 0; i < 4096; ++i) h_lut_in_tmp[i] = __float2half(p.lut_in[i]);
-        cudaMemcpy(d_lut_in,     h_lut_in_tmp, 4096 * sizeof(__half),    cudaMemcpyHostToDevice);
-        cudaMemcpy(d_lut_in_f32, p.lut_in,     4096 * sizeof(float),     cudaMemcpyHostToDevice);  /* V127 */
-        cudaMemcpy(d_lut_out,    p.lut_out,    4096 * sizeof(uint16_t),  cudaMemcpyHostToDevice);
-        cudaMemcpy(d_matrix,     p.matrix,     9    * sizeof(float),     cudaMemcpyHostToDevice);
+        cudaMemcpy(d_lut_in_f32, p.lut_in,  4096 * sizeof(float),    cudaMemcpyHostToDevice);
+        cudaMemcpy(d_lut_out,    p.lut_out, 4096 * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_matrix,     p.matrix,  9    * sizeof(float),    cudaMemcpyHostToDevice);
         colour_loaded = true;
     }
 
     void cleanup_dwt_buffers() {
         for (int c = 0; c < 3; ++c) {
-            if (d_a[c])  { cudaFree(d_a[c]);  d_a[c]  = nullptr; }
-            if (d_b[c])  { cudaFree(d_b[c]);  d_b[c]  = nullptr; }
-            if (d_in[c]) { cudaFree(d_in[c]); d_in[c] = nullptr; }
-            if (d_a_f32[c]) { cudaFree(d_a_f32[c]); d_a_f32[c] = nullptr; }  /* V196 */
-            if (d_b_f32[c]) { cudaFree(d_b_f32[c]); d_b_f32[c] = nullptr; }  /* V196 */
+            if (d_in[c])    { cudaFree(d_in[c]);    d_in[c]    = nullptr; }
+            if (d_a_f32[c]) { cudaFree(d_a_f32[c]); d_a_f32[c] = nullptr; }
+            if (d_b_f32[c]) { cudaFree(d_b_f32[c]); d_b_f32[c] = nullptr; }
         }
         if (d_packed) { cudaFree(d_packed); d_packed = nullptr; }
         buf_pixels = 0;
@@ -4337,7 +4318,6 @@ struct CudaJ2KEncoderImpl
             if (h_rgb12_pinned[i])  { cudaFreeHost(h_rgb12_pinned[i]);  h_rgb12_pinned[i]  = nullptr; }
             if (h2d_done[i])        { cudaEventDestroy(h2d_done[i]);    h2d_done[i]        = nullptr; }
         }
-        if (d_lut_in)  { cudaFree(d_lut_in);  d_lut_in  = nullptr; }
         if (d_lut_in_f32) { cudaFree(d_lut_in_f32); d_lut_in_f32 = nullptr; }
         if (d_lut_out) { cudaFree(d_lut_out); d_lut_out = nullptr; }
         if (d_matrix)  { cudaFree(d_matrix);  d_matrix  = nullptr; }
@@ -4542,6 +4522,7 @@ gpu_dwt97_level_fp32(
 }
 
 
+#if 0  /* Dead code — old fp16 pipeline; all paths route through encode_ebcot (V211) */
 /**
  * V32: Launches all GPU kernels for one component: DWT0-4 + quantize + D2H.
  * V41: h_dest selects which double-buffer slot receives the D2H output.
@@ -4576,14 +4557,9 @@ launch_comp_pipeline(
                     impl->d_packed + c * per_comp,
                     per_comp, cudaMemcpyDeviceToHost, st);  /* V41: dest buf */
 }
+#endif  /* end dead code: launch_comp_pipeline */
 
 
-/**
- * V32: Capture per-component CUDA Graphs for the DWT+quantize+D2H pipeline.
- * Each of the 3 component graphs captures: DWT levels 0-4 + quantize + D2H.
- * Graphs are run in parallel on separate streams (no cross-component dependency).
- * Graphs are valid as long as width/height/per_comp/is_4k don't change.
- */
 /**
  * V125: Adaptive base quantization step — scales with target compression ratio.
  *
@@ -4618,6 +4594,7 @@ compute_base_step(int width, int height, size_t per_comp)
     return std::clamp(ratio * 0.06f, 0.25f, 32.5f);
 }
 
+#if 0  /* Dead code — rebuild_comp_graphs / rebuild_v42_comp_graphs (V211) */
 static void
 rebuild_comp_graphs(
     CudaJ2KEncoderImpl* impl,
@@ -4729,6 +4706,7 @@ rebuild_v42_comp_graphs(
     impl->cg_v42_is_4k[buf]      = is_4k;
     impl->cg_v42_is_3d[buf]      = is_3d;
 }
+#endif  /* end dead code block */
 
 
 /**
@@ -4896,6 +4874,7 @@ build_j2k_codestream(
 }
 
 
+#if 0  /* Dead code — run_dwt_and_build_codestream no longer called (V211) */
 /**
  * Internal: run DWT on d_in[0..2] and build J2K codestream.
  * Called by both encode() and encode_from_rgb48() after d_in is populated.
@@ -5080,6 +5059,7 @@ run_dwt_and_build_codestream(
     cs.write_marker(J2K_EOC);
     return std::move(cs.data());
 }
+#endif  /* end dead code block — run_dwt_and_build_codestream */
 
 
 /**
@@ -5363,7 +5343,7 @@ CudaJ2KEncoder::encode_ebcot(
         int blk = (pix + 255) / 256;
         kernel_rgb48_to_xyz12<<<blk, 256, 0, _impl->stream[0]>>>(
             _impl->d_rgb16[0],
-            _impl->d_lut_in, _impl->d_lut_out, _impl->d_matrix,
+            _impl->d_lut_in_f32, _impl->d_lut_out, _impl->d_matrix,
             _impl->d_xyz[0], _impl->d_xyz[1], _impl->d_xyz[2],
             width, height, rgb_stride_pixels);
     }
@@ -5583,6 +5563,31 @@ CudaJ2KEncoder::encode_ebcot(
         fprintf(stderr, "DEBUG T1 comp=%d  avg_bp=%.2f nz=%ld/%d avg_len=%.1f\n",
                 c, sum_bp / (double)num_cbs, nz_bp, num_cbs, sum_len / (double)num_cbs);
     }
+    /* Per-subband breakdown (comp 0 only) */
+    {
+        const auto& sbs = _impl->ebcot_subbands;
+        static const char* sb_names[] = {"HL","LH","HH"};
+        fprintf(stderr, "SB  res lv type ncbx ncby  tot_bytes  max_bp avg_bp nz/tot\n");
+        for (size_t si = 0; si < sbs.size(); ++si) {
+            const auto& sb = sbs[si];
+            int ncbs_sb = sb.ncbx * sb.ncby;
+            long sb_bytes = 0, sb_bp = 0, sb_nz = 0, sb_maxbp = 0;
+            for (int i = 0; i < ncbs_sb; ++i) {
+                int idx = sb.cb_start_idx + i;
+                sb_bytes += _impl->h_ebcot_len[0][idx];
+                int bp = _impl->h_ebcot_numbp[0][idx];
+                sb_bp += bp;
+                if (bp > sb_maxbp) sb_maxbp = bp;
+                if (bp > 0) ++sb_nz;
+            }
+            const char* ty = (sb.type==0) ? "LL" : sb_names[sb.type-1];
+            fprintf(stderr, "%2zu  r%d  l%d  %-3s  %2d x%2d  %8ld  %6ld  %5.1f  %d/%d\n",
+                    si, sb.res, sb.level, ty, sb.ncbx, sb.ncby,
+                    sb_bytes, sb_maxbp,
+                    ncbs_sb ? sb_bp/(double)ncbs_sb : 0.0,
+                    (int)sb_nz, ncbs_sb);
+        }
+    }
 #endif
     const uint8_t*  cd[3] = { _impl->h_ebcot_data[0], _impl->h_ebcot_data[1], _impl->h_ebcot_data[2] };
     const uint16_t* cl[3] = { _impl->h_ebcot_len[0],  _impl->h_ebcot_len[1],  _impl->h_ebcot_len[2] };
@@ -5619,13 +5624,17 @@ CudaJ2KEncoder::set_colour_params(GpuColourParams const& params)
 std::vector<float>
 CudaJ2KEncoder::debug_get_dwt_output(int c, int width, int height)
 {
-    if (!_initialized || c < 0 || c >= 3) return {};
-    std::vector<__half> h_tmp(size_t(width) * height);
-    cudaMemcpy(h_tmp.data(), _impl->d_a[c],
-               size_t(width) * height * sizeof(__half), cudaMemcpyDeviceToHost);
-    std::vector<float> out(h_tmp.size());
-    for (size_t i = 0; i < h_tmp.size(); ++i)
-        out[i] = __half2float(h_tmp[i]);
+    return debug_get_dwt_f32(c, width, height);
+}
+
+
+std::vector<float>
+CudaJ2KEncoder::debug_get_dwt_f32(int c, int width, int height)
+{
+    if (!_initialized || c < 0 || c >= 3 || !_impl->d_a_f32[c]) return {};
+    std::vector<float> out(size_t(width) * height);
+    cudaMemcpy(out.data(), _impl->d_a_f32[c],
+               out.size() * sizeof(float), cudaMemcpyDeviceToHost);
     return out;
 }
 

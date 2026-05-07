@@ -51,7 +51,7 @@ struct CudaJ2KEncoderImpl;
  *  Cached and uploaded to GPU once per film (or when conversion changes). */
 struct GpuColourParams
 {
-    float    lut_in[4096];   /**< Input gamma: 12-bit index → linear float [0,1] (host; V55: GPU d_lut_in is __half) */
+    float    lut_in[4096];   /**< Input gamma: 12-bit index → linear float [0,1] */
     uint16_t lut_out[4096];  /**< V48: Output gamma: 12-bit index → DCP value [0,4095] (was int32_t; saves 8KB GPU LUT cache) */
     float    matrix[9];     /**< Combined RGB→XYZ 3×3 matrix (row-major) */
     bool     valid = false;
@@ -125,6 +125,8 @@ public:
 	/* Debug: download d_a[c] (DWT output) after encode_ebcot() call.
 	 * Returns a flat array of size width*height __half values (stride=width). */
 	std::vector<float> debug_get_dwt_output(int c, int width, int height);
+	/* Debug: download d_a_f32[c] (FP32 DWT output used by encode_ebcot). */
+	std::vector<float> debug_get_dwt_f32(int c, int width, int height);
 
 private:
 	std::unique_ptr<CudaJ2KEncoderImpl> _impl;
