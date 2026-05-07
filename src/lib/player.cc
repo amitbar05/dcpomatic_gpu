@@ -164,7 +164,7 @@ Player::Player(Player&& other)
 	, _play_referenced(other._play_referenced.load())
 	, _next_video_time(other._next_video_time)
 	, _next_audio_time(other._next_audio_time)
-	, _dcp_decode_reduction(other._dcp_decode_reduction.load())
+	, _dcp_decode_reduction(other._dcp_decode_reduction)
 	, _last_video(std::move(other._last_video))
 	, _audio_merger(std::move(other._audio_merger))
 	, _shuffler(std::move(other._shuffler))
@@ -204,7 +204,7 @@ Player::operator=(Player&& other)
 	_play_referenced = other._play_referenced.load();
 	_next_video_time = other._next_video_time;
 	_next_audio_time = other._next_audio_time;
-	_dcp_decode_reduction = other._dcp_decode_reduction.load();
+	_dcp_decode_reduction = other._dcp_decode_reduction;
 	_last_video = std::move(other._last_video);
 	_audio_merger = std::move(other._audio_merger);
 	_shuffler = std::move(other._shuffler);
@@ -1554,12 +1554,17 @@ Player::set_dcp_decode_reduction(optional<int> reduction)
 {
 	ChangeSignaller<Player, int> cc(this, PlayerProperty::DCP_DECODE_REDUCTION);
 
-	if (reduction == _dcp_decode_reduction.load()) {
-		cc.abort();
-		return;
+	{
+		boost::mutex::scoped_lock lm(_mutex);
+
+		if (reduction == _dcp_decode_reduction) {
+			cc.abort();
+			return;
+		}
+
+		_dcp_decode_reduction = reduction;
 	}
 
-	_dcp_decode_reduction = reduction;
 	setup_pieces();
 }
 

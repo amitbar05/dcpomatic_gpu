@@ -181,9 +181,10 @@ private:
 		std::weak_ptr<Piece> weak_piece, std::weak_ptr<const TextContent> weak_content, dcpomatic::ContentTime subtitle_from
 	) const;
 
-	/** Mutex to protect the most of the Player state.  When it's used for the preview we have
-	    seek() and pass() called from the Butler thread and lots of other stuff called
-	    from the GUI thread.
+	/** Mutex to protect the player state that is not using std::atomic.
+	 *  When the player is used for the preview we have seek() and pass()
+	 *  called from the Butler thread and lots of other stuff called
+	 *  from the GUI thread.
 	*/
 	mutable boost::mutex _mutex;
 
@@ -221,7 +222,7 @@ private:
 	/** Time of the next audio that we will emit, or the time of the last accurate seek */
 	boost::optional<dcpomatic::DCPTime> _next_audio_time;
 
-	std::atomic<boost::optional<int>> _dcp_decode_reduction;
+	boost::optional<int> _dcp_decode_reduction;
 
 	EnumIndexedVector<std::pair<std::shared_ptr<PlayerVideo>, dcpomatic::DCPTime>, Eyes> _last_video;
 
