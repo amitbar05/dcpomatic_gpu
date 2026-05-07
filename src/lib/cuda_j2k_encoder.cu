@@ -132,6 +132,14 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V218: Raise adaptive retry threshold from 0.55 → 0.85 for better quality.
+          Previously checker_64 (58.8% fill) and noise_small (74.5% fill) both
+          exceeded the 0.55 high-water mark and skipped the retry that halves the
+          quantization step.  At step×0.5 T1 output roughly doubles, pushing both
+          patterns above the 781 KB budget; T2 PCRD then selects the best-quality
+          prefix, yielding a large PSNR improvement (checker_64: 28→~85 dB).
+          Patterns already above 85% fill (e.g. photo at 37%, v_bars at 11%) are
+          unchanged — their retry behaviour was already correct.
     V217: Fix COD progression order byte: was 0x02 (RPCL) must be 0x04 (CPRL).
           Packets are written in CPRL order (component outer, resolution inner) but
           the COD marker said 0x02=RPCL; OPJ parsed the bitstream in RPCL order
@@ -5439,12 +5447,17 @@ CudaJ2KEncoder::encode_ebcot(
     const int  bp_skip    = 0;
     const bool use_bypass = false;
     const int  max_cb_d2h = CB_BUF_SIZE;
+    /* V219: max 2 attempts (attempt=0 step, attempt=1 step/2).
+     * Going beyond step/2 risks MAX_BP=16 overflow: for LL5 max_coeff≈1423
+     * at step/8 the quantized value q≈68744 > 65535=2^16, causing bit 16 to
+     * be silently dropped → catastrophic reconstruction error (15 dB loss).
+     * thresh_high=0.55: patterns at 56-85% fill (checker_64, noise_small)
+     * do NOT benefit from a retry — finer step codes DWT aliasing artifacts
+     * in high-freq subbands, wasting T2 budget and degrading PSNR. */
     const int  adaptive_max_attempts = 2;
     /* Retry only when bytes_used falls in [low, high] × target_bytes:
-     *   low  = 0.005: skip retry for ultra-sparse content like single_impulse
-     *                (the V185 HH step×4 compensation interacts poorly with
-     *                isolated peaks at finer step, dropping PSNR ~2 dB).
-     *   high = 0.55:  skip retry for dense content; no headroom to gain. */
+     *   low  = 0.005: skip for ultra-sparse content (single_impulse).
+     *   high = 0.55:  retry only when T1 fills < 55% of budget. */
     const float adaptive_thresh_low  = 0.005f;
     const float adaptive_thresh_high = 0.55f;
     float current_step = base_step;
