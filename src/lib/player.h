@@ -39,7 +39,7 @@
 #include "player_text.h"
 #include "position_image.h"
 #include "shuffler.h"
-#include <boost/atomic.hpp>
+#include <atomic>
 #include <list>
 
 
@@ -192,36 +192,36 @@ private:
 	std::shared_ptr<const Playlist> _playlist;
 
 	/** > 0 if we are suspended (i.e. pass() and seek() do nothing) */
-	boost::atomic<int> _suspended;
+	std::atomic<int> _suspended;
 	std::vector<std::shared_ptr<Piece>> _pieces;
 
 	/** Size of the image we are rendering to; this may be the DCP frame size, or
 	 *  the size of preview in a window.
 	 */
-	boost::atomic<dcp::Size> _video_container_size;
+	std::atomic<dcp::Size> _video_container_size;
 
 	mutable boost::mutex _black_image_mutex;
 	std::shared_ptr<Image> _black_image;
 
 	/** true if the player should ignore all video; i.e. never produce any */
-	boost::atomic<bool> _ignore_video;
-	boost::atomic<bool> _ignore_audio;
+	std::atomic<bool> _ignore_video;
+	std::atomic<bool> _ignore_audio;
 	/** true if the player should ignore all text; i.e. never produce any */
-	boost::atomic<bool> _ignore_text;
-	boost::atomic<bool> _always_burn_open_subtitles;
+	std::atomic<bool> _ignore_text;
+	std::atomic<bool> _always_burn_open_subtitles;
 	/** true if we should try to be fast rather than high quality */
-	boost::atomic<bool> _fast;
+	std::atomic<bool> _fast;
 	/** true if we should keep going in the face of `survivable' errors */
 	bool _tolerant;
 	/** true if we should `play' (i.e output) referenced DCP data (e.g. for preview) */
-	boost::atomic<bool> _play_referenced;
+	std::atomic<bool> _play_referenced;
 
 	/** Time of the next video that we will emit, or the time of the last accurate seek */
 	boost::optional<dcpomatic::DCPTime> _next_video_time;
 	/** Time of the next audio that we will emit, or the time of the last accurate seek */
 	boost::optional<dcpomatic::DCPTime> _next_audio_time;
 
-	boost::atomic<boost::optional<int>> _dcp_decode_reduction;
+	std::atomic<boost::optional<int>> _dcp_decode_reduction;
 
 	EnumIndexedVector<std::pair<std::shared_ptr<PlayerVideo>, dcpomatic::DCPTime>, Eyes> _last_video;
 
@@ -250,7 +250,7 @@ private:
 	std::shared_ptr<AudioProcessor> _audio_processor;
 	bool _disable_audio_processor = false;
 
-	boost::atomic<dcpomatic::DCPTime> _playback_length;
+	std::atomic<dcpomatic::DCPTime> _playback_length;
 
 	/** Alignment for subtitle images that we create */
 	Image::Alignment _subtitle_alignment = Image::Alignment::PADDED;

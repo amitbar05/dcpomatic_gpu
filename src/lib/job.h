@@ -30,12 +30,12 @@
 
 #include "signaller.h"
 #include <dcp/warnings.h>
-#include <boost/atomic.hpp>
 LIBDCP_DISABLE_WARNINGS
 #include <boost/signals2.hpp>
 LIBDCP_ENABLE_WARNINGS
 #include <boost/thread.hpp>
 #include <boost/thread/mutex.hpp>
+#include <atomic>
 #include <string>
 
 
@@ -174,7 +174,7 @@ private:
 	/** true to limit emissions of the progress signal so that they don't
 	 *  come too often.
 	 */
-	boost::atomic<bool> _rate_limit_progress;
+	std::atomic<bool> _rate_limit_progress;
 
 	/** condition to signal changes to pause/resume so that we know when to wake;
 	    this could be a general _state_change if it made more sense.

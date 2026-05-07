@@ -45,9 +45,9 @@ LIBDCP_ENABLE_WARNINGS
 #include "lib/signaller.h"
 #include "lib/position.h"
 #include <dcp/util.h>
-#include <boost/atomic.hpp>
 #include <boost/thread.hpp>
 #include <boost/thread/condition.hpp>
+#include <atomic>
 
 
 class Texture
@@ -146,8 +146,8 @@ private:
 	Last<Crop> _last_crop;
 	Last<boost::optional<dcpomatic::Rect<float>>> _last_crop_guess;
 
-	boost::atomic<wxSize> _canvas_size;
-	boost::atomic<bool> _rec2020;
+	std::atomic<wxSize> _canvas_size;
+	std::atomic<bool> _rec2020;
 	std::vector<std::unique_ptr<Texture>> _video_textures;
 	std::unique_ptr<Texture> _subtitle_texture;
 	bool _have_subtitle_to_render = false;
@@ -156,8 +156,8 @@ private:
 
 	boost::mutex _playing_mutex;
 	boost::condition _thread_work_condition;
-	boost::atomic<bool> _playing;
-	boost::atomic<Request> _pending_request;
+	std::atomic<bool> _playing;
+	std::atomic<Request> _pending_request;
 
 	GLuint _vao;
 	dcpomatic::gl::Uniform1i _fragment_type;

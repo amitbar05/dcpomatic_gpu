@@ -26,8 +26,8 @@
 #include "signaller.h"
 #include "text_type.h"
 #include "weak_film.h"
-#include <boost/atomic.hpp>
 #include <boost/signals2.hpp>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -111,7 +111,7 @@ private:
 	bool _very_long_subtitle = false;
 	boost::optional<dcpomatic::DCPTimePeriod> _last_subtitle;
 
-	boost::atomic<bool> _stop;
+	std::atomic<bool> _stop;
 
 	bool _disable_audio_analysis = false;
 };

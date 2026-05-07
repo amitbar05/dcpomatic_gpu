@@ -172,7 +172,6 @@ function copy_libs {
     copy_lib_root libleqm_nrt "$dest"
     copy $ROOT src/$SOURCE_NAME/build/src/lib/libdcpomatic2.dylib "$dest"
     copy $ROOT src/$SOURCE_NAME/build/src/wx/libdcpomatic2-wx.dylib "$dest"
-    copy_lib_env libboost_atomic "$dest"
     copy_lib_env libboost_system "$dest"
     copy_lib_env libboost_filesystem "$dest"
     copy_lib_env libboost_thread "$dest"

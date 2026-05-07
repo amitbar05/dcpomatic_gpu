@@ -32,9 +32,9 @@
 #include "exception_store.h"
 #include "server.h"
 #include <boost/asio.hpp>
-#include <boost/atomic.hpp>
 #include <boost/thread.hpp>
 #include <boost/thread/condition.hpp>
+#include <atomic>
 #include <string>
 
 
@@ -72,7 +72,7 @@ private:
 	bool _verbose;
 	int _num_threads;
 	Waker _waker;
-	boost::atomic<int> _frames_encoded;
+	std::atomic<int> _frames_encoded;
 
 	struct Broadcast {
 
