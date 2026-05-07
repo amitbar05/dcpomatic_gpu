@@ -315,7 +315,8 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     const uint16_t* pass_lengths[3], /* cumulative pass lengths per CB */
     const uint8_t*  cb_num_bp[3],    /* coded bit-planes per CB (from T1 kernel) */
     int64_t target_bytes,
-    int cb_stride = CB_BUF_SIZE)     /* V137: row stride of coded_data (bytes per CB) */
+    int cb_stride = CB_BUF_SIZE,     /* V137: row stride of coded_data (bytes per CB) */
+    bool use_bypass = false)         /* V205: COD BYPASS bit must match T1 bypass usage */
 {
     std::vector<uint8_t> cs;
     cs.reserve(target_bytes > 0 ? target_bytes + 1024 : 1024*1024);
@@ -358,7 +359,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w8(static_cast<uint8_t>(num_levels));
     w8(3);    /* xcb' = 3 → code-block width = 32 */
     w8(3);    /* ycb' = 3 → code-block height = 32 */
-    w8(0x00); /* SPcod: BYPASS bit=0.  Re-enabling produced decode failures. */
+    /* V205: BYPASS bit set when T1 uses bypass (fast mode).  Must match T1 kernel's use_bypass flag.
+     * Previous SPcod=0x00 was correct for correct mode (MQ-only) but incorrect for fast mode. */
+    w8(use_bypass ? 0x01 : 0x00); /* SPcod: BYPASS bit 0 */
     w8(0x00); /* filter = 0 (9/7 irreversible) */
 
     /* QCD — per-subband step sizes (matching T1 quantization) */

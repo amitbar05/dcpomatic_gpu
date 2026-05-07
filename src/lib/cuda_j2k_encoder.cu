@@ -5613,7 +5613,8 @@ CudaJ2KEncoder::encode_ebcot(
         _impl->ebcot_subbands,
         cd, cl, np, pl, nb,
         target_bytes,
-        max_cb_d2h);
+        max_cb_d2h,
+        use_bypass);
     tmark("T2+CS");
     return result;
 }
