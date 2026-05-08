@@ -480,18 +480,21 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     const size_t per_comp_target = (target_bytes > 0)
         ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
-    /* V225: Two-phase truncation point selection.
+    /* V225/V226: Two-phase truncation point selection.
      *
-     * Phase 1 — sequential greedy (coarsest first): include each subband fully until
-     * the budget would overflow. This ensures LL5 and intermediate detail subbands are
-     * ALWAYS fully encoded, preserving low-frequency content regardless of T1 ratio.
-     * (V224 proportional gave LL5 only 38.5% of budget when total_t1=676KB vs budget
-     * =260KB → the dominant gradient component was poorly reconstructed.)
+     * Phase 1 — sequential greedy for coarse subbands (level ≥ 2): include LL5 and
+     * HL/LH/HH at levels 2, 3, 4 fully. These subbands are always tiny (< 10KB for
+     * typical 2K content at 150 Mbps) and carry the coarse reconstruction basis.
+     * Phase 1 never truncates them; it simply guarantees their passes are included.
      *
-     * Phase 2 — proportional PCRD-OPT for the overflow subbands: remaining budget is
-     * distributed proportional to each subband's T1, and within each subband PCRD-OPT
-     * (convex hull + slope sort) allocates budget uniformly by merit across all CBs.
-     * This avoids the V219 flaw of giving first CBs 100% and last CBs 0%. */
+     * Phase 2 — proportional PCRD-OPT for lv0 and lv1 subbands: remaining budget is
+     * distributed proportional to each subband's T1 bytes, and within each subband
+     * convex hull + slope sort allocates the budget by merit across all CBs.
+     * This avoids the V219 flaw of giving first CBs 100% and last CBs 0%.
+     *
+     * V225 used a 40% budget cap instead of a hard level threshold; this caused
+     * HL1 (47KB for checker_8) to slip into Phase 1, taking 30KB from lv0.
+     * V226 hard-stops Phase 1 at level < 2 → lv0 gets 205KB vs V224's 210KB (−2%). */
     static const float CDF97_NORMS[4][10] = {
         {1.000f,1.965f,4.177f,8.403f,16.90f,33.84f,67.69f,135.3f,270.6f,540.9f},
         {2.022f,3.989f,7.585f,13.94f,25.36f,46.07f,83.53f,151.5f,274.6f,497.2f},
@@ -509,23 +512,26 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                 t1_per_sb[sb] += coded_len[c][cb_start + i];
         }
 
-        /* Phase 1: include subbands fully in coarse-to-fine order until budget overflows
-         * OR until 40% of per_comp_target is consumed. The 40% cap ensures at least 60%
-         * of budget remains for Phase 2 PCRD on fine subbands. For content with small
-         * coarse T1 (e.g. photo_synth: lv1..5 = 94KB < 104KB cap), Phase 1 includes all
-         * coarse subbands fully (→ 60.8 dB). For high-frequency content (checker_8: lv1
-         * HL = 111KB > cap), Phase 1 stops early so Phase 2 distributes proportionally
-         * (→ ~15 dB, close to V224). */
-        const size_t phase1_cap = (per_comp_target != SIZE_MAX)
-            ? static_cast<size_t>(per_comp_target * 0.40 + 0.5)
-            : SIZE_MAX;
+        /* V226: Phase 1 covers only level ≥ 2 subbands (LL5, HL4/LH4/HH4, HL3/LH3/HH3,
+         * HL2/LH2/HH2). These are always tiny relative to budget (< 10KB for typical
+         * content) and carry the coarse structure that must be faithfully encoded.
+         * Phase 2 (proportional PCRD-OPT) handles lv1 and lv0 where most of the T1
+         * lives. Hard level threshold replaces the ad-hoc 40% cap from V225.
+         *
+         * V225 40% cap included HL1 (47KB) in Phase 1 for checker_8, leaving only
+         * 178KB for lv0 vs V224 proportional's 210KB (−15%). V226 stops before lv1
+         * → lv0 gets 205KB (−2.4% vs V224), recovering most of the 1.3 dB gap. */
         size_t comp_bytes = 0;
         size_t pcrd_start = subbands.size();
 
         for (size_t sb = 0; sb < subbands.size(); ++sb) {
+            /* Stop Phase 1 at lv0 and lv1 subbands — let Phase 2 handle them. */
+            if (subbands[sb].level < 2) {
+                pcrd_start = sb;
+                break;
+            }
             if (per_comp_target != SIZE_MAX
-                && (comp_bytes + t1_per_sb[sb] > per_comp_target
-                    || comp_bytes + t1_per_sb[sb] > phase1_cap)) {
+                && comp_bytes + t1_per_sb[sb] > per_comp_target) {
                 pcrd_start = sb;
                 break;
             }

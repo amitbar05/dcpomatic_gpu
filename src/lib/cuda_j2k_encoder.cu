@@ -5480,10 +5480,12 @@ CudaJ2KEncoder::encode_ebcot(
      * in high-freq subbands, wasting T2 budget and degrading PSNR. */
     const int   adaptive_max_attempts  = 3;
     const float adaptive_min_base_step = 0.097f; /* pmax floor: step*0.65 > 2^(-4) */
-    /* Retry only when bytes_used falls in [low, high] × target_bytes:
-     *   low  = 0.005: skip for ultra-sparse content (single_impulse).
+    /* V227: Retry when bytes_used < high × target_bytes (no lower bound).
+     * Removed adaptive_thresh_low = 0.005. That threshold caused h_gradient to skip
+     * retrying at high bit-rates (≥ ~470 Mbps) because T1/target fell below 0.005,
+     * leaving the encoder at step=0.25 instead of halving to 0.125 → PSNR = 15 dB
+     * instead of 85 dB. Single_impulse still exits quickly via adaptive_min_base_step.
      *   high = 0.55:  retry only when T1 fills < 55% of budget. */
-    const float adaptive_thresh_low  = 0.005f;
     const float adaptive_thresh_high = 0.55f;
     float current_step = base_step;
     int   num_cbs      = _impl->ebcot_num_cbs;
@@ -5590,7 +5592,7 @@ CudaJ2KEncoder::encode_ebcot(
         }
         double byte_ratio = static_cast<double>(total_bytes_used)
                           / static_cast<double>(target_bytes);
-        if (byte_ratio < adaptive_thresh_low || byte_ratio >= adaptive_thresh_high)
+        if (byte_ratio >= adaptive_thresh_high)
             break;
         float next_step = current_step * 0.5f;
         if (next_step < adaptive_min_base_step) break; /* pmax safety floor */
