@@ -5492,7 +5492,14 @@ CudaJ2KEncoder::encode_ebcot(
      * do NOT benefit from a retry — finer step codes DWT aliasing artifacts
      * in high-freq subbands, wasting T2 budget and degrading PSNR. */
     const int   adaptive_max_attempts  = 3;
-    const float adaptive_min_base_step = 0.097f; /* pmax floor: step*0.65 > 2^(-4) */
+    /* V230: Lowered from 0.097 → 0.049 to allow a third halving (0.125→0.0625).
+     * At step=0.0625, LL5 step=0.040625 → pmax=17; dispatcher uses MAX_BP=17.
+     * Next halving 0.0625→0.03125 < 0.049 is blocked: that step needs MAX_BP=18
+     * (pmax=18 for 4K) and is not worth the register-pressure increase.
+     * Previous floor 0.097 = 2^(-3.36): ensured LL5 step > 2^(-4) → pmax≤16.
+     * New floor 0.049 ≈ 2^(-4.35): ensures LL5 step > 2^(-5) → pmax≤17 for all
+     * subband weights (min weight = 0.65; 0.049×0.65=0.032 > 2^(-5)=0.031). */
+    const float adaptive_min_base_step = 0.049f;
     /* V227: Retry when bytes_used < high × target_bytes (no lower bound).
      * Removed adaptive_thresh_low = 0.005. That threshold caused h_gradient to skip
      * retrying at high bit-rates (≥ ~470 Mbps) because T1/target fell below 0.005,
@@ -5546,18 +5553,27 @@ CudaJ2KEncoder::encode_ebcot(
         int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
         /* Step 5: T1 launch per component.
-         * V228: MAX_BP=16 for all attempts (was 13 at attempt=0, 16 at attempt≥1).
-         * At initial step=0.25 (V228 lower clamp), LL5 q = DC/(0.25×0.65) ≈ 11379
-         * for mid-gray > 2^13=8192 → MAX_BP=13 would clip the MSB bit-plane of LL5
-         * for dense content that exits without retrying (byte_ratio ≥ thresh_high).
-         * MAX_BP=16 handles all realistic coefficients at step=0.25 with no clipping. */
-        for (int c = 0; c < 3; ++c) {
-            kernel_ebcot_t1<false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-                _impl->d_a_f32[c], stride,
-                _impl->d_cb_info, num_cbs,
-                _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
-                _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+         * V228: MAX_BP=16 for steps ≥ 0.097 (pmax ≤ 16 guaranteed).
+         * V230: MAX_BP=17 for steps < 0.097 — the third halving reaches step=0.0625,
+         * where LL5 pmax=17 (q_max=4095/0.040625=100850; 17 bp needed).  Using
+         * MAX_BP=16 here clips the MSB of bright LL5 coefficients, causing large
+         * reconstruction errors; MAX_BP=17 template handles all 17 bit-planes. */
+        if (current_step < 0.097f) {
+            for (int c = 0; c < 3; ++c)
+                kernel_ebcot_t1<false, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                    _impl->d_a_f32[c], stride,
+                    _impl->d_cb_info, num_cbs,
+                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
+                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
+                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+        } else {
+            for (int c = 0; c < 3; ++c)
+                kernel_ebcot_t1<false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                    _impl->d_a_f32[c], stride,
+                    _impl->d_cb_info, num_cbs,
+                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
+                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
+                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
         }
         if (attempt == 0) tmark("EBCOT_T1");
 
