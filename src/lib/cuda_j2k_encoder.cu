@@ -5450,14 +5450,25 @@ CudaJ2KEncoder::encode_ebcot(
     const int  bp_skip    = 0;
     const bool use_bypass = false;
     const int  max_cb_d2h = CB_BUF_SIZE;
-    /* V219: max 2 attempts (attempt=0 step, attempt=1 step/2).
-     * Going beyond step/2 risks MAX_BP=16 overflow: for LL5 max_coeff≈1423
-     * at step/8 the quantized value q≈68744 > 65535=2^16, causing bit 16 to
-     * be silently dropped → catastrophic reconstruction error (15 dB loss).
+    /* V220: up to 3 attempts (2 halvings) with a pmax safety floor.
+     * The ZBP tag tree in T2 encodes z=pmax-nb against threshold=pmax.  When
+     * pmax>16, z can be so large it corrupts the codestream (V218 catastrophe:
+     * step=0.015 → pmax=19 → h_gradient dropped from 80→12 dB).
+     * Safe floor: min_base_step = 0.097 ensures every subband step > 2^(-4) =
+     * 0.0625, keeping pmax ≤ 16 for all levels and weights.  Below 0.097 any
+     * halving is rejected and the loop stops.
+     * From 0.509 this allows: 0.509→0.255→0.127 (2 halvings) before
+     * 0.127/2=0.064 hits the floor and exits — giving ~6 dB more PSNR for
+     * sparse content (gradients, flat fields) vs the previous 1-halving limit.
+     * max_attempts=3: caps at 2 halvings to prevent a 3rd halving from filling
+     * T1 buffers with fine-step aliasing artifacts that degrade PSNR (observed
+     * at 50 Mbps sine: 3 halvings → step=0.1911 → byte_ratio jumps 4.1%→82%
+     * flooding T2 PCRD and dropping PSNR from 35→28 dB).
      * thresh_high=0.55: patterns at 56-85% fill (checker_64, noise_small)
      * do NOT benefit from a retry — finer step codes DWT aliasing artifacts
      * in high-freq subbands, wasting T2 budget and degrading PSNR. */
-    const int  adaptive_max_attempts = 2;
+    const int   adaptive_max_attempts  = 3;
+    const float adaptive_min_base_step = 0.097f; /* pmax floor: step*0.65 > 2^(-4) */
     /* Retry only when bytes_used falls in [low, high] × target_bytes:
      *   low  = 0.005: skip for ultra-sparse content (single_impulse).
      *   high = 0.55:  retry only when T1 fills < 55% of budget. */
@@ -5570,7 +5581,9 @@ CudaJ2KEncoder::encode_ebcot(
                           / static_cast<double>(target_bytes);
         if (byte_ratio < adaptive_thresh_low || byte_ratio >= adaptive_thresh_high)
             break;
-        current_step *= 0.5f;
+        float next_step = current_step * 0.5f;
+        if (next_step < adaptive_min_base_step) break; /* pmax safety floor */
+        current_step = next_step;
     }
     base_step = current_step;  /* T2 codestream uses the final step for QCD */
 
