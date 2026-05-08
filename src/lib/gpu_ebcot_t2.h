@@ -226,49 +226,62 @@ struct BitWriter {
  * already emitted, known = final 1-bit has been sent.
  * encode() matches opj_tgt_encode: walks root→leaf, emits new bits only.
  */
+/* V234: Fixed-size TagTree — replaces dynamic vectors with stack arrays.
+ * Max CBs per precinct per subband = 4×4=16 (PPsb=128, CB_DIM=32 → cbsb=4).
+ * Tag tree for 4×4: 16 leaves + 4 inner + 1 root = 21 nodes, 3 levels.
+ * Eliminates malloc/free on every precinct-subband pair. */
 struct TagTree {
     struct Node {
-        int  value;   /* min value of subtree */
-        int  low;     /* highest threshold already emitted */
-        bool known;   /* final 1-bit sent; skip on re-entry */
-        int  parent;  /* index of parent, -1 for root */
+        int  value;
+        int  low;
+        bool known;
+        int  parent;
     };
 
-    std::vector<Node> nodes;
-    std::vector<int>  level_off; /* nodes[level_off[lv]..] = level lv */
-    std::vector<int>  level_w;
-    int               num_leaves = 0;
+    static constexpr int MAX_NODES  = 21;   /* 16+4+1 for 4×4 CBs */
+    static constexpr int MAX_LEVELS = 3;
+
+    Node nodes[MAX_NODES];
+    int  level_off[MAX_LEVELS];
+    int  level_w[MAX_LEVELS];
+    int  nlv        = 0;
+    int  num_leaves = 0;
 
     void build(int ncbx, int ncby) {
-        nodes.clear(); level_off.clear(); level_w.clear();
         int w = ncbx, h = ncby, total = 0;
-        std::vector<std::pair<int,int>> dims;
+        nlv = 0;
         while (true) {
-            dims.push_back({w, h});
+            level_off[nlv] = total;
+            level_w[nlv]   = w;
+            total += w * h;
+            ++nlv;
             if (w == 1 && h == 1) break;
             w = (w + 1) / 2;
             h = (h + 1) / 2;
         }
-        int nlv = (int)dims.size();
-        for (int lv = 0; lv < nlv; lv++) {
-            level_off.push_back(total); level_w.push_back(dims[lv].first);
-            total += dims[lv].first * dims[lv].second;
+        num_leaves = ncbx * ncby;
+        /* Re-compute heights at each level for parent index calc */
+        int wl[MAX_LEVELS], hl[MAX_LEVELS];
+        { int tw = ncbx, th = ncby;
+          for (int lv = 0; lv < nlv; ++lv) {
+              wl[lv] = tw; hl[lv] = th;
+              tw = (tw+1)/2; th = (th+1)/2;
+          }
         }
-        nodes.resize(total);
-        num_leaves = dims[0].first * dims[0].second;
-        for (int lv = 0; lv < nlv; lv++) {
-            int wlv = dims[lv].first, hlv = dims[lv].second, off = level_off[lv];
-            for (int j = 0; j < hlv; j++) for (int i = 0; i < wlv; i++) {
-                Node& n = nodes[off + j * wlv + i];
-                n.value = 0x7FFFFFFF; n.low = 0; n.known = false;
-                n.parent = (lv + 1 < nlv)
-                    ? level_off[lv+1] + (j/2) * dims[lv+1].first + (i/2)
-                    : -1;
+        for (int lv = 0; lv < nlv; ++lv) {
+            int off = level_off[lv];
+            for (int j = 0; j < hl[lv]; ++j) {
+                for (int i = 0; i < wl[lv]; ++i) {
+                    Node& n = nodes[off + j * wl[lv] + i];
+                    n.value = 0x7FFFFFFF; n.low = 0; n.known = false;
+                    n.parent = (lv + 1 < nlv)
+                        ? level_off[lv+1] + (j/2) * wl[lv+1] + (i/2)
+                        : -1;
+                }
             }
         }
     }
 
-    /* Set leaf value and propagate minimum upward. */
     void set_leaf(int leaf_idx, int value) {
         nodes[leaf_idx].value = value;
         int idx = leaf_idx;
@@ -279,13 +292,10 @@ struct TagTree {
         }
     }
 
-    /* Encode leaf_idx with threshold (matches opj_tgt_encode). */
     void encode(BitWriter& bw, int leaf_idx, int threshold) {
-        /* Collect path from leaf to root */
-        int path[32], plen = 0;
+        int path[MAX_LEVELS + 1], plen = 0;
         for (int idx = leaf_idx; idx != -1; idx = nodes[idx].parent)
             path[plen++] = idx;
-        /* Process root → leaf */
         int low = 0;
         for (int pi = plen - 1; pi >= 0; pi--) {
             Node& node = nodes[path[pi]];
@@ -409,13 +419,18 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         }
     }
 
-    /* pkt_by_prec[comp][res][prec_idx] = packet bytes for that precinct.
-     * prec_idx = py * nPx + px. */
-    std::vector<std::vector<std::vector<std::vector<uint8_t>>>> pkt_by_prec(3);
+    /* V234: Flat packet arena — one contiguous buffer per component instead of
+     * 177 per-precinct vectors.  comp_arena[c] holds all packets for component c;
+     * pkt_refs[c][r][prec_idx] records {offset, size} within that arena.
+     * Eliminates ~177 vector alloc/free calls per frame. */
+    struct PktRef { uint32_t offset; uint32_t size; };
+    std::vector<uint8_t> comp_arena[3];
+    std::vector<std::vector<std::vector<PktRef>>> pkt_refs(3);
     for (int c = 0; c < 3; ++c) {
-        pkt_by_prec[c].resize(num_levels + 1);
+        comp_arena[c].reserve((target_bytes > 0) ? target_bytes / 3 + 16384 : 512*1024);
+        pkt_refs[c].resize(num_levels + 1);
         for (int r = 0; r <= num_levels; ++r)
-            pkt_by_prec[c][r].resize(rg[r].nPx * rg[r].nPy);
+            pkt_refs[c][r].assign(rg[r].nPx * rg[r].nPy, PktRef{0, 0});
     }
 
     /* Compute per-subband p_max = band->numbps (OPJ tcd.c: eps+numgbits-1).
@@ -754,8 +769,11 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     if (active_sbs.empty()) {
                         bw.write_bit(0); /* empty packet */
                         bw.flush();
-                        auto& dst = pkt_by_prec[comp][res][py * rg[res].nPx + px];
-                        dst.insert(dst.end(), pkt_header_buf.begin(), pkt_header_buf.end());
+                        auto& arena = comp_arena[comp];
+                        uint32_t off = static_cast<uint32_t>(arena.size());
+                        arena.insert(arena.end(), pkt_header_buf.begin(), pkt_header_buf.end());
+                        pkt_refs[comp][res][py * rg[res].nPx + px] =
+                            {off, static_cast<uint32_t>(pkt_header_buf.size())};
                         continue;
                     }
 
@@ -771,9 +789,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                         incl_tree.build(ncbx_p, ncby_p);
                         zbp_tree.build(ncbx_p, ncby_p);
 
-                        std::vector<bool>     included(ncbs_p, false);
-                        std::vector<uint16_t> cb_len_use(ncbs_p, 0);
-                        std::vector<uint8_t>  cb_np_use(ncbs_p, 0);
+                        /* V234: Stack arrays — max 4×4=16 CBs per precinct-subband. */
+                        bool     included[16]   = {};
+                        uint16_t cb_len_use[16] = {};
+                        uint8_t  cb_np_use[16]  = {};
 
                         for (int licby = 0; licby < ncby_p; ++licby) {
                             for (int licbx = 0; licbx < ncbx_p; ++licbx) {
@@ -829,9 +848,14 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     }
 
                     bw.flush();
-                    auto& dst = pkt_by_prec[comp][res][py * rg[res].nPx + px];
-                    dst.insert(dst.end(), pkt_header_buf.begin(), pkt_header_buf.end());
-                    dst.insert(dst.end(), pkt_body.begin(), pkt_body.end());
+                    {
+                        auto& arena = comp_arena[comp];
+                        uint32_t off = static_cast<uint32_t>(arena.size());
+                        arena.insert(arena.end(), pkt_header_buf.begin(), pkt_header_buf.end());
+                        arena.insert(arena.end(), pkt_body.begin(), pkt_body.end());
+                        pkt_refs[comp][res][py * rg[res].nPx + px] =
+                            {off, static_cast<uint32_t>(arena.size() - off)};
+                    }
                 }
             }
         }
@@ -858,7 +882,8 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * Global step: min over r of (PPx_r << (NL-r)) = 256 (at r=NL, PPx=256, scale=1).
      * Precinct at resolution r for global position (gx, gy):
      *   px_r = (gx >> (NL-r)) / PPx_r,  py_r = (gy >> (NL-r)) / PPy_r. */
-    std::vector<const std::vector<uint8_t>*> ordered_pkts;
+    struct PktRange { int comp; uint32_t offset; uint32_t size; };
+    std::vector<PktRange> ordered_pkts;
     {
         int global_step = rg[num_levels].PPx;  /* 256 for 2K/4K DCP */
         /* visited[r][prec_idx]: ensures each precinct is emitted exactly once per comp. */
@@ -878,7 +903,8 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                         int prec_idx = py_r * rg[r].nPx + px_r;
                         if (!visited[r][prec_idx]) {
                             visited[r][prec_idx] = true;
-                            ordered_pkts.push_back(&pkt_by_prec[c][r][prec_idx]);
+                            auto ref = pkt_refs[c][r][prec_idx];
+                            ordered_pkts.push_back({c, ref.offset, ref.size});
                         }
                     }
                 }
@@ -887,7 +913,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     }
 
     size_t total_pkt = 0;
-    for (auto* p : ordered_pkts) total_pkt += p->size();
+    for (auto& pr : ordered_pkts) total_pkt += pr.size;
 
     /* Distribute packets across TPs by total byte count.  TP boundaries fall on
      * packet boundaries (we don't split a packet across TPs). */
@@ -902,7 +928,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             int last_t = (t == n_tile_parts - 1);
             while (pkt_idx < (int)ordered_pkts.size()
                    && (last_t || accum < target_per_tp)) {
-                accum += ordered_pkts[pkt_idx]->size();
+                accum += ordered_pkts[pkt_idx].size;
                 ++pkt_idx;
             }
             tp_pkt_bytes[t] = accum;
@@ -933,8 +959,12 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         w8(static_cast<uint8_t>(n_tile_parts));        /* TNsot: total TPs */
         w16(J2K_SOD_M);
         int end_pkt = (t + 1 < n_tile_parts) ? tp_first_pkt[t + 1] : (int)ordered_pkts.size();
-        for (int i = tp_first_pkt[t]; i < end_pkt; ++i)
-            cs.insert(cs.end(), ordered_pkts[i]->begin(), ordered_pkts[i]->end());
+        for (int i = tp_first_pkt[t]; i < end_pkt; ++i) {
+            const auto& pr = ordered_pkts[i];
+            const auto& arena = comp_arena[pr.comp];
+            cs.insert(cs.end(), arena.begin() + pr.offset,
+                      arena.begin() + pr.offset + pr.size);
+        }
     }
 
     /* EOC — final marker.  V139 FIX: NEVER pad after EOC. */
