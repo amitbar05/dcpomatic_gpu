@@ -31,7 +31,7 @@ int main(int argc, char** argv)
 {
     const int W = 2048, H = 1080, FPS = 24, N = 20;
     const int64_t BR = 150'000'000;
-    bool fast = (argc > 1 && std::string(argv[1]) == "fast");
+    (void)argc; (void)argv;
 
     CudaJ2KEncoder enc;
     if (!enc.is_initialized()) { std::fprintf(stderr, "init failed\n"); return 1; }
@@ -49,17 +49,17 @@ int main(int argc, char** argv)
 
     /* Warm up: 10 frames so GPU/DRAM reaches thermal steady state */
     for (int i = 0; i < 10; ++i)
-        (void) enc.encode_ebcot(rgb.data(), W, H, W*3, BR, FPS, false, false, fast);
+        (void) enc.encode_ebcot(rgb.data(), W, H, W*3, BR, FPS, false, false);
 
     double total_ms = 0;
     size_t out_bytes = 0;
     for (int i = 0; i < N; ++i) {
         auto t = Clock::now();
-        auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, BR, FPS, false, false, fast);
+        auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, BR, FPS, false, false);
         total_ms += ms_since(t);
         out_bytes = cs.size();
     }
-    std::printf("mode=%s: %.2f ms/frame avg, %zu bytes\n",
-                fast ? "fast" : "correct", total_ms / N, out_bytes);
+    std::printf("correct mode: %.2f ms/frame avg, %zu bytes\n",
+                total_ms / N, out_bytes);
     return 0;
 }

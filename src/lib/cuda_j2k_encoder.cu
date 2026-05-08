@@ -5582,30 +5582,32 @@ CudaJ2KEncoder::encode_ebcot(
          * V228: MAX_BP=16 for steps ≥ 0.097 (pmax ≤ 16 guaranteed).
          * V230: MAX_BP=17 for steps < 0.097 (step=0.0625: LL5 pmax=17).
          * V233: MAX_BP=18 for steps < 0.049 (step=0.03125: LL5 pmax=18). */
+        /* V246: BYPASS is a compile-time template param → dead code elimination
+         * of all non-bypass/bypass branches in the kernel. */
         if (current_step < 0.049f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
                     _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+                    _impl->d_ebcot_numbp[c], bp_skip);
         } else if (current_step < 0.097f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
                     _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+                    _impl->d_ebcot_numbp[c], bp_skip);
         } else {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
                     _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+                    _impl->d_ebcot_numbp[c], bp_skip);
         }
         if (attempt == 0) tmark("EBCOT_T1");
 
