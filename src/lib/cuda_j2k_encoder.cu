@@ -132,6 +132,14 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V237: Compact final D2H — transfer only ceil(max_coded_len/64)*64 bytes per CB.
+          h_ebcot_len is already known from V236 lengths-only loop.  Sparse frames
+          (flat, gradients, title cards: max_coded_len ≈ 1–200 B) shrink the coded
+          data transfer from 13.4 MB to under 1 MB per component.  Dense frames
+          (checker: max_coded_len ≈ 1800 B < 2048 = CB_BUF_SIZE) also benefit.
+          The reduced stride is passed as cb_stride to build_ebcot_codestream, which
+          already parameterises it (V137).  Zero-coded CBs are safe: sentinel byte
+          is at offset 0, coded data at offset 1..len, all within max_cb_d2h >= 64.
     V236: Lazy D2H — skip coded-data transfer for non-final retry attempts.
           Previously every T1 attempt (up to 4) transferred ~14 MB (coded data +
           passlens) to host.  Now non-final attempts transfer only h_ebcot_len
@@ -5471,7 +5479,7 @@ CudaJ2KEncoder::encode_ebcot(
     /* Correct mode: MQ coder, all bit-planes, full D2H. */
     const int  bp_skip    = 0;
     const bool use_bypass = false;
-    const int  max_cb_d2h = CB_BUF_SIZE;
+    int  max_cb_d2h = CB_BUF_SIZE;
     /* V225: Two-phase PCRD in gpu_ebcot_t2.h.
      * Phase 1: sequential greedy includes all coarse subbands fully (ensures LL5
      * and intermediate levels always encoded; V224 proportional gave LL5 only 38%
@@ -5669,9 +5677,24 @@ CudaJ2KEncoder::encode_ebcot(
     }
     base_step = current_step;  /* T2 codestream uses the final step for QCD */
 
-    /* V236: Final D2H — transfer full coded data from the last T1 run.
-     * This is the only full-data transfer per frame; all retry-loop
-     * iterations above only transferred lengths for byte_ratio decisions. */
+    /* V237: Compact final D2H — transfer only ceil(max_coded_len / 64) * 64 bytes
+     * per code block instead of the full CB_BUF_SIZE=2048.
+     * h_ebcot_len was already transferred (V236 lengths-only loop above).
+     * For sparse content (flat, gradients, title cards): max coded_len is a few
+     * hundred bytes → D2H shrinks from 13.4 MB to < 1 MB per component.
+     * For dense content (checker, noise): max_coded_len ≈ CB_BUF_SIZE → no change.
+     * min 64 bytes: handles zero-coded CBs (sentinel byte + 1 coded byte = safe). */
+    {
+        uint16_t max_coded = 1;
+        for (int c = 0; c < 3; ++c)
+            for (int i = 0; i < num_cbs; ++i)
+                if (_impl->h_ebcot_len[c][i] > max_coded)
+                    max_coded = _impl->h_ebcot_len[c][i];
+        max_cb_d2h = static_cast<int>(((max_coded + 64) + 63) & ~63u);  /* round up to 64-byte boundary, +1 for sentinel */
+        if (max_cb_d2h > CB_BUF_SIZE) max_cb_d2h = CB_BUF_SIZE;
+    }
+
+    /* V236: Final D2H — transfer only up to max_cb_d2h bytes per CB (V237 compact). */
     for (int c = 0; c < 3; ++c) {
         cudaMemcpy2DAsync(_impl->h_ebcot_data[c], max_cb_d2h,
                           _impl->d_ebcot_data[c], CB_BUF_SIZE,
