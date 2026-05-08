@@ -333,7 +333,8 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     /* SIZ */
     w16(J2K_SIZ_M);
     w16(2 + 2 + 32 + 2 + 3*3);
-    w16(0x0000);  /* Rsiz: no profile (DCP-spec) */
+    /* V231: OPJ_PROFILE_CINEMA_2K=0x0003, OPJ_PROFILE_CINEMA_4K=0x0004 per verify_j2k */
+    w16(static_cast<uint16_t>(is_4k ? 0x0004 : 0x0003));  /* Rsiz: cinema profile */
     w32(width); w32(height);
     w32(0); w32(0);
     w32(width); w32(height);
@@ -357,9 +358,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * Previous SPcod=0x00 was correct for correct mode (MQ-only) but incorrect for fast mode. */
     w8(use_bypass ? 0x01 : 0x00); /* SPcod: BYPASS bit 0 */
     w8(0x00); /* filter = 0 (9/7 irreversible) */
-    /* V212: Precinct sizes PPx=PPy=15 = one precinct per resolution */
-    for (int p = 0; p < num_precincts; ++p)
-        w8(0xFF);
+    /* V231: DCP requires 0x77 (128×128) for r=0, 0x88 (256×256) for r=1..NL */
+    w8(0x77);
+    for (int p = 1; p < num_precincts; ++p)
+        w8(0x88);
 
     /* QCD — per-subband step sizes (matching T1 quantization) */
     {
@@ -391,13 +393,30 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * Adding QCC with step×1.1 while T1 uses base_step causes a decoder amplitude
      * mismatch (decoder dequantizes with the wrong step for comp 0/2). */
 
-    /* V182: Build per-component, per-resolution packet blobs.
-     * CPRL order: for each component c, write packets for res 0..N.
-     * Simple rate control: limit each component to target_bytes/3. */
-    /* pkt_by_res[comp][res] = packet bytes (header + body) for that (comp, res) pair */
-    std::vector<std::vector<uint8_t>> pkt_by_res[3];
-    for (int c = 0; c < 3; c++)
-        pkt_by_res[c].resize(num_levels + 1);
+    /* V231: Resolution geometry for precinct grid (matches COD marker values). */
+    struct ResGeom { int Xr, Yr, PPx, PPy, nPx, nPy; };
+    std::vector<ResGeom> rg(num_levels + 1);
+    {
+        int Xr[8], Yr_arr[8];
+        Xr[num_levels] = width; Yr_arr[num_levels] = height;
+        for (int r = num_levels - 1; r >= 0; --r) {
+            Xr[r] = (Xr[r+1]+1)/2; Yr_arr[r] = (Yr_arr[r+1]+1)/2;
+        }
+        for (int r = 0; r <= num_levels; ++r) {
+            int PP = (r == 0) ? 128 : 256;
+            rg[r] = {Xr[r], Yr_arr[r], PP, PP,
+                     (Xr[r]+PP-1)/PP, (Yr_arr[r]+PP-1)/PP};
+        }
+    }
+
+    /* pkt_by_prec[comp][res][prec_idx] = packet bytes for that precinct.
+     * prec_idx = py * nPx + px. */
+    std::vector<std::vector<std::vector<std::vector<uint8_t>>>> pkt_by_prec(3);
+    for (int c = 0; c < 3; ++c) {
+        pkt_by_prec[c].resize(num_levels + 1);
+        for (int r = 0; r <= num_levels; ++r)
+            pkt_by_prec[c][r].resize(rg[r].nPx * rg[r].nPy);
+    }
 
     /* Compute per-subband p_max = band->numbps (OPJ tcd.c: eps+numgbits-1).
      * V192: numgbits depends on profile (1 for 2K, 2 for 4K).
@@ -674,16 +693,16 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         }
     }
 
-    /* V181: build_tp fills pkt_by_res[comp][res] — one blob per (comp, res) pair.
-     * Packets are then interleaved in CPRL order: for each comp, res 0..N.
-     * sanitize is applied per-packet blob to ensure no 0xFF marker sequences. */
+    /* V231: build_tp writes one packet per (comp, res, precinct) matching DCP precinct
+     * sizes (r=0: 0x77=128×128, r≥1: 0x88=256×256).  Each precinct's packet contains
+     * only the CBs from subbands whose spatial extent overlaps that precinct.
+     * Empty precincts (no CBs in any subband) emit a single "0" bit empty packet.
+     * CB-to-precinct mapping: px = (sg.x0 + cbx*CB_DIM) / PPx, py similarly.
+     * This produces multi-precinct packets compatible with OPJ and DCP verify_j2k. */
     auto build_tp = [&](int comp) {
         size_t comp_bytes = 0;
         std::vector<uint8_t> pkt_header_buf;
         std::vector<uint8_t> pkt_body;
-        /* V203: Pre-size buffers based on target_bytes to avoid reallocations.
-         * Correct mode at 150Mbps: per_comp ~260KB, header ~16KB.
-         * Fast mode: per_comp ~72KB, header ~4KB. */
         const size_t est_hdr = (target_bytes > 0) ? (target_bytes / 48 + 4096) : 16384;
         const size_t est_body = (target_bytes > 0) ? (target_bytes / 3 + 16384) : (512 * 1024);
         pkt_header_buf.reserve(est_hdr);
@@ -691,104 +710,132 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
         TagTree incl_tree, zbp_tree;
 
+        struct SbPrec { size_t sb_idx; int cbx0, cbx1, cby0, cby1; };
+        std::vector<SbPrec> active_sbs;
+        active_sbs.reserve(3);
+
         for (int res = 0; res <= num_levels; res++) {
-            pkt_header_buf.clear();
-            pkt_body.clear();
+            /* Resolution geometry (pre-computed in rg[]). */
+            int PPx = rg[res].PPx, PPy = rg[res].PPy;
+            int nPx = rg[res].nPx, nPy = rg[res].nPy;
 
-            BitWriter bw(pkt_header_buf);
-            bw.write_bit(1); /* non-empty packet */
+            /* Subbands at this resolution (HL, LH, HH order preserved). */
+            std::vector<size_t> res_sbs;
+            for (size_t sb = 0; sb < subbands.size(); ++sb)
+                if (subbands[sb].res == res) res_sbs.push_back(sb);
 
-            for (size_t sb = 0; sb < subbands.size(); sb++) {
-                if (subbands[sb].res != res) continue;
+            for (int py = 0; py < nPy; ++py) {
+                for (int px = 0; px < nPx; ++px) {
+                    pkt_header_buf.clear();
+                    pkt_body.clear();
+                    BitWriter bw(pkt_header_buf);
 
-                int ncbx  = subbands[sb].ncbx, ncby = subbands[sb].ncby;
-                int ncbs  = ncbx * ncby;
-                int cb_start = subbands[sb].cb_start_idx;
-                int pmax  = sb_pmax_for_comp(sb, comp);
-#ifdef GPU_J2K_DEBUG_NP
-                if (comp == 0 && (res <= 1 || res >= 4)) {
-                    for (int cbi = 0; cbi < std::min(ncbs, 4); cbi++) {
-                        int cb_idx = cb_start + cbi;
-                        uint8_t np_v = num_passes[comp][cb_idx];
-                        uint8_t nb_v = cb_num_bp ? cb_num_bp[comp][cb_idx] : 0;
-                        uint16_t ln_v = coded_len[comp][cb_idx];
-                        fprintf(stderr, "[T2_DBG] res=%d sb=%zu cbi=%d np=%d nb=%d len=%d pmax=%d z=%d\n",
-                            res, sb, cbi, np_v, nb_v, ln_v, pmax, pmax - nb_v);
+                    /* V232: CB-to-precinct mapping using subband-local (0-based) coordinates.
+                     * Detail subbands (HL/LH/HH) are at half the resolution of the reference
+                     * grid at resolution r, so their precinct size in subband coords is PPx/2.
+                     * LL (r=0) is at full precinct size PPx. With PPx=256 for r>0 and PPx=128
+                     * for r=0: PPsb=128 in both cases, giving cbsb=PPsb/CB_DIM=4 CBs/precinct.
+                     * CB coords within each subband are already 0-based (sg.cb_x0=0). */
+                    int PPsb_x = (res == 0) ? PPx : PPx / 2;
+                    int PPsb_y = (res == 0) ? PPy : PPy / 2;
+                    int cbsb_x = PPsb_x / CB_DIM;  /* CBs per precinct in x (=4) */
+                    int cbsb_y = PPsb_y / CB_DIM;  /* CBs per precinct in y (=4) */
+                    active_sbs.clear();
+                    for (size_t sb_idx : res_sbs) {
+                        const SubbandGeom& sg = subbands[sb_idx];
+                        int cbx0 = std::min(sg.ncbx, px * cbsb_x);
+                        int cbx1 = std::min(sg.ncbx, (px + 1) * cbsb_x);
+                        int cby0 = std::min(sg.ncby, py * cbsb_y);
+                        int cby1 = std::min(sg.ncby, (py + 1) * cbsb_y);
+                        if (cbx0 < cbx1 && cby0 < cby1)
+                            active_sbs.push_back({sb_idx, cbx0, cbx1, cby0, cby1});
                     }
-                }
-#endif
 
-                incl_tree.build(ncbx, ncby);
-                zbp_tree.build(ncbx, ncby);
-
-                /* V196: PCRD pre-pass set the per-CB np_use / len_use globally.
-                 * Here we just consume those decisions: a CB is included iff
-                 * pcrd_np_use[comp][cb_idx] > 0. Excluded CBs: incl=MAX (never
-                 * included), zbp=pmax (all zero bit-planes). */
-                std::vector<bool> included(ncbs, false);
-                std::vector<uint16_t> cb_len_use(ncbs, 0);
-                std::vector<uint8_t>  cb_np_use(ncbs, 0);
-                for (int cbi = 0; cbi < ncbs; cbi++) {
-                    int cb_idx = cb_start + cbi;
-                    uint8_t  np_use  = pcrd_np_use [comp][cb_idx];
-                    uint16_t len_use = pcrd_len_use[comp][cb_idx];
-                    if (np_use == 0 || len_use == 0) {
-                        incl_tree.set_leaf(cbi, 0x7FFFFFFF);
-                        zbp_tree.set_leaf(cbi, pmax);
+                    if (active_sbs.empty()) {
+                        bw.write_bit(0); /* empty packet */
+                        bw.flush();
+                        auto& dst = pkt_by_prec[comp][res][py * rg[res].nPx + px];
+                        dst.insert(dst.end(), pkt_header_buf.begin(), pkt_header_buf.end());
                         continue;
                     }
-                    included[cbi] = true;
-                    comp_bytes += len_use;
-                    cb_len_use[cbi] = len_use;
-                    cb_np_use[cbi]  = np_use;
-                    incl_tree.set_leaf(cbi, 0);
-                    int nb = (cb_num_bp != nullptr) ? static_cast<int>(cb_num_bp[comp][cb_idx]) : 0;
-                    int z  = pmax - nb;
-                    if (z < 0) z = 0;
-                    zbp_tree.set_leaf(cbi, z);
-                }
 
-                /* Encode packet header and body for each CB in order. */
-                for (int cbi = 0; cbi < ncbs; cbi++) {
-                    int cb_idx = cb_start + cbi;
+                    bw.write_bit(1); /* non-empty packet */
 
-                    /* Inclusion tag tree (threshold = layer+1 = 1 for 1st layer). */
-                    incl_tree.encode(bw, cbi, 1);
-                    if (!included[cbi]) continue;
+                    for (const auto& sp : active_sbs) {
+                        const SubbandGeom& sg = subbands[sp.sb_idx];
+                        int pmax = sb_pmax_for_comp(sp.sb_idx, comp);
+                        int ncbx_p = sp.cbx1 - sp.cbx0;
+                        int ncby_p = sp.cby1 - sp.cby0;
+                        int ncbs_p = ncbx_p * ncby_p;
 
-                    /* ZBP tag tree (threshold = pmax encodes exact z value). */
-                    zbp_tree.encode(bw, cbi, pmax);
+                        incl_tree.build(ncbx_p, ncby_p);
+                        zbp_tree.build(ncbx_p, ncby_p);
 
-                    /* V189: use truncated np / len from pre-scan. */
-                    uint8_t  np  = cb_np_use[cbi];
-                    uint16_t len = cb_len_use[cbi];
+                        std::vector<bool>     included(ncbs_p, false);
+                        std::vector<uint16_t> cb_len_use(ncbs_p, 0);
+                        std::vector<uint8_t>  cb_np_use(ncbs_p, 0);
 
-                    /* Number of coding passes (ITU-T T.800 Table B.4 / OpenJPEG t2_putnumpasses). */
-                    if (np == 1)       bw.write_bit(0);
-                    else if (np == 2)  bw.write_bits(2, 2);
-                    else if (np <= 5)  bw.write_bits(0xC | (np - 3), 4);
-                    else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
-                    else               bw.write_bits(0xFF80u | (unsigned(np) - 37u), 16);
+                        for (int licby = 0; licby < ncby_p; ++licby) {
+                            for (int licbx = 0; licbx < ncbx_p; ++licbx) {
+                                int li      = licby * ncbx_p + licbx;
+                                int cb_idx  = sg.cb_start_idx
+                                            + (sp.cby0 + licby) * sg.ncbx
+                                            + (sp.cbx0 + licbx);
+                                uint8_t  np_u  = pcrd_np_use [comp][cb_idx];
+                                uint16_t len_u = pcrd_len_use[comp][cb_idx];
+                                if (np_u == 0 || len_u == 0) {
+                                    incl_tree.set_leaf(li, 0x7FFFFFFF);
+                                    zbp_tree.set_leaf(li, pmax);
+                                } else {
+                                    included[li]    = true;
+                                    comp_bytes     += len_u;
+                                    cb_len_use[li]  = len_u;
+                                    cb_np_use[li]   = np_u;
+                                    incl_tree.set_leaf(li, 0);
+                                    int nb = cb_num_bp ? (int)cb_num_bp[comp][cb_idx] : 0;
+                                    zbp_tree.set_leaf(li, std::max(0, pmax - nb));
+                                }
+                            }
+                        }
 
-                    /* Code-block length: Lblock + floor(log2(np)) bits. */
-                    int lblock = 3;
-                    int floor_log2_np = (np <= 1) ? 0 : (31 - __builtin_clz(static_cast<unsigned>(np)));
-                    int len_bits = lblock + floor_log2_np;
-                    if (len_bits < 1) len_bits = 1;
-                    while ((1 << len_bits) <= len) { bw.write_bit(1); lblock++; len_bits++; }
-                    bw.write_bit(0);
-                    bw.write_bits(len, len_bits);
+                        for (int li = 0; li < ncbs_p; ++li) {
+                            incl_tree.encode(bw, li, 1);
+                            if (!included[li]) continue;
+                            zbp_tree.encode(bw, li, pmax);
 
-                    const uint8_t* src = coded_data[comp] + (size_t)cb_idx * cb_stride + 1;
-                    pkt_body.insert(pkt_body.end(), src, src + len);
+                            uint8_t  np  = cb_np_use[li];
+                            uint16_t len = cb_len_use[li];
+
+                            if (np == 1)       bw.write_bit(0);
+                            else if (np == 2)  bw.write_bits(2, 2);
+                            else if (np <= 5)  bw.write_bits(0xC | (np - 3), 4);
+                            else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
+                            else               bw.write_bits(0xFF80u | (unsigned(np) - 37u), 16);
+
+                            int lblock = 3;
+                            int flnp = (np <= 1) ? 0 : (31 - __builtin_clz((unsigned)np));
+                            int len_bits = lblock + flnp;
+                            if (len_bits < 1) len_bits = 1;
+                            while ((1 << len_bits) <= len) { bw.write_bit(1); lblock++; len_bits++; }
+                            bw.write_bit(0);
+                            bw.write_bits(len, len_bits);
+
+                            int cb_idx = sg.cb_start_idx
+                                       + (sp.cby0 + li / ncbx_p) * sg.ncbx
+                                       + (sp.cbx0 + li % ncbx_p);
+                            const uint8_t* src = coded_data[comp] + (size_t)cb_idx * cb_stride + 1;
+                            pkt_body.insert(pkt_body.end(), src, src + len);
+                        }
+                    }
+
+                    bw.flush();
+                    auto& dst = pkt_by_prec[comp][res][py * rg[res].nPx + px];
+                    dst.insert(dst.end(), pkt_header_buf.begin(), pkt_header_buf.end());
+                    dst.insert(dst.end(), pkt_body.begin(), pkt_body.end());
                 }
             }
-
-            bw.flush();
-            auto& dst = pkt_by_res[comp][res];
-            dst.insert(dst.end(), pkt_header_buf.begin(), pkt_header_buf.end());
-            dst.insert(dst.end(), pkt_body.begin(), pkt_body.end());
         }
+        (void)comp_bytes;
     }; /* end lambda build_tp */
 
     /* V183: BitWriter now implements J2K-compatible byte stuffing (7 bits after
@@ -799,25 +846,45 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     fut0.wait();
     fut1.wait();
 
-    /* V210: Interleave packets in CPRL order: for each component, write res 0..N.
-     * DCP SMPTE 429-4 requires CPRL; decoder restores XYZ via inverse ICT first.
-     * With Scod=0x00 each resolution=1 precinct, packet assignment is unambiguous. */
-#ifdef GPU_J2K_DEBUG_PACKETS
-    for (int r = 0; r <= num_levels; r++)
-        for (int c = 0; c < 3; c++)
-            fprintf(stderr, "DEBUG pkt r=%d c=%d size=%zu\n", r, c, pkt_by_res[c][r].size());
-#endif
-    /* V194: split packets across DCP-required tile-parts (3 for 2K, 6 for 4K).
-     * Each TP: SOT (12 bytes) + SOD (2 bytes) + its share of packet bytes.
-     * Pack packets into TPs in CPRL order, splitting on byte boundaries. */
+    /* V194: split packets across DCP-required tile-parts (3 for 2K, 6 for 4K). */
     int n_tile_parts = is_4k ? 6 : 3;
 
-    /* Build a flat ordered list of (comp, res) packet blobs in CPRL order. */
+    /* V231: Build ordered_pkts in CPRL order.
+     * CPRL for single-component tile-parts (DCP): iterate global spatial positions
+     * (gy, gx) with step = finest precinct size (256) in raster order; for each
+     * position, emit packets for all resolutions r where the precinct is first seen.
+     * This produces correct CPRL ordering that OPJ decodes without error.
+     *
+     * Global step: min over r of (PPx_r << (NL-r)) = 256 (at r=NL, PPx=256, scale=1).
+     * Precinct at resolution r for global position (gx, gy):
+     *   px_r = (gx >> (NL-r)) / PPx_r,  py_r = (gy >> (NL-r)) / PPy_r. */
     std::vector<const std::vector<uint8_t>*> ordered_pkts;
-    ordered_pkts.reserve((num_levels + 1) * 3);
-    for (int c = 0; c < 3; c++)
-        for (int r = 0; r <= num_levels; r++)
-            ordered_pkts.push_back(&pkt_by_res[c][r]);
+    {
+        int global_step = rg[num_levels].PPx;  /* 256 for 2K/4K DCP */
+        /* visited[r][prec_idx]: ensures each precinct is emitted exactly once per comp. */
+        std::vector<std::vector<bool>> visited(num_levels + 1);
+        for (int r = 0; r <= num_levels; ++r)
+            visited[r].assign(rg[r].nPx * rg[r].nPy, false);
+
+        for (int c = 0; c < 3; ++c) {
+            for (auto& v : visited) std::fill(v.begin(), v.end(), false);
+            for (int gy = 0; gy < height; gy += global_step) {
+                for (int gx = 0; gx < width; gx += global_step) {
+                    for (int r = 0; r <= num_levels; ++r) {
+                        int scale = num_levels - r;
+                        int px_r = (gx >> scale) / rg[r].PPx;
+                        int py_r = (gy >> scale) / rg[r].PPy;
+                        if (px_r >= rg[r].nPx || py_r >= rg[r].nPy) continue;
+                        int prec_idx = py_r * rg[r].nPx + px_r;
+                        if (!visited[r][prec_idx]) {
+                            visited[r][prec_idx] = true;
+                            ordered_pkts.push_back(&pkt_by_prec[c][r][prec_idx]);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     size_t total_pkt = 0;
     for (auto* p : ordered_pkts) total_pkt += p->size();

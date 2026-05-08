@@ -32,13 +32,13 @@ build_identity_colour_params(GpuColourParams& p)
 
 static int
 run_case(CudaJ2KEncoder& enc, const std::vector<uint16_t>& rgb,
-         int W, int H, const char* label, bool fast)
+         int W, int H, const char* label)
 {
-    /* Warm up then encode */
-    (void) enc.encode_ebcot(rgb.data(), W, H, W * 3, 150'000'000, 24, false, false, fast);
-    auto cs = enc.encode_ebcot(rgb.data(), W, H, W * 3, 150'000'000, 24, false, false, fast);
+    /* Warm up then encode (fast mode removed in V214 — always correct mode) */
+    (void) enc.encode_ebcot(rgb.data(), W, H, W * 3, 150'000'000, 24, false, false);
+    auto cs = enc.encode_ebcot(rgb.data(), W, H, W * 3, 150'000'000, 24, false, false);
 
-    printf("\n=== %s (%s) ===\n", label, fast ? "fast" : "correct");
+    printf("\n=== %s ===\n", label);
     printf("Codestream size: %zu bytes\n", cs.size());
 
     auto data = std::make_shared<dcp::ArrayData>(cs.data(), static_cast<int>(cs.size()));
@@ -65,10 +65,8 @@ int main()
     for (size_t i = 0; i < near_black.size(); ++i) near_black[i] = (i % 7) == 0 ? 16 : 0;
 
     int fails = 0;
-    fails += run_case(enc, black,      W, H, "all-black",  false);
-    fails += run_case(enc, black,      W, H, "all-black",  true);
-    fails += run_case(enc, near_black, W, H, "near-black", false);
-    fails += run_case(enc, near_black, W, H, "near-black", true);
+    fails += run_case(enc, black,      W, H, "all-black");
+    fails += run_case(enc, near_black, W, H, "near-black");
     printf("\n%s\n", fails == 0 ? "ALL PASSED" : "FAILURES PRESENT");
     return fails;
 }
