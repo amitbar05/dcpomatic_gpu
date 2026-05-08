@@ -808,6 +808,12 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     int actual_bp_skip = (bp_skip > 0) ? (bp_skip < num_bp ? bp_skip : num_bp - 1) : 0;
 
     for (int bp = num_bp - 1; bp >= 0; bp--) {
+        /* V222: CB buffer overflow guard. Each bit-plane (SPP+MRP+CUP bypass) can
+         * write up to ~700 bytes (400B MQ SPP + 128B MRP + 128B CUP + flush).
+         * Leave 768 bytes headroom to prevent mq.bp from crossing into the next
+         * codeblock's buffer — which causes cascading data-race corruption on
+         * high-content patterns (checker_8 HL3/HL4 overflowed at ~11 bp). */
+        if (static_cast<int>(mq.bp - mq.start) >= CB_BUF_SIZE - 768) break;
         bool first_bp = (bp == num_bp - 1);
         /* V172: bp_idx for FAST4 mag_bp_flat indexing (MSB plane = bp_idx 0) */
         const int bp_idx = num_bp - 1 - bp;
@@ -824,7 +830,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             mq_restart(&mq, mq.bp + 1);
         }
 
-        for (int r2 = 0; r2 < cbh; r2++) coded_bits[r2] = 0;
+        for (int r2 = 0; r2 < CB_DIM; r2++) coded_bits[r2] = 0;
 
         /* --- Significance Propagation Pass (SPP) — always MQ, skip for first bit-plane --- */
         if (!first_bp) {

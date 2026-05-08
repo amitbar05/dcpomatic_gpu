@@ -156,6 +156,7 @@ int main()
     run(enc, "h_bars_8",            [](int x,int){ return uint16_t(((x/256) % 2) ? 50000 : 10000); });
     run(enc, "v_bars_8",            [](int,int y){ return uint16_t(((y/135) % 2) ? 50000 : 10000); });
     run(enc, "checker_64",          [](int x,int y){ return uint16_t((((x/64)+(y/64))&1) ? 50000 : 10000); });
+    run(enc, "checker_8",           [](int x,int y){ return uint16_t((((x/8)+(y/8))&1) ? 60000 : 4000); });
     run(enc, "single_impulse",      [](int x,int y){ return (x==W/2 && y==H/2) ? 60000 : 30000; });
     run(enc, "noise_small",         [](int x,int y){
         unsigned s = (unsigned)(x * 17u + y * 31u);

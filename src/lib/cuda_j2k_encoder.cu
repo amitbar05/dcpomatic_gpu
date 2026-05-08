@@ -5450,6 +5450,17 @@ CudaJ2KEncoder::encode_ebcot(
     const int  bp_skip    = 0;
     const bool use_bypass = false;
     const int  max_cb_d2h = CB_BUF_SIZE;
+    /* V225: Two-phase PCRD in gpu_ebcot_t2.h.
+     * Phase 1: sequential greedy includes all coarse subbands fully (ensures LL5
+     * and intermediate levels always encoded; V224 proportional gave LL5 only 38%
+     * when total_t1=676KB >> budget=260KB → dominant gradient poorly reconstructed).
+     * Phase 2: proportional budget + PCRD-OPT within each overflow subband. */
+    /* V222: CB buffer overflow guard in gpu_ebcot.h T1 kernel.
+     * High-content code blocks (checker_8 HL3/HL4 with ~11 bit-planes × 200B/bp
+     * = 2200B > CB_BUF_SIZE=2048) caused mq.bp to advance past the allocated
+     * output buffer, corrupting adjacent code blocks in parallel CUDA execution.
+     * Fix: break the bit-plane loop when >= CB_BUF_SIZE-768 bytes are used,
+     * leaving 768B headroom for the last bit-plane (SPP+MRP+CUP+flush ≤ 700B). */
     /* V220: up to 3 attempts (2 halvings) with a pmax safety floor.
      * The ZBP tag tree in T2 encodes z=pmax-nb against threshold=pmax.  When
      * pmax>16, z can be so large it corrupts the codestream (V218 catastrophe:

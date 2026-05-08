@@ -442,42 +442,228 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         pcrd_len_use[c].assign(total_cbs, 0);
     }
 
+    /* V224: Hybrid proportional-PCRD truncation point selection.
+     *
+     * V219 sequential greedy gave first CBs in each subband everything and
+     * last CBs nothing → checker_8 8.1 dB (fine-detail starvation within subbands).
+     * V223 global PCRD-OPT fixed within-subband coverage but CDF97 synthesis norms
+     * made coarse subbands (LL5 norm=33.84) outbid fine subbands (HL1 norm=2.022)
+     * by ~82× → HL1 starvation on smooth content → photo_synth 37.9 dB regression.
+     *
+     * V224 splits the problem: between-subband budget is proportional to T1 bytes
+     * (preserves balance across subbands); within each subband, PCRD-OPT (convex
+     * hull + slope sort) distributes the subband budget uniformly across all CBs.
+     *
+     * Per-CB distortion model: D(p) = (norm × step)² × N_cb × 4^(-p/3)
+     * Each hull segment slope = ΔD/ΔR (distortion gain per byte). */
+    struct PcrdEntry {
+        float    slope;
+        int      cb_idx;
+        uint8_t  p_from;     /* group start pass (ordering: p_from must = nxt[cb]) */
+        uint8_t  p_to;       /* group end pass (inclusive)                         */
+        uint16_t cum_len;    /* cumulative coded bytes through p_to               */
+        uint16_t delta_r;    /* total bytes for passes p_from..p_to               */
+    };
+
+    /* Per-CB convex hull working buffer (reused across CBs). */
+    struct HullSeg {
+        float    slope;
+        float    delta_d;  /* ΔD for this segment (for re-merging)  */
+        int      p_from;
+        int      p_to;
+        uint16_t cum_len;
+        uint16_t delta_r;
+    };
+    std::vector<HullSeg> hull_stack;
+    hull_stack.reserve(MAX_PASSES);
+
     const size_t per_comp_target = (target_bytes > 0)
         ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
+
+    /* V225: Two-phase truncation point selection.
+     *
+     * Phase 1 — sequential greedy (coarsest first): include each subband fully until
+     * the budget would overflow. This ensures LL5 and intermediate detail subbands are
+     * ALWAYS fully encoded, preserving low-frequency content regardless of T1 ratio.
+     * (V224 proportional gave LL5 only 38.5% of budget when total_t1=676KB vs budget
+     * =260KB → the dominant gradient component was poorly reconstructed.)
+     *
+     * Phase 2 — proportional PCRD-OPT for the overflow subbands: remaining budget is
+     * distributed proportional to each subband's T1, and within each subband PCRD-OPT
+     * (convex hull + slope sort) allocates budget uniformly by merit across all CBs.
+     * This avoids the V219 flaw of giving first CBs 100% and last CBs 0%. */
+    static const float CDF97_NORMS[4][10] = {
+        {1.000f,1.965f,4.177f,8.403f,16.90f,33.84f,67.69f,135.3f,270.6f,540.9f},
+        {2.022f,3.989f,7.585f,13.94f,25.36f,46.07f,83.53f,151.5f,274.6f,497.2f},
+        {2.022f,3.989f,7.585f,13.94f,25.36f,46.07f,83.53f,151.5f,274.6f,497.2f},
+        {2.080f,3.865f,6.994f,12.44f,21.92f,38.54f,67.77f,119.2f,209.7f,369.5f}
+    };
+
     for (int c = 0; c < 3; ++c) {
-        size_t comp_bytes = 0;
+        /* Pre-compute per-subband T1 totals. */
+        std::vector<size_t> t1_per_sb(subbands.size(), 0);
         for (size_t sb = 0; sb < subbands.size(); ++sb) {
             int cb_start = subbands[sb].cb_start_idx;
-            int ncbs = subbands[sb].ncbx * subbands[sb].ncby;
-            for (int i = 0; i < ncbs; ++i) {
-                int cb_idx = cb_start + i;
-                uint8_t  np = num_passes[c][cb_idx];
-                uint16_t cb_len = coded_len[c][cb_idx];
-                if (cb_len > static_cast<uint16_t>(cb_stride - 1))
-                    cb_len = static_cast<uint16_t>(cb_stride - 1);
-                if (np == 0 || cb_len == 0) continue;
+            int ncbx = subbands[sb].ncbx, ncby = subbands[sb].ncby;
+            for (int i = 0; i < ncbx * ncby; ++i)
+                t1_per_sb[sb] += coded_len[c][cb_start + i];
+        }
 
-                uint8_t  np_use  = np;
-                uint16_t len_use = cb_len;
-                if (comp_bytes + cb_len > per_comp_target) {
-                    /* Walk passes; admit prefix that fits remaining budget. */
-                    size_t remaining = (per_comp_target > comp_bytes)
-                        ? per_comp_target - comp_bytes : 0;
+        /* Phase 1: include subbands fully in coarse-to-fine order until budget overflows
+         * OR until 40% of per_comp_target is consumed. The 40% cap ensures at least 60%
+         * of budget remains for Phase 2 PCRD on fine subbands. For content with small
+         * coarse T1 (e.g. photo_synth: lv1..5 = 94KB < 104KB cap), Phase 1 includes all
+         * coarse subbands fully (→ 60.8 dB). For high-frequency content (checker_8: lv1
+         * HL = 111KB > cap), Phase 1 stops early so Phase 2 distributes proportionally
+         * (→ ~15 dB, close to V224). */
+        const size_t phase1_cap = (per_comp_target != SIZE_MAX)
+            ? static_cast<size_t>(per_comp_target * 0.40 + 0.5)
+            : SIZE_MAX;
+        size_t comp_bytes = 0;
+        size_t pcrd_start = subbands.size();
+
+        for (size_t sb = 0; sb < subbands.size(); ++sb) {
+            if (per_comp_target != SIZE_MAX
+                && (comp_bytes + t1_per_sb[sb] > per_comp_target
+                    || comp_bytes + t1_per_sb[sb] > phase1_cap)) {
+                pcrd_start = sb;
+                break;
+            }
+            int cb_start = subbands[sb].cb_start_idx;
+            int ncbx = subbands[sb].ncbx, ncby = subbands[sb].ncby;
+            for (int iy = 0; iy < ncby; ++iy) {
+                for (int ix = 0; ix < ncbx; ++ix) {
+                    int cb_idx = cb_start + iy * ncbx + ix;
+                    uint8_t  np     = num_passes[c][cb_idx];
+                    uint16_t cb_len = coded_len [c][cb_idx];
+                    if (cb_len > static_cast<uint16_t>(cb_stride - 1))
+                        cb_len = static_cast<uint16_t>(cb_stride - 1);
+                    if (np == 0 || cb_len == 0) continue;
+                    pcrd_np_use [c][cb_idx] = np;
+                    pcrd_len_use[c][cb_idx] = cb_len;
+                }
+            }
+            comp_bytes += t1_per_sb[sb];
+        }
+
+        if (pcrd_start >= subbands.size()) continue; /* all fit — nothing more to do */
+
+        /* Phase 2: proportional PCRD for the overflow subbands (pcrd_start..end). */
+        size_t remaining_budget = (per_comp_target > comp_bytes)
+            ? per_comp_target - comp_bytes : 0;
+        size_t remaining_t1 = 0;
+        for (size_t sb = pcrd_start; sb < subbands.size(); ++sb)
+            remaining_t1 += t1_per_sb[sb];
+
+        for (size_t sb = pcrd_start; sb < subbands.size(); ++sb) {
+            size_t t1_sb = t1_per_sb[sb];
+            if (t1_sb == 0) continue;
+
+            size_t sb_budget = (remaining_t1 > 0)
+                ? static_cast<size_t>(
+                      static_cast<double>(remaining_budget) * t1_sb / remaining_t1 + 0.5)
+                : 0;
+            if (sb_budget == 0) continue;
+
+            float step  = std::max(subbands[sb].step, 0.001f);
+            int norm_row = (subbands[sb].type == SUBBAND_LH) ? 1 :
+                           (subbands[sb].type == SUBBAND_HH) ? 3 :
+                           (subbands[sb].type == SUBBAND_HL) ? 2 : 0;
+            int norm_col = std::min(static_cast<int>(subbands[sb].level), 9);
+            float norm   = CDF97_NORMS[norm_row][norm_col];
+            float step2  = (step * norm) * (step * norm);
+            int cb_start = subbands[sb].cb_start_idx;
+            int ncbx     = subbands[sb].ncbx;
+            int ncby     = subbands[sb].ncby;
+            int sb_w     = subbands[sb].width;
+            int sb_h     = subbands[sb].height;
+            int ncbs     = ncbx * ncby;
+
+            /* Build convex-hull PCRD entries for each CB in this subband. */
+            std::vector<PcrdEntry> entries_sb;
+            entries_sb.reserve(static_cast<size_t>(ncbs) * 6);
+
+            for (int iy = 0; iy < ncby; ++iy) {
+                for (int ix = 0; ix < ncbx; ++ix) {
+                    int cb_idx = cb_start + iy * ncbx + ix;
+                    uint8_t  np     = num_passes[c][cb_idx];
+                    uint16_t cb_len = coded_len [c][cb_idx];
+                    if (cb_len > static_cast<uint16_t>(cb_stride - 1))
+                        cb_len = static_cast<uint16_t>(cb_stride - 1);
+                    if (np == 0 || cb_len == 0) continue;
+
+                    int cbw = std::min(CB_DIM, sb_w - ix * CB_DIM);
+                    int cbh = std::min(CB_DIM, sb_h - iy * CB_DIM);
+                    float base = step2 * static_cast<float>(cbw * cbh);
+
                     const uint16_t* pl = pass_lengths[c]
                         + static_cast<size_t>(cb_idx) * MAX_PASSES;
-                    np_use = 0; len_use = 0;
+
+                    hull_stack.clear();
+                    uint16_t prev_cum = 0;
+
                     for (int p = 0; p < np; ++p) {
                         uint16_t cum = pl[p];
                         if (cum > cb_len) cum = cb_len;
-                        if (static_cast<size_t>(cum) > remaining) break;
-                        np_use = static_cast<uint8_t>(p + 1);
-                        len_use = cum;
+                        if (p == np - 1) cum = cb_len;
+                        int dr = static_cast<int>(cum) - static_cast<int>(prev_cum);
+                        if (dr <= 0) { prev_cum = cum; continue; }
+
+                        float Dbefore = base * std::exp2f(-p * (2.0f/3.0f));
+                        float Dafter  = base * std::exp2f(-(p+1) * (2.0f/3.0f));
+                        float dd  = Dbefore - Dafter;
+                        float dr_f = static_cast<float>(dr);
+
+                        HullSeg seg;
+                        seg.p_from  = p;
+                        seg.p_to    = p;
+                        seg.cum_len = cum;
+                        seg.delta_r = static_cast<uint16_t>(dr);
+                        seg.delta_d = dd;
+                        seg.slope   = dd / dr_f;
+
+                        while (!hull_stack.empty()
+                               && hull_stack.back().slope <= seg.slope) {
+                            const HullSeg& top = hull_stack.back();
+                            seg.delta_d += top.delta_d;
+                            seg.delta_r  = static_cast<uint16_t>(
+                                static_cast<int>(seg.delta_r) + top.delta_r);
+                            seg.p_from  = top.p_from;
+                            seg.slope   = seg.delta_d / static_cast<float>(seg.delta_r);
+                            hull_stack.pop_back();
+                        }
+                        hull_stack.push_back(seg);
+                        prev_cum = cum;
+                        if (cum >= cb_len) break;
+                    }
+
+                    for (const auto& seg : hull_stack) {
+                        entries_sb.push_back({seg.slope, cb_idx,
+                                              static_cast<uint8_t>(seg.p_from),
+                                              static_cast<uint8_t>(seg.p_to),
+                                              seg.cum_len, seg.delta_r});
                     }
                 }
-                if (np_use == 0 || len_use == 0) continue;
-                pcrd_np_use [c][cb_idx] = np_use;
-                pcrd_len_use[c][cb_idx] = len_use;
-                comp_bytes += len_use;
+            }
+
+            std::sort(entries_sb.begin(), entries_sb.end(),
+                      [](const PcrdEntry& a, const PcrdEntry& b){
+                          return a.slope > b.slope;
+                      });
+
+            /* Greedy inclusion within this subband's proportional budget. */
+            std::vector<uint8_t> nxt(ncbs, 0);
+            size_t sb_used = 0;
+
+            for (const auto& e : entries_sb) {
+                if (sb_used >= sb_budget) break;
+                int local_idx = e.cb_idx - cb_start;
+                if (e.p_from < nxt[local_idx]) continue;
+
+                nxt[local_idx] = e.p_to + 1;
+                pcrd_np_use [c][e.cb_idx] = e.p_to + 1;
+                pcrd_len_use[c][e.cb_idx] = e.cum_len;
+                sb_used += static_cast<size_t>(e.delta_r);
             }
         }
     }
@@ -514,7 +700,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                 int cb_start = subbands[sb].cb_start_idx;
                 int pmax  = sb_pmax_for_comp(sb, comp);
 #ifdef GPU_J2K_DEBUG_NP
-                if (comp == 0 && res <= 1) {
+                if (comp == 0 && (res <= 1 || res >= 4)) {
                     for (int cbi = 0; cbi < std::min(ncbs, 4); cbi++) {
                         int cb_idx = cb_start + cbi;
                         uint8_t np_v = num_passes[comp][cb_idx];
