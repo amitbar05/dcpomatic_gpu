@@ -132,6 +132,15 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V236: Lazy D2H — skip coded-data transfer for non-final retry attempts.
+          Previously every T1 attempt (up to 4) transferred ~14 MB (coded data +
+          passlens) to host.  Now non-final attempts transfer only h_ebcot_len
+          (~13 KB / component), which is all that byte_ratio detection needs.
+          One full D2H occurs after the loop exits, covering only the final T1 output.
+          Savings: (num_retries-1) × ~14 MB per frame.
+          For 4-attempt patterns (h_bars_8, ramp): saves 3 × ~14 MB ≈ 42 MB/frame.
+          At typical DCP export PCIe bandwidth: ~3–12 ms reduction per frame.
+    V235: Fast skip for near-zero content (see inline comment).
     V228: Lower compute_base_step multiplier 0.06 → 0.029 + MAX_BP=16 for all attempts.
           At ≥ 150 Mbps (ratio ≤ 8.6), the lower clamp 0.25 activates, aligning the
           initial step with the power-of-2 halving chain: 0.25 → 0.125.  Previously
@@ -5582,21 +5591,14 @@ CudaJ2KEncoder::encode_ebcot(
         }
         if (attempt == 0) tmark("EBCOT_T1");
 
-        /* Step 6: D2H + sync */
+        /* Step 6: D2H lengths only — enough for byte_ratio retry decision.
+         * V236: Full coded data is deferred until after the retry loop exits
+         * (see "V236: Final D2H" below).  Each non-final attempt previously
+         * transferred ~14 MB (data + passlens); now only ~13 KB (lengths).
+         * Patterns with 3-4 retry attempts save 2-3 × ~14 MB per frame. */
         for (int c = 0; c < 3; ++c) {
-            cudaMemcpy2DAsync(_impl->h_ebcot_data[c], max_cb_d2h,
-                              _impl->d_ebcot_data[c], CB_BUF_SIZE,
-                              max_cb_d2h, num_cbs,
-                              cudaMemcpyDeviceToHost, _impl->stream[c]);
             cudaMemcpyAsync(_impl->h_ebcot_len[c], _impl->d_ebcot_len[c],
                             num_cbs * sizeof(uint16_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-            cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
-                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-            cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
-                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-            cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
-                            (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
-                            cudaMemcpyDeviceToHost, _impl->stream[c]);
         }
         for (int c = 0; c < 3; ++c)
             cudaStreamSynchronize(_impl->stream[c]);
@@ -5666,6 +5668,26 @@ CudaJ2KEncoder::encode_ebcot(
         current_step = next_step;
     }
     base_step = current_step;  /* T2 codestream uses the final step for QCD */
+
+    /* V236: Final D2H — transfer full coded data from the last T1 run.
+     * This is the only full-data transfer per frame; all retry-loop
+     * iterations above only transferred lengths for byte_ratio decisions. */
+    for (int c = 0; c < 3; ++c) {
+        cudaMemcpy2DAsync(_impl->h_ebcot_data[c], max_cb_d2h,
+                          _impl->d_ebcot_data[c], CB_BUF_SIZE,
+                          max_cb_d2h, num_cbs,
+                          cudaMemcpyDeviceToHost, _impl->stream[c]);
+        cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
+                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
+                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
+                        (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
+                        cudaMemcpyDeviceToHost, _impl->stream[c]);
+    }
+    for (int c = 0; c < 3; ++c)
+        cudaStreamSynchronize(_impl->stream[c]);
+    tmark("D2H_FINAL");
 
     /* Step 7: CPU T2 assembly + codestream construction */
 #ifdef GPU_J2K_DEBUG_T1
