@@ -27,11 +27,12 @@ static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
 /* V180: MAX_BPLANES must match the largest MAX_BP template arg used by callers.
  * V230: Raised to 17 to support step=0.0625 (third halving).  At step=0.0625,
  * LL5 step=0.040625 → q_max=4095/0.040625=100850 → 17 bit-planes needed.
- * Using MAX_BP=16 at this step would silently clip the MSB of bright LL5 CBs,
- * causing reconstruction errors of ~2662 (≈65% of 12-bit range) for any
- * coefficient at or above ~66% of the maximum input value.
- * Pass-length array grows by 3 entries: MAX_PASSES=51 ≥ 17*3=51. */
-static constexpr int MAX_BPLANES = 17;
+ * V238: Raised to 18 to match the MAX_BP=18 kernel instantiation (V233).  At
+ * step=0.03125, LL5 step=0.020312 → for very bright content q_max could reach
+ * 18 bit-planes; with MAX_BPLANES=17 (MAX_PASSES=51) the kernel would write
+ * pass_lens[51] one past the allocated array, corrupting the adjacent CB entry.
+ * Formula: max passes = 3*MAX_BP - 2 = 3*18-2 = 52 ≤ MAX_PASSES=54. */
+static constexpr int MAX_BPLANES = 18;
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
 static constexpr int CB_BUF_SIZE = 2048; /* max coded bytes per code-block — ~avg 500 bytes at 150Mbps */
 
