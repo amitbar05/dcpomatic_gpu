@@ -5491,15 +5491,14 @@ CudaJ2KEncoder::encode_ebcot(
      * thresh_high=0.55: patterns at 56-85% fill (checker_64, noise_small)
      * do NOT benefit from a retry — finer step codes DWT aliasing artifacts
      * in high-freq subbands, wasting T2 budget and degrading PSNR. */
-    const int   adaptive_max_attempts  = 3;
-    /* V230: Lowered from 0.097 → 0.049 to allow a third halving (0.125→0.0625).
-     * At step=0.0625, LL5 step=0.040625 → pmax=17; dispatcher uses MAX_BP=17.
-     * Next halving 0.0625→0.03125 < 0.049 is blocked: that step needs MAX_BP=18
-     * (pmax=18 for 4K) and is not worth the register-pressure increase.
-     * Previous floor 0.097 = 2^(-3.36): ensured LL5 step > 2^(-4) → pmax≤16.
-     * New floor 0.049 ≈ 2^(-4.35): ensures LL5 step > 2^(-5) → pmax≤17 for all
-     * subband weights (min weight = 0.65; 0.049×0.65=0.032 > 2^(-5)=0.031). */
-    const float adaptive_min_base_step = 0.049f;
+    /* V233: 4 attempts (3 halvings) — extra attempt for very sparse content. */
+    const int   adaptive_max_attempts  = 4;
+    /* V233: Lowered from 0.049 → 0.024 to allow a fourth halving (0.0625→0.03125)
+     * for very sparse patterns (gradient, ramp) that use <55% budget at step=0.0625.
+     * At step=0.03125, LL5 step=0.020312 → pmax=18; dispatcher uses MAX_BP=18.
+     * Next halving 0.03125→0.015625 < 0.024 is blocked: pmax=19 needs MAX_BP=19.
+     * Previous floor 0.049: ensured LL5 step > 2^(-5) → pmax≤17. */
+    const float adaptive_min_base_step = 0.024f;
     /* V227: Retry when bytes_used < high × target_bytes (no lower bound).
      * Removed adaptive_thresh_low = 0.005. That threshold caused h_gradient to skip
      * retrying at high bit-rates (≥ ~470 Mbps) because T1/target fell below 0.005,
@@ -5554,11 +5553,17 @@ CudaJ2KEncoder::encode_ebcot(
 
         /* Step 5: T1 launch per component.
          * V228: MAX_BP=16 for steps ≥ 0.097 (pmax ≤ 16 guaranteed).
-         * V230: MAX_BP=17 for steps < 0.097 — the third halving reaches step=0.0625,
-         * where LL5 pmax=17 (q_max=4095/0.040625=100850; 17 bp needed).  Using
-         * MAX_BP=16 here clips the MSB of bright LL5 coefficients, causing large
-         * reconstruction errors; MAX_BP=17 template handles all 17 bit-planes. */
-        if (current_step < 0.097f) {
+         * V230: MAX_BP=17 for steps < 0.097 (step=0.0625: LL5 pmax=17).
+         * V233: MAX_BP=18 for steps < 0.049 (step=0.03125: LL5 pmax=18). */
+        if (current_step < 0.049f) {
+            for (int c = 0; c < 3; ++c)
+                kernel_ebcot_t1<false, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                    _impl->d_a_f32[c], stride,
+                    _impl->d_cb_info, num_cbs,
+                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
+                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
+                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
+        } else if (current_step < 0.097f) {
             for (int c = 0; c < 3; ++c)
                 kernel_ebcot_t1<false, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
@@ -5625,7 +5630,12 @@ CudaJ2KEncoder::encode_ebcot(
         }
         double byte_ratio = static_cast<double>(pcrd_estimate)
                           / static_cast<double>(target_bytes);
-        if (byte_ratio >= adaptive_thresh_high)
+        /* V233: 4th halving (attempt 3) is restricted to very sparse patterns
+         * (< 10% budget) to avoid coding FP32 DWT rounding noise as signal.
+         * v_gradient at step=0.0625 uses 13% budget and regressed 3.6 dB
+         * with the 4th halving; h_gradient uses 9.9% and improved 0.6 dB. */
+        float thresh = (attempt >= 2) ? 0.10f : adaptive_thresh_high;
+        if (byte_ratio >= thresh)
             break;
         float next_step = current_step * 0.5f;
         if (next_step < adaptive_min_base_step) break; /* pmax safety floor */
