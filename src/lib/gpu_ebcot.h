@@ -1122,4 +1122,25 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 }
 
 
+/* V240: GPU compact-copy kernel — packs max_cb_d2h bytes from each CB's
+ * CB_BUF_SIZE-strided slot in src into a contiguous dst (dst_stride stride).
+ * One warp (32 threads) per code block; uint32_t copies for efficiency.
+ * Replaces cudaMemcpy2DAsync for sparse content to eliminate the
+ * pathological per-row DMA overhead from low width/pitch ratios.
+ * Launched as <<<num_cbs, 32, 0, stream>>>.  dst_stride must be a multiple of 4. */
+__global__ void kernel_compact_ebcot(
+    const uint8_t* __restrict__ src,
+    uint8_t* __restrict__       dst,
+    int num_cbs, int dst_stride, int src_stride)
+{
+    int cb = blockIdx.x;
+    if (cb >= num_cbs) return;
+    const uint32_t* s = reinterpret_cast<const uint32_t*>(src + (size_t)cb * src_stride);
+    uint32_t*       d = reinterpret_cast<uint32_t*>      (dst + (size_t)cb * dst_stride);
+    int words = dst_stride / 4;
+    for (int i = threadIdx.x; i < words; i += 32)
+        d[i] = s[i];
+}
+
+
 #endif /* GPU_EBCOT_H */
