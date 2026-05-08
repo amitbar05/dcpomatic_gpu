@@ -364,9 +364,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     w8(static_cast<uint8_t>(num_levels));
     w8(3);    /* xcb' = 3 → code-block width = 32 */
     w8(3);    /* ycb' = 3 → code-block height = 32 */
-    /* V205: BYPASS bit set when T1 uses bypass (fast mode).  Must match T1 kernel's use_bypass flag.
-     * Previous SPcod=0x00 was correct for correct mode (MQ-only) but incorrect for fast mode. */
-    w8(use_bypass ? 0x01 : 0x00); /* SPcod: BYPASS bit 0 */
+    /* V243: BYPASS(bit 0) | RESTART(bit 2) = 0x05.  RESTART means each pass terminates
+     * independently; decoder reads one segment length per pass in the packet header.
+     * T2 writes ONE global comma code then np lengths in lblock bits each. */
+    w8(use_bypass ? 0x05 : 0x00); /* SPcod: BYPASS|RESTART = 0x05 */
     w8(0x00); /* filter = 0 (9/7 irreversible) */
     /* V231: DCP requires 0x77 (128×128) for r=0, 0x88 (256×256) for r=1..NL */
     w8(0x77);
@@ -831,17 +832,65 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                             else if (np <= 36) bw.write_bits(0x1E0 | (np - 6), 9);
                             else               bw.write_bits(0xFF80u | (unsigned(np) - 37u), 16);
 
-                            int lblock = 3;
-                            int flnp = (np <= 1) ? 0 : (31 - __builtin_clz((unsigned)np));
-                            int len_bits = lblock + flnp;
-                            if (len_bits < 1) len_bits = 1;
-                            while ((1 << len_bits) <= len) { bw.write_bit(1); lblock++; len_bits++; }
-                            bw.write_bit(0);
-                            bw.write_bits(len, len_bits);
-
                             int cb_idx = sg.cb_start_idx
                                        + (sp.cby0 + li / ncbx_p) * sg.ncbx
                                        + (sp.cbx0 + li % ncbx_p);
+
+                            int lblock = 3;
+                            if (use_bypass) {
+                                /* V243: BYPASS+RESTART — ISO 15444-1 Annex B.10.6.
+                                 * With TERMALL every pass is its own segment (maxpasses=1),
+                                 * so floor(log2(1))=0 extra bits per length.
+                                 * ONE global comma code (increment), then np lengths in lblock bits each. */
+                                const uint16_t* pl = pass_lengths[comp]
+                                    + static_cast<size_t>(cb_idx) * MAX_PASSES;
+
+                                /* Pass 1: find global increment = max needed expansion */
+                                int increment = 0;
+                                {
+                                    uint16_t prev_cum = 0;
+                                    for (int p = 0; p < np; ++p) {
+                                        uint16_t seg_cum = pl[p];
+                                        if (seg_cum > len) seg_cum = len;
+                                        if (p == np - 1) seg_cum = (uint16_t)len;
+                                        int seg_len = (int)seg_cum - (int)prev_cum;
+                                        if (seg_len > 0) {
+                                            int fl = 31 - __builtin_clz((unsigned)seg_len);
+                                            int needed = fl + 1 - lblock;
+                                            if (needed > increment) increment = needed;
+                                        }
+                                        prev_cum = seg_cum;
+                                    }
+                                }
+                                if (increment < 0) increment = 0;
+
+                                /* Write ONE comma code */
+                                for (int i = 0; i < increment; ++i) bw.write_bit(1);
+                                bw.write_bit(0);
+                                lblock += increment;
+
+                                /* Pass 2: write each segment length in exactly lblock bits */
+                                {
+                                    uint16_t prev_cum = 0;
+                                    for (int p = 0; p < np; ++p) {
+                                        uint16_t seg_cum = pl[p];
+                                        if (seg_cum > len) seg_cum = len;
+                                        if (p == np - 1) seg_cum = (uint16_t)len;
+                                        int seg_len = (int)seg_cum - (int)prev_cum;
+                                        if (seg_len < 0) seg_len = 0;
+                                        bw.write_bits((unsigned)seg_len, lblock);
+                                        prev_cum = seg_cum;
+                                    }
+                                }
+                            } else {
+                                int flnp = (np <= 1) ? 0 : (31 - __builtin_clz((unsigned)np));
+                                int len_bits = lblock + flnp;
+                                if (len_bits < 1) len_bits = 1;
+                                while ((1 << len_bits) <= len) { bw.write_bit(1); lblock++; len_bits++; }
+                                bw.write_bit(0);
+                                bw.write_bits(len, len_bits);
+                            }
+
                             const uint8_t* src = coded_data[comp] + (size_t)cb_idx * cb_stride + 1;
                             pkt_body.insert(pkt_body.end(), src, src + len);
                         }

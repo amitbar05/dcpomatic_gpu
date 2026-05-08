@@ -5486,7 +5486,7 @@ CudaJ2KEncoder::encode_ebcot(
     constexpr int EBCOT_THREADS = 64;
     /* Correct mode: MQ coder, all bit-planes, full D2H. */
     const int  bp_skip    = 0;
-    const bool use_bypass = false;
+    const bool use_bypass = true;  /* V243: BYPASS+RESTART */
     int  max_cb_d2h = CB_BUF_SIZE;
     /* V225: Two-phase PCRD in gpu_ebcot_t2.h.
      * Phase 1: sequential greedy includes all coarse subbands fully (ensures LL5
