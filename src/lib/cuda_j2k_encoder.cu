@@ -5586,18 +5586,28 @@ CudaJ2KEncoder::encode_ebcot(
         }
         if (attempt == 0) tmark("D2H");
 
-        /* Decide whether to retry. */
+        /* Decide whether to retry.
+         * V229: quota-capped sum as proxy for post-PCRD output.
+         * A flat T1 sum overestimates usable bytes for mixed-content images
+         * (e.g. photo_synth): dense noisy patches inflate the sum even though
+         * PCRD will truncate them heavily — leaving smooth areas under-served.
+         * Capping each CB at its "fair share" (target / 3*num_cbs) gives a
+         * better estimate of actual PCRD usage: sparse CBs contribute their
+         * real sizes; dense CBs contribute only the quota cap.
+         * Result: photo_synth retries from 0.250→0.125 (was: no retry);
+         * fully-dense patterns (checker_8/noise) stay above threshold (no change). */
         if (attempt + 1 >= adaptive_max_attempts) break;
-        int64_t total_bytes_used = 0;
+        int64_t quota_per_cb = (num_cbs > 0) ? target_bytes / (3 * num_cbs) : 1;
+        int64_t pcrd_estimate = 0;
         for (int c = 0; c < 3; ++c) {
             for (int i = 0; i < num_cbs; ++i) {
-                uint16_t len = _impl->h_ebcot_len[c][i];
-                if (len > static_cast<uint16_t>(max_cb_d2h - 1))
-                    len = static_cast<uint16_t>(max_cb_d2h - 1);
-                total_bytes_used += len;
+                int64_t len = _impl->h_ebcot_len[c][i];
+                if (len > static_cast<int64_t>(max_cb_d2h - 1))
+                    len = static_cast<int64_t>(max_cb_d2h - 1);
+                pcrd_estimate += std::min(len, quota_per_cb);
             }
         }
-        double byte_ratio = static_cast<double>(total_bytes_used)
+        double byte_ratio = static_cast<double>(pcrd_estimate)
                           / static_cast<double>(target_bytes);
         if (byte_ratio >= adaptive_thresh_high)
             break;
