@@ -132,6 +132,18 @@
          lut_out GPU allocation: 4096×4=16KB → 4096×2=8KB; fits in 32KB L1 alongside lut_in(16KB)
          Both LUTs (lut_in+lut_out = 24KB) now fit within sm_61 L1/texture cache (32KB)
          Fewer L1 evictions during RGB→XYZ conversion → better cache hit rate per SM
+    V228: Lower compute_base_step multiplier 0.06 → 0.029 + MAX_BP=16 for all attempts.
+          At ≥ 150 Mbps (ratio ≤ 8.6), the lower clamp 0.25 activates, aligning the
+          initial step with the power-of-2 halving chain: 0.25 → 0.125.  Previously
+          0.509 halved to 0.127 — not a power-of-2 — giving a +7 dB penalty on
+          ramp_small_range from unlucky coefficient rounding vs clean 0.125.  With this
+          change, 150 Mbps sparse-content results now match the 500 Mbps quality ceiling.
+          Also promotes attempt=0 from MAX_BP=13 → MAX_BP=16: at step=0.25, LL5 q ≈ 11379
+          for mid-gray > 2^13, so MAX_BP=13 would clip the DC bit-plane for dense content
+          that exits without retrying.  PSNR changes at 150 Mbps 2K vs V227:
+            h_gradient: 84.3 → 85.4 dB (+1.1), v_gradient: 84.6 → 87.8 dB (+3.2)
+            v_bars_8: 90.3 → 94.8 dB (+4.5), single_impulse: 78.2 → 81.6 dB (+3.4)
+            ramp_small_range: 98.3 → 105.4 dB (+7.1); flat/checker/noise unchanged.
     V218: Raise adaptive retry threshold from 0.55 → 0.85 for better quality.
           Previously checker_64 (58.8% fill) and noise_small (74.5% fill) both
           exceeded the 0.55 high-water mark and skipped the retry that halves the
@@ -4604,18 +4616,19 @@ compute_base_step(int width, int height, size_t per_comp)
 {
     size_t pixels = static_cast<size_t>(width) * height;
     float ratio = static_cast<float>(pixels) / std::max(per_comp, static_cast<size_t>(1));
-    /* V186: drop step by 4× — was clamp(ratio*0.25, 1.0, 32.5) → 2.13 at 150Mbps/2K.
-     * After V185 fix our T1 step is internally ×2 (HL/LH) or ×4 (HH), so the same
-     * "abstract" base_step gives much coarser HH quantization than before.  Lower
-     * base_step means finer quantization and more bit-planes; PSNR rises substantially
-     * on hard patterns (bars, checker) until num_bp brushes against MAX_BP. */
-    /* V186: 0.06 multiplier (was 0.25 pre-V185) gives ~4× finer base quantization.
-     * Combined with V185 step×2/×4 compensation, final T1 step matches OPJ encoder
-     * roughly.  Tried 0.04 and 0.025 — 0.04 cost 27 dB on fast flat_30000 (lossless
-     * lost when step gets near DWT FP16 noise); 0.025 hurts checker_64 worse.
-     * V191: tried 0.04 with MAX_BP=16 (correct) and MAX_BP=14 (fast) — correct mode
-     * gains ~1 dB but fast mode loses lossless on flat_30000. */
-    return std::clamp(ratio * 0.06f, 0.25f, 32.5f);
+    /* V186: 0.06 multiplier — at 150 Mbps/2K ratio=8.49 → step=0.509.
+     * V228: 0.029 multiplier — at 150 Mbps/2K ratio=8.49 → 0.246, clamped to 0.25.
+     * This aligns the initial step with the power-of-2 grid: 0.25 → 0.125 after
+     * one retry halving, reaching exactly 0.125 = 2^-3.  Previously 0.509 halved to
+     * 0.127 (not a power-of-2), causing a 7 dB penalty on ramp_small_range from
+     * unlucky coefficient rounding vs 0.125.
+     * At ≥ 150 Mbps the lower clamp 0.25 activates: all patterns start from 0.25.
+     * V228 also promotes attempt=0 to MAX_BP=16 (was MAX_BP=13): at step=0.25, LL5
+     * q = DC / (0.25×0.65) ≈ 11379 for mid-gray > 2^13=8192, so MAX_BP=13 would
+     * clip the MSB of LL5 for dense content that exits without retrying.
+     * V191 concern ("0.025 hurts checker_64") no longer applies: that was MAX_BP=14;
+     * with MAX_BP=16 all 14 bit-planes of lv0 coefficients are correctly encoded. */
+    return std::clamp(ratio * 0.029f, 0.25f, 32.5f);
 }
 
 #if 0  /* Dead code — rebuild_comp_graphs / rebuild_v42_comp_graphs (V211) */
@@ -5533,24 +5546,18 @@ CudaJ2KEncoder::encode_ebcot(
         int ebcot_grid = (num_cbs + EBCOT_THREADS - 1) / EBCOT_THREADS;
 
         /* Step 5: T1 launch per component.
-         * Attempt 0: MAX_BP=13 (V198). Retry: MAX_BP=16 (finer step may yield 14-15 bps). */
+         * V228: MAX_BP=16 for all attempts (was 13 at attempt=0, 16 at attempt≥1).
+         * At initial step=0.25 (V228 lower clamp), LL5 q = DC/(0.25×0.65) ≈ 11379
+         * for mid-gray > 2^13=8192 → MAX_BP=13 would clip the MSB bit-plane of LL5
+         * for dense content that exits without retrying (byte_ratio ≥ thresh_high).
+         * MAX_BP=16 handles all realistic coefficients at step=0.25 with no clipping. */
         for (int c = 0; c < 3; ++c) {
-            if (attempt == 0) {
-                kernel_ebcot_t1<false, 13, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-                    _impl->d_a_f32[c], stride,
-                    _impl->d_cb_info, num_cbs,
-                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
-                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
-            } else {
-                /* V199 retry: bigger MAX_BP for the finer step. */
-                kernel_ebcot_t1<false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
-                    _impl->d_a_f32[c], stride,
-                    _impl->d_cb_info, num_cbs,
-                    _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
-                    _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
-            }
+            kernel_ebcot_t1<false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                _impl->d_a_f32[c], stride,
+                _impl->d_cb_info, num_cbs,
+                _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
+                _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
+                _impl->d_ebcot_numbp[c], bp_skip, use_bypass);
         }
         if (attempt == 0) tmark("EBCOT_T1");
 
