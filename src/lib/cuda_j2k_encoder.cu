@@ -3966,6 +3966,30 @@ kernel_ict_fwd(
     d_c2[idx] = static_cast<T>(roundf(cr));
 }
 
+/* ICT forward with float output: reads int XYZ, writes unrounded floats for DWT.
+ * Preserves sub-integer ICT precision so DWT+synthesis error stays < 0.5 gray level. */
+__global__ void
+kernel_ict_fwd_f32out(
+    const int32_t* __restrict__ d_c0_in,
+    const int32_t* __restrict__ d_c1_in,
+    const int32_t* __restrict__ d_c2_in,
+    float* __restrict__ d_c0_out,
+    float* __restrict__ d_c1_out,
+    float* __restrict__ d_c2_out,
+    int pixels)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= pixels) return;
+
+    float c0 = static_cast<float>(d_c0_in[idx]);
+    float c1 = static_cast<float>(d_c1_in[idx]);
+    float c2 = static_cast<float>(d_c2_in[idx]);
+
+    d_c0_out[idx] =  0.299f * c0 + 0.587f * c1 + 0.114f * c2 - 2048.0f;
+    d_c1_out[idx] = -0.16875f * c0 - 0.33126f * c1 + 0.5f * c2;
+    d_c2_out[idx] =  0.5f * c0 - 0.41869f * c1 - 0.08131f * c2;
+}
+
 
 /* ===== Encoder Implementation ===== */
 
@@ -5349,33 +5373,32 @@ CudaJ2KEncoder::encode_ebcot(
     }
     tmark("RGB\u2192XYZ");
 
-    /* Step 2b: ICT forward on XYZ pixel values (in-place on d_xyz[0..2]).
-     * Uses int32_t since XYZ values are 12-bit integers.  ICT operates
-     * in float internally; result rounded back to int32_t for H-DWT0. */
+    /* Step 2b: ICT forward — writes unrounded float YCbCr to d_a_f32[0..2].
+     * V217: float output preserves ICT sub-integer precision so DWT+synthesis
+     * error stays < 0.5 gray level (avoids systematic 1-unit errors on non-grey
+     * inputs like flat_50000 where Y_ict = 1026.265 rounded to 1026 lost 0.265,
+     * amplified by K^10≈7.94 to cause 1-unit reconstruction errors in Y_xyz). */
     {
         int ict_pixels = width * height;
         int ict_grid = (ict_pixels + 255) / 256;
-        kernel_ict_fwd<int32_t><<<ict_grid, 256, 0, _impl->stream[0]>>>(
+        kernel_ict_fwd_f32out<<<ict_grid, 256, 0, _impl->stream[0]>>>(
             _impl->d_xyz[0], _impl->d_xyz[1], _impl->d_xyz[2],
-            ict_pixels, width);
+            _impl->d_a_f32[0], _impl->d_a_f32[1], _impl->d_a_f32[2],
+            ict_pixels);
     }
-    /* V215: ICT runs on stream[0] and writes all 3 d_xyz[] planes.
-     * HDWT0 for components 1 and 2 run on stream[1]/stream[2] and read d_xyz[1]/d_xyz[2].
-     * Without explicit synchronization those kernels could start before ICT completes,
-     * causing non-deterministic output and ~8 dB PSNR.  Record the ICT completion
-     * event on stream[0] and make stream[1]/stream[2] wait before launching HDWT0. */
+    /* ICT runs on stream[0] and writes all 3 d_a_f32[] planes.
+     * HDWT0 for components 1 and 2 run on stream[1]/stream[2] and read d_a_f32[1]/d_a_f32[2].
+     * Record the ICT completion event on stream[0] and make stream[1]/stream[2] wait. */
     cudaEventRecord(_impl->ict_done, _impl->stream[0]);
     cudaStreamWaitEvent(_impl->stream[1], _impl->ict_done, 0);
     cudaStreamWaitEvent(_impl->stream[2], _impl->ict_done, 0);
     tmark("ICT");
 
-    /* Step 2c: H-DWT level 0 — int32→float conversion + horizontal DWT.
-     * V216 fix: launch one block per row (was (height+1)/2, covering only top half).
-     * V216 fix: smem is width floats, not 2*width (kernel only needs one row). */
+    /* Step 2c: H-DWT level 0 — float input from ICT (no int→float conversion needed). */
     for (int c = 0; c < 3; ++c) {
         size_t ch_smem_f32 = static_cast<size_t>(width) * sizeof(float);
-        kernel_fused_i2f_horz_dwt_fp32<<<height, H_THREADS_FUSED, ch_smem_f32, _impl->stream[c]>>>(
-            _impl->d_xyz[c], _impl->d_b_f32[c], width, height, width);
+        kernel_fused_horz_dwt_fp32<<<height, H_THREADS_FUSED, ch_smem_f32, _impl->stream[c]>>>(
+            _impl->d_a_f32[c], _impl->d_b_f32[c], width, height, width);
     }
     tmark("HDWT0");
 
