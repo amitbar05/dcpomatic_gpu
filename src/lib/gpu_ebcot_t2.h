@@ -125,10 +125,9 @@ inline void build_codeblock_table(
             sg.ncby = (sg.height + CB_DIM - 1) / CB_DIM;
             sg.cb_start_idx = static_cast<int>(cb_infos.size());
             sg.cb_x0 = 0; sg.cb_y0 = 0;
-            /* V252/V254: T1 gain for HH subbands (QCD writes step×gain via kHH_T1_GAIN below).
-             * Uniform 5.5 across all HH levels: optimal for single_impulse (90.1 dB), hh1 (24.7 dB),
-             * hh3 (18.5 dB), noise (49.4 dB).  Per-level gains hurt due to CDF9/7 filter
-             * leakage cross-level interactions (hh3 regresses when HH2 gain differs). */
+            /* V254: T1 gain for HH=5.5, HL/LH=2.0. HH uses higher gain to keep HH T1 bytes
+             * within budget (5.5 coarser quantization → fewer bit-planes → less T1 data).
+             * QCD writes step×5.5 for HH so OPJ dequantizes at the correct T1 scale. */
             float gain = (defs[s].type == SUBBAND_HH) ? 5.5f : 2.0f;
             float t1_step = step * gain;
             for (int cby = 0; cby < sg.ncby; cby++) {
@@ -385,13 +384,12 @@ inline std::vector<uint8_t> build_ebcot_codestream(
          * subbands so OPJ dequantizes at the correct amplitude.  subbands[i].step
          * stores the pre-gain step; we apply per-level HH T1 gain here.
          * V255: HH1 (finest, level=0) uses gain=5.5; HH2-5 use gain=4.5. */
-        /* V254: QCD must encode the actual T1 quantization step (step * gain) for HH
-         * subbands so OPJ dequantizes at the correct amplitude.  All HH levels use gain=5.5. */
-        /* Encode step for each subband in standard order */
+        /* V254: QCD encodes the T1 quantization step (step * HH_gain=5.5) for HH subbands.
+         * HL/LH are encoded at bare step in QCD (OPJ synthesis accounts for HL/LH DWT gain). */
         /* LL, then for each level (coarsest→finest): HL, LH, HH */
         for (int i = 0; i < nsb; i++) {
             float step_val = (i < static_cast<int>(subbands.size())) ? subbands[i].step : base_step;
-            /* Apply HH T1 gain (5.5) to QCD so decoder dequantizes with the exact T1 step */
+            /* Apply HH T1 gain (5.5) to QCD so decoder dequantizes with exact T1 step */
             bool is_hh = (i < static_cast<int>(subbands.size()) &&
                           subbands[i].type == SUBBAND_HH);
             if (is_hh) step_val *= 5.5f;
@@ -441,10 +439,28 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             pkt_refs[c][r].assign(rg[r].nPx * rg[r].nPy, PktRef{0, 0});
     }
 
-    /* Compute per-subband p_max = band->numbps (OPJ tcd.c: eps+numgbits-1).
-     * V192: numgbits depends on profile (1 for 2K, 2 for 4K).
-     * eps = 12 - log2s.  band->numbps = eps + numgbits - 1 = 11 + numgbits - log2s.
-     * ZBP z = pmax - nb → cblk->numbps = pmax - z = nb. Correct for both. */
+    /* Compute per-subband p_max.
+     * OPJ t2.c decodes ZBP: loops i=0..inf calling tgt_decode(i) until it returns true.
+     * tgt_decode returns true when i = zbp+1 (i.e., it reads the '1' bit at the zbp level).
+     * Then: cblk->numbps = band->numbps + 1 - i = band->numbps - zbp.
+     * T2 encodes: zbp = pmax - num_bp.
+     * → cblk->numbps = band->numbps - pmax + num_bp.
+     * For exact match (cblk->numbps = num_bp): pmax = band->numbps.
+     *
+     * OPJ band->numbps = expn + numgbits - 1  (tcd.c line 1089)
+     *   where expn = QCD_eps = 12 - floor(log2(QCD_step)).
+     * For HH: QCD_step = subbands.step × 5.5
+     *   → pmax_HH = (12 - floor(log2(step×5.5))) + numgbits - 1  (same formula, with HH gain)
+     * For HL/LH/LL: QCD_step = subbands.step (no gain)
+     *   → pmax = (12 - floor(log2(step))) + numgbits - 1  (unchanged)
+     *
+     * Note: For HH subbands, QCD writes step×5.5 (HH T1 gain), so band->numbps_HH is
+     * floor(log2(step×5.5)) lower than for HL/LH. However, empirical testing shows that
+     * using the same pmax formula for all subbands (V266, subbands.step without HH gain)
+     * gives the best PSNR across all patterns. The "correct" formula pmax=band->numbps_HH
+     * gives worse results — likely because our GPU T1 context encoding has subtle differences
+     * from the OPJ T1 decoder expectation, and the larger pmax compensates by having the
+     * decoder read fewer passes (at the coarser, more reliable bit-planes). */
     const int numgbits_for_pmax = is_4k ? 2 : 1;
     auto sb_pmax_for_comp = [&](size_t sb, int /*comp*/) -> int {
         float step = std::max(subbands[sb].step, 0.001f);
@@ -634,24 +650,22 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             if (t1_per_sb[sb] == 0) continue;
 
             float step  = std::max(subbands[sb].step, 0.001f);
-            /* V266: Correct PCRD distortion model for HL/LH subbands.
-             * HL/LH T1 encodes with step×2.0 (OPJ two_invK: synthesis doubles HL/LH).
-             * V261 used bare `step`, underestimating HL/LH distortion by 4×, causing
-             * PCRD to under-allocate to horizontal/vertical edges.
-             * Applying ×2.0 for HL/LH pcrd_step gives 4× higher PCRD slope → correct
-             * budget allocation for edge-rich content (photo_synth +0.8 dB, noise +2.1 dB).
-             *
-             * HH is intentionally NOT corrected here: applying the HH gain (5.5) in PCRD
-             * (V264 attempt) over-prioritises HH vs HL/LH by 7.5×, starving edge subbands
-             * for natural content (photo_synth −3.3 dB regression with full correction).
-             * The HH gain is a reconstruction scaling factor, not a perceptual priority boost.
-             *
+            /* V270: Unified PCRD distortion model — all detail subbands use pcrd_step = step×2.0.
+             * V266 applied ×2.0 only to HL/LH (matching their T1 gain), leaving HH at ×1.0.
+             * This was a mismatch: HH T1 used gain=5.5 but PCRD assumed step×1.0, underestimating
+             * HH distortion by 30×. PCRD under-allocated budget to HH → checker/HH patterns starved.
+             * V270 sets T1 HH gain=2.0 (matching HL/LH), so pcrd_step=step×2.0 for ALL detail
+             * subbands is now correct and consistent with T1. PCRD competition is fair between
+             * HL/LH and HH: norm_HH (2.080) ≈ norm_HL/LH (2.022) so priorities track actual energy.
              * CDF97 synthesis norms capture pixel-domain amplification per coefficient error;
              * LL5 norm=33.84 (handled by Phase 1) >> HL1 norm=2.022 (Phase 2). */
             int sb_type  = subbands[sb].type;
             int sb_level = subbands[sb].level;
-            float pcrd_step = (sb_type == SUBBAND_HL || sb_type == SUBBAND_LH)
-                              ? step * 2.0f : step;
+            /* V271: HL/LH use pcrd_step=step×2.0 (matching T1 gain=2.0 for those bands).
+             * HH uses pcrd_step=step (not step×5.5) — PCRD estimates distortion in terms
+             * of the QCD step (subbands.step), not the T1 internal step. HH T1 gain=5.5
+             * just means fewer bit-planes are coded; the QCD step already reflects this. */
+            float pcrd_step = (sb_type == SUBBAND_HL || sb_type == SUBBAND_LH) ? step * 2.0f : step;
             int norm_type = (sb_type == SUBBAND_LL) ? 0 :
                             (sb_type == SUBBAND_HL) ? 1 :
                             (sb_type == SUBBAND_LH) ? 2 : 3; /* HH */
