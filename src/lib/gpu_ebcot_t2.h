@@ -618,7 +618,18 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * For typical DCP content: Y uses ~70% of energy, Cb/Cr ~15% each.
      * Old per-component 1/3 split wasted 2/3 of budget on Cb/Cr for achromatic.
      * Global remaining = total_target − total_phase1_bytes (all components). */
-    const size_t global_total_target = (target_bytes > 0) ? static_cast<size_t>(target_bytes) : SIZE_MAX;
+    /* V298: Reserve budget for J2K packet-header overhead so the final
+     * codestream stays within target_bytes.  Without this, PCRD fills
+     * target_bytes of coded data and then the packet headers (tag trees,
+     * CB contribution lengths) push the total 1.5–4% over target.
+     * Empirical calibration (checker_8, noise at 50/100/150/250 Mbps):
+     *   actual overhead ≈ min(target/25, 20000) covers the range. */
+    const size_t hdr_reserve = (target_bytes > 0)
+        ? std::min(static_cast<size_t>(target_bytes / 25), (size_t)20000)
+        : 0;
+    const size_t global_total_target = (target_bytes > 0 && (size_t)target_bytes > hdr_reserve)
+        ? static_cast<size_t>(target_bytes) - hdr_reserve
+        : (target_bytes > 0 ? static_cast<size_t>(target_bytes) / 2 : SIZE_MAX);
     const size_t global_remaining = (global_total_target > total_phase1_bytes
                                      && global_total_target != SIZE_MAX)
         ? global_total_target - total_phase1_bytes : (size_t)SIZE_MAX;

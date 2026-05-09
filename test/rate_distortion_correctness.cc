@@ -268,8 +268,8 @@ static void test_rate_compliance(CudaJ2KEncoder& enc) {
             int64_t target = (int64_t)mbps * 1000000 / FPS / 8;
             auto cs = encode(enc, frame, mbps);
             int64_t sz = (int64_t)cs.size();
-            /* Upper bound: never exceed target + 5% */
-            bool upper_ok = sz <= target + target / 20;
+            /* Upper bound: never exceed target + 2% (V298 header reserve makes this tight) */
+            bool upper_ok = sz <= target + target / 50;
             /* Lower bound for high-entropy patterns: should use ≥ 90% of budget */
             bool lower_ok = !pat.high_entropy || (sz >= target * 9 / 10);
             /* For all patterns: codestream must be non-empty J2K (at least 500 B) */
