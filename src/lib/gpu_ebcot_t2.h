@@ -673,7 +673,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     for (int p = 0; p < np; ++p) {
                         uint16_t cum = pl[p];
                         if (cum > cb_len) cum = cb_len;
-                        if (p == np - 1) cum = cb_len;
                         int dr = static_cast<int>(cum) - static_cast<int>(prev_cum);
                         if (dr <= 0) { prev_cum = cum; continue; }
 
@@ -865,6 +864,17 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                                        + (sp.cby0 + li / ncbx_p) * sg.ncbx
                                        + (sp.cbx0 + li % ncbx_p);
 
+                            /* V294: Compute src early so we can trim trailing 0xFF before
+                             * writing the length to the packet header.  mq_flush can leave
+                             * the partial byte at pass_lens[np-1] as 0xFF (when the last
+                             * mq_byteout committed C>>19=0xFF and flush advanced past it).
+                             * Transmitting that 0xFF as the last CB byte would form a false
+                             * marker with the following CB's first byte in the packet body.
+                             * Since MQ byte-stuffing guarantees buf[K-1]!=0xFF whenever
+                             * buf[K]=0xFF, at most one byte needs trimming. */
+                            const uint8_t* src = coded_data[comp] + (size_t)cb_idx * cb_stride + 1;
+                            if (len > 0 && src[len - 1] == 0xFF) len--;
+
                             int lblock = 3;
                             if (use_bypass) {
                                 /* V243: BYPASS+RESTART — ISO 15444-1 Annex B.10.6.
@@ -881,7 +891,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                                     for (int p = 0; p < np; ++p) {
                                         uint16_t seg_cum = pl[p];
                                         if (seg_cum > len) seg_cum = len;
-                                        if (p == np - 1) seg_cum = (uint16_t)len;
                                         int seg_len = (int)seg_cum - (int)prev_cum;
                                         if (seg_len > 0) {
                                             int fl = 31 - __builtin_clz((unsigned)seg_len);
@@ -904,7 +913,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                                     for (int p = 0; p < np; ++p) {
                                         uint16_t seg_cum = pl[p];
                                         if (seg_cum > len) seg_cum = len;
-                                        if (p == np - 1) seg_cum = (uint16_t)len;
                                         int seg_len = (int)seg_cum - (int)prev_cum;
                                         if (seg_len < 0) seg_len = 0;
                                         bw.write_bits((unsigned)seg_len, lblock);
@@ -920,12 +928,18 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                                 bw.write_bits(len, len_bits);
                             }
 
-                            const uint8_t* src = coded_data[comp] + (size_t)cb_idx * cb_stride + 1;
                             pkt_body.insert(pkt_body.end(), src, src + len);
                         }
                     }
 
                     bw.flush();
+                    /* V292: If the packet header's last byte is 0xFF, the BitWriter's
+                     * 7-bit stuffing rule extends into the packet body: the decoder reads
+                     * the next byte as a stuffed-0 (MSB ignored). Without an explicit
+                     * 0x00 here, the first T1 byte becomes that stuffed byte and gets
+                     * misread. Insert 0x00 to satisfy the decoder AND prevent false marker
+                     * detection (0xFF 0xD0 etc.) in dcp::verify_j2k scanners. */
+                    if (bw.prev_ff) pkt_header_buf.push_back(0x00u);
                     {
                         auto& arena = comp_arena[comp];
                         uint32_t off = static_cast<uint32_t>(arena.size());
