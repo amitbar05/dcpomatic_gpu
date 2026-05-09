@@ -86,10 +86,11 @@ if [ "$(uname)" == "Darwin" ]; then
     # We need to find ffcmp in here
     export PATH=$PATH:$HOME/workspace/bin
     if [ -d "$environment/$(uname -m)/11.0" ]; then
-        export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$environment/$(uname -m)/11.0/lib
+        export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$environment/$(uname -m)/11.0/lib:$DIR/../../../lib
     else
-        export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$environment/$(uname -m)/10.10/lib
+        export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$environment/$(uname -m)/10.10/lib:$DIR/../../../lib
     fi
+    echo $DYLD_LIBRARY_PATH
 fi
 
 if [ "$check" == "1" ]; then
