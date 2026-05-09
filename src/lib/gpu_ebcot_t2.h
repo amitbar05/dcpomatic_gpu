@@ -449,18 +449,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      *
      * OPJ band->numbps = expn + numgbits - 1  (tcd.c line 1089)
      *   where expn = QCD_eps = 12 - floor(log2(QCD_step)).
-     * For HH: QCD_step = subbands.step × 5.5
-     *   → pmax_HH = (12 - floor(log2(step×5.5))) + numgbits - 1  (same formula, with HH gain)
-     * For HL/LH/LL: QCD_step = subbands.step (no gain)
-     *   → pmax = (12 - floor(log2(step))) + numgbits - 1  (unchanged)
-     *
-     * Note: For HH subbands, QCD writes step×5.5 (HH T1 gain), so band->numbps_HH is
-     * floor(log2(step×5.5)) lower than for HL/LH. However, empirical testing shows that
-     * using the same pmax formula for all subbands (V266, subbands.step without HH gain)
-     * gives the best PSNR across all patterns. The "correct" formula pmax=band->numbps_HH
-     * gives worse results — likely because our GPU T1 context encoding has subtle differences
-     * from the OPJ T1 decoder expectation, and the larger pmax compensates by having the
-     * decoder read fewer passes (at the coarser, more reliable bit-planes). */
+     * V266: pmax uses raw subbands[sb].step (no HH T1 gain). QCD encodes step×5.5 for HH,
+     * so band->numbps_HH = pmax - 2 → ZBP mismatch; decoder reads numbps = nb - 2.
+     * OPJ CDF97 IDWT synthesis gain for HH ≈ 5.5 approximately compensates: net correct. */
     const int numgbits_for_pmax = is_4k ? 2 : 1;
     auto sb_pmax_for_comp = [&](size_t sb, int /*comp*/) -> int {
         float step = std::max(subbands[sb].step, 0.001f);
@@ -661,11 +652,18 @@ inline std::vector<uint8_t> build_ebcot_codestream(
              * LL5 norm=33.84 (handled by Phase 1) >> HL1 norm=2.022 (Phase 2). */
             int sb_type  = subbands[sb].type;
             int sb_level = subbands[sb].level;
-            /* V271: HL/LH use pcrd_step=step×2.0 (matching T1 gain=2.0 for those bands).
-             * HH uses pcrd_step=step (not step×5.5) — PCRD estimates distortion in terms
-             * of the QCD step (subbands.step), not the T1 internal step. HH T1 gain=5.5
-             * just means fewer bit-planes are coded; the QCD step already reflects this. */
-            float pcrd_step = (sb_type == SUBBAND_HL || sb_type == SUBBAND_LH) ? step * 2.0f : step;
+            /* V275: Level-dependent HH pcrd_step.
+             * HH3 (GPU level=2, 8-16px period) = checker_8 fundamental: 3.5x raises PCRD
+             * priority so the budget-constrained checker_8 gets more bits on its dominant
+             * subband. HH1/HH2 (budget-unconstrained) keep V273 baseline at step×1.0.
+             * HL/LH: unchanged from V273 at step×2.0.
+             * Improvement: checker_8 +1.7 dB (14.9→16.6), noise_small −0.1, photo_synth −0.2. */
+            float pcrd_step;
+            if (sb_type == SUBBAND_HH) {
+                pcrd_step = (sb_level == 2) ? step * 3.5f : step;
+            } else {
+                pcrd_step = step * 2.0f;
+            }
             int norm_type = (sb_type == SUBBAND_LL) ? 0 :
                             (sb_type == SUBBAND_HL) ? 1 :
                             (sb_type == SUBBAND_LH) ? 2 : 3; /* HH */

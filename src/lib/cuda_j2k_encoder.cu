@@ -4797,11 +4797,15 @@ j2k_qcd_step_entry(float step)
  * For 4K (6-level DWT): uses uniform base_step (4K ll5_h = height/32, not height/64;
  *   the 4K perceptual mapping is left as-is until a full 4K ll6_h fix is implemented).
  */
-/* V254: QCD must write the T1 quantization step (including HH gain) so OPJ dequantizes
- * with the correct scale factor.  T1 quantizes HH with step*gain_hh; if QCD writes step
- * alone, OPJ reconstructs at 1/gain_hh amplitude → systematic undershoot.
- * Must match the T1 gain constant in gpu_ebcot_t2.h (currently 5.5f). */
-static constexpr float kHH_T1_GAIN_QCD = 5.5f;
+/* V258: kHH_T1_GAIN_QCD = 1.0 (no gain needed).
+ * The GPU DWT applies NORM_H = K = 1.230174 at each H and V 1D-DWT output, which
+ * makes all subbands (including HH) have unit gain after normalization.  T1 quantizes
+ * with cbi.quant_step = base_step × level_weight — NO separate HH gain.  QCD must
+ * therefore write the same step; any additional gain causes OPJ to reconstruct at
+ * gain× amplitude, resulting in massive overshoot clipped by the 12-bit range.
+ * V254 set 5.5 based on an empirical sweep; it was wrong because V252 was sweeping
+ * against a broken baseline.  Setting gain=1.0 recovers correct HH reconstruction. */
+static constexpr float kHH_T1_GAIN_QCD = 1.0f;
 
 static uint16_t
 j2k_perceptual_sb_entry(float base_step, int sb_idx, bool is_4k)
@@ -5531,8 +5535,9 @@ CudaJ2KEncoder::encode_ebcot(
     /* V233: Lowered from 0.049 → 0.024 to allow a fourth halving (0.0625→0.03125)
      * for very sparse patterns (gradient, ramp) that use <55% budget at step=0.0625.
      * At step=0.03125, LL5 step=0.020312 → pmax=18; dispatcher uses MAX_BP=18.
-     * Next halving 0.03125→0.015625 < 0.024 is blocked: pmax=19 needs MAX_BP=19.
-     * Previous floor 0.049: ensured LL5 step > 2^(-5) → pmax≤17. */
+     * Next halving 0.03125→0.015625 < 0.024 is blocked: pmax=19 needs MAX_BP=19,
+     * and finer steps code DWT fp32 noise as signal (tested V269: single_impulse −0.4 dB,
+     * hh2_checker −1.1 dB, h_gradient +115 KB wasted at no quality gain). */
     const float adaptive_min_base_step = 0.024f;
     /* V227: Retry when bytes_used < high × target_bytes (no lower bound).
      * Removed adaptive_thresh_low = 0.005. That threshold caused h_gradient to skip
