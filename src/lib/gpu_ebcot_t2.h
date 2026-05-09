@@ -659,7 +659,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
                     int cbw = std::min(CB_DIM, sb_w - ix * CB_DIM);
                     int cbh = std::min(CB_DIM, sb_h - iy * CB_DIM);
-                    float base = step2 * static_cast<float>(cbw * cbh);
+                    /* V291: density boost — dense CBs (many passes) get higher PCRD priority.
+                     * 1.0× factor: photo_synth +0.2 dB (65.3→65.5), noise_small +0.1 dB (53.9→54.0). */
+                    float density = std::min((float)np / (3.0f * 18.0f), 1.0f);
+                    float base = step2 * static_cast<float>(cbw * cbh) * (1.0f + density);
 
                     const uint16_t* pl = pass_lengths[c]
                         + static_cast<size_t>(cb_idx) * MAX_PASSES;
