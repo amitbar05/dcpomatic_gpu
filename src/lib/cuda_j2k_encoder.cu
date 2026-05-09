@@ -1004,8 +1004,7 @@ static constexpr float DELTA =  0.443506852f;
  *   LL5 gain = (NORM_L × NORM_L)^5 × K^10 = (1/K^2)^5 × K^10 = 1.0 ✓
  *   H subbands gain → 1.0 ✓
  *
- * After normalization, all subbands are in [-4095, 4095] for 12-bit input,
- * consistent with the standard J2K QCD step-size derivation. */
+ * After normalization, all subbands are in [-4095, 4095] for 12-bit input. */
 static constexpr float NORM_L = 0.812893197535108f;  /* 1/K: shrinks lowpass */
 static constexpr float NORM_H = 1.230174104914001f;  /* K:   amplifies highpass */
 

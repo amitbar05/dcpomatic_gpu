@@ -450,17 +450,14 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      *   where expn = QCD_eps = 12 - floor(log2(QCD_step)).
      *
      * V295 note: using qcd_step (T1_step for HH) as pmax makes ZCOD reference-correct
-     * but exposes that our NORM_H² amplitude offset is intentionally compensated by
-     * the pmax offset (reading 2-3 fewer bit-planes reduces apparent coefficient amplitude
-     * which otherwise would be K²× too large after OPJ's standard IDWT synthesis).
-     * pmax uses raw step to maintain the accidental but necessary amplitude compensation. */
+     * pmax uses raw step to maintain the accidental but necessary amplitude compensation
+     * for HH: the 2-bit offset compensates for the NORM_H²/OPJ synthesis interaction. */
     const int numgbits_for_pmax = is_4k ? 2 : 1;
     auto sb_pmax_for_comp = [&](size_t sb, int /*comp*/) -> int {
         /* Use raw step (not qcd_step) for pmax. For HH: pmax uses raw step while QCD
          * writes step×5.5, keeping pmax > band->numbps by ~2. This 2-bit offset is
          * load-bearing: it causes decoder to drop 2 LSB bit-planes from HH, which
-         * compensates for the NORM_H²-induced amplitude offset in the DWT.
-         * Changing to qcd_step causes ~10 dB regression on all HH patterns. */
+         * compensates for the NORM_H/OPJ synthesis interaction. */
         float step = std::max(subbands[sb].step, 0.001f);
         int log2s = static_cast<int>(std::floor(std::log2f(step)));
         return (12 - log2s) + numgbits_for_pmax - 1;
