@@ -628,9 +628,8 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             int sb_level = subbands[sb].level;
             /* V288: Level-aware pcrd_step for HL/LH subbands.
              * HH3 (GPU level=2, 8-16px period): 3.5× for checker_8 priority (V275).
-             * HL1/LH1 (finest horizontal/vertical, sb_level=0): 2.2× — boosts PCRD
-             * priority for finest detail subbands → photo_synth +0.3 dB vs V276
-             * with zero regressions. All other HH: 1.0×. HL/LH coarser: 2.0×. */
+             * HL1/LH1 (finest horizontal/vertical, sb_level=0): 2.2× → +0.3 dB photo_synth.
+             * All other HH: 1.0×. HL/LH coarser (levels 1-4): 2.0×. */
             float pcrd_step;
             if (sb_type == SUBBAND_HH) {
                 pcrd_step = (sb_level == 2) ? step * 3.5f : step;
@@ -675,8 +674,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                         int dr = static_cast<int>(cum) - static_cast<int>(prev_cum);
                         if (dr <= 0) { prev_cum = cum; continue; }
 
-                        float Dbefore = base * std::exp2f(-p * (2.0f/3.0f));
-                        float Dafter  = base * std::exp2f(-(p+1) * (2.0f/3.0f));
+                        /* V289-test: decay 0.68 vs standard 2/3≈0.667 */
+                        float Dbefore = base * std::exp2f(-p * 0.68f);
+                        float Dafter  = base * std::exp2f(-(p+1) * 0.68f);
                         float dd  = Dbefore - Dafter;
                         float dr_f = static_cast<float>(dr);
 
