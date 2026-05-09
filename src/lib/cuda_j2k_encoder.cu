@@ -5505,7 +5505,7 @@ CudaJ2KEncoder::encode_ebcot(
     constexpr int EBCOT_THREADS = 64;
     /* Correct mode: MQ coder, all bit-planes, full D2H. */
     const int  bp_skip    = 0;
-    const bool use_bypass = false;  /* V243: BYPASS+RESTART */
+    const bool use_bypass = true;   /* V299: BYPASS+RESTART re-enabled; ~2× T1 speedup for high-entropy content */
     int  max_cb_d2h = CB_BUF_SIZE;
     /* V225: Two-phase PCRD in gpu_ebcot_t2.h.
      * Phase 1: sequential greedy includes all coarse subbands fully (ensures LL5
@@ -5608,7 +5608,7 @@ CudaJ2KEncoder::encode_ebcot(
          * of all non-bypass/bypass branches in the kernel. */
         if (current_step < 0.049f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, false, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5616,7 +5616,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_ebcot_numbp[c], _impl->d_ebcot_energy[c], bp_skip);
         } else if (current_step < 0.097f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, false, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5624,7 +5624,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_ebcot_numbp[c], _impl->d_ebcot_energy[c], bp_skip);
         } else {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],

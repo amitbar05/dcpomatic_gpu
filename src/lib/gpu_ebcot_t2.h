@@ -618,14 +618,17 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * For typical DCP content: Y uses ~70% of energy, Cb/Cr ~15% each.
      * Old per-component 1/3 split wasted 2/3 of budget on Cb/Cr for achromatic.
      * Global remaining = total_target − total_phase1_bytes (all components). */
-    /* V298: Reserve budget for J2K packet-header overhead so the final
-     * codestream stays within target_bytes.  Without this, PCRD fills
-     * target_bytes of coded data and then the packet headers (tag trees,
-     * CB contribution lengths) push the total 1.5–4% over target.
-     * Empirical calibration (checker_8, noise at 50/100/150/250 Mbps):
-     *   actual overhead ≈ min(target/25, 20000) covers the range. */
+    /* V299: Reserve budget for J2K packet-header overhead so the final
+     * codestream stays within target_bytes.  With BYPASS+RESTART coding
+     * each pass is a separate segment, roughly tripling pass-length header
+     * overhead vs non-bypass.  Empirical calibration (checker_8 at 50/100/
+     * 150/250 Mbps with bypass): header/codestream ratio ≈ 8.8% for worst-case
+     * content (checker_8 low-bitrate).  Using target/10 (10% reserve) ensures
+     * coded_budget × 1.10 ≤ target for all measured patterns.
+     * Old V298 formula (target/25 capped 20KB) was calibrated for non-bypass
+     * and allowed 4-5% overflow with bypass enabled. */
     const size_t hdr_reserve = (target_bytes > 0)
-        ? std::min(static_cast<size_t>(target_bytes / 25), (size_t)20000)
+        ? static_cast<size_t>(target_bytes / 10)
         : 0;
     const size_t global_total_target = (target_bytes > 0 && (size_t)target_bytes > hdr_reserve)
         ? static_cast<size_t>(target_bytes) - hdr_reserve
