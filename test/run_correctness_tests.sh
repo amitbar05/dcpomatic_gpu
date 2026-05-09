@@ -36,6 +36,8 @@ run_test "DWT"                  test/dwt_correctness
 run_test "ICT"                  test/ict_correctness
 run_test "Edge-Cases"           test/edge_case_tests
 run_test "Quantization/QCD"     test/quantization_correctness
+run_test "J2K-Structure"        test/j2k_structure_correctness
+run_test "T1-Coefficient"       test/t1_coefficient_correctness
 run_test "Roundtrip"            test/verify_roundtrip
 
 echo ""
