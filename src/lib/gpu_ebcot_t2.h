@@ -125,13 +125,10 @@ inline void build_codeblock_table(
             sg.ncby = (sg.height + CB_DIM - 1) / CB_DIM;
             sg.cb_start_idx = static_cast<int>(cb_infos.size());
             sg.cb_x0 = 0; sg.cb_y0 = 0;
-            /* V252: T1 gain for HH subbands.
-             * GPU HH1 DWT amplifies 2D Nyquist checker by ~4×; OPJ G_inv≈1.50 (measured).
-             * ZBP regime transition at gain≈4.06 (fast_math precision boundary):
-             *   gain≤4.05: nb_T1=16, G_inv×forward≈7.4, AC_recon=1858 (overshoot)
-             *   gain≥4.06: nb_T1=15 (one less bp coded), AC_recon≈850 (undershoot)
-             * Empirical sweep (150Mbps psnr_battery): gain=5.5 gives best overall PSNR:
-             *   hh1=21.1, hh2=22.2, hh3=18.3, checker_64=31.4, impulse=85.7 dB. */
+            /* V252/V254: T1 gain for HH subbands (QCD writes step×gain via kHH_T1_GAIN below).
+             * Uniform 5.5 across all HH levels: optimal for single_impulse (90.1 dB), hh1 (24.7 dB),
+             * hh3 (18.5 dB), noise (49.4 dB).  Per-level gains hurt due to CDF9/7 filter
+             * leakage cross-level interactions (hh3 regresses when HH2 gain differs). */
             float gain = (defs[s].type == SUBBAND_HH) ? 5.5f : 2.0f;
             float t1_step = step * gain;
             for (int cby = 0; cby < sg.ncby; cby++) {
@@ -384,19 +381,20 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         const int numgbits = is_4k ? 2 : 1;
         const uint8_t sqcd = static_cast<uint8_t>((numgbits << 5) | 0x02); /* sqty=2 expounded (OPJ: bits4:0=style, bits7:5=guard) */
         w8(sqcd);
-        /* V254: QCD must encode the actual T1 quantization step (step * gain) for HH
+        /* V254/V255: QCD must encode the actual T1 quantization step (step * gain) for HH
          * subbands so OPJ dequantizes at the correct amplitude.  subbands[i].step
-         * stores the pre-gain step; we apply the HH T1 gain (5.5f) here.
-         * Without this, OPJ reconstructs HH at 1/gain amplitude (systematic undershoot). */
-        static constexpr float kHH_T1_GAIN = 5.5f;
+         * stores the pre-gain step; we apply per-level HH T1 gain here.
+         * V255: HH1 (finest, level=0) uses gain=5.5; HH2-5 use gain=4.5. */
+        /* V254: QCD must encode the actual T1 quantization step (step * gain) for HH
+         * subbands so OPJ dequantizes at the correct amplitude.  All HH levels use gain=5.5. */
         /* Encode step for each subband in standard order */
         /* LL, then for each level (coarsest→finest): HL, LH, HH */
         for (int i = 0; i < nsb; i++) {
             float step_val = (i < static_cast<int>(subbands.size())) ? subbands[i].step : base_step;
-            /* Apply HH T1 gain to QCD so decoder dequantizes with the exact T1 step */
+            /* Apply HH T1 gain (5.5) to QCD so decoder dequantizes with the exact T1 step */
             bool is_hh = (i < static_cast<int>(subbands.size()) &&
                           subbands[i].type == SUBBAND_HH);
-            if (is_hh) step_val *= kHH_T1_GAIN;
+            if (is_hh) step_val *= 5.5f;
             /* Encode as (eps<<11)|man per ITU-T T.800 A.6.4.
              * OPJ decoder (tcd.c): stepsize = (1+man/2048)*2^(Rb-eps), Rb=prec=12 (irreversible).
              * Set eps=12-log2s so stepsize = (1+man/2048)*2^log2s = step_val. */
