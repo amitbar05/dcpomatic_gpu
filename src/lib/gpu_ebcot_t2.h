@@ -674,9 +674,11 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                         int dr = static_cast<int>(cum) - static_cast<int>(prev_cum);
                         if (dr <= 0) { prev_cum = cum; continue; }
 
-                        /* V289-test: decay 0.68 vs standard 2/3≈0.667 */
-                        float Dbefore = base * std::exp2f(-p * 0.68f);
-                        float Dafter  = base * std::exp2f(-(p+1) * 0.68f);
+                        /* V290: per-type decay — HH=0.68, HL/LH=0.69, LL=0.67 */
+                        float decay = (sb_type == SUBBAND_HH) ? 0.68f
+                                    : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
+                        float Dbefore = base * std::exp2f(-p * decay);
+                        float Dafter  = base * std::exp2f(-(p+1) * decay);
                         float dd  = Dbefore - Dafter;
                         float dr_f = static_cast<float>(dr);
 
