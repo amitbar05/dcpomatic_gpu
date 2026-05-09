@@ -142,7 +142,7 @@
           h_ebcot_len is already known from V236 lengths-only loop.  Sparse frames
           (flat, gradients, title cards: max_coded_len ≈ 1–200 B) shrink the coded
           data transfer from 13.4 MB to under 1 MB per component.  Dense frames
-          (checker: max_coded_len ≈ 1800 B < 2048 = CB_BUF_SIZE) also benefit.
+          (checker: max_coded_len ≈ 8000–12000 B < 16384 = CB_BUF_SIZE) also benefit.
           The reduced stride is passed as cb_stride to build_ebcot_codestream, which
           already parameterises it (V137).  Zero-coded CBs are safe: sentinel byte
           is at offset 0, coded data at offset 1..len, all within max_cb_d2h >= 64.
@@ -4139,6 +4139,7 @@ struct CudaJ2KEncoderImpl
     uint16_t* h_ebcot_passlens[3]= {nullptr, nullptr, nullptr};
     uint8_t*  h_ebcot_numbp[3]   = {nullptr, nullptr, nullptr};
     int       ebcot_num_cbs      = 0;
+    int       last_max_cb_d2h   = CB_BUF_SIZE;  /* stride used by last encode */
     std::vector<SubbandGeom> ebcot_subbands;
     std::vector<CodeBlockInfo> ebcot_cb_table;
 
@@ -4795,6 +4796,12 @@ j2k_qcd_step_entry(float step)
  * For 4K (6-level DWT): uses uniform base_step (4K ll5_h = height/32, not height/64;
  *   the 4K perceptual mapping is left as-is until a full 4K ll6_h fix is implemented).
  */
+/* V254: QCD must write the T1 quantization step (including HH gain) so OPJ dequantizes
+ * with the correct scale factor.  T1 quantizes HH with step*gain_hh; if QCD writes step
+ * alone, OPJ reconstructs at 1/gain_hh amplitude → systematic undershoot.
+ * Must match the T1 gain constant in gpu_ebcot_t2.h (currently 5.5f). */
+static constexpr float kHH_T1_GAIN_QCD = 5.5f;
+
 static uint16_t
 j2k_perceptual_sb_entry(float base_step, int sb_idx, bool is_4k)
 {
@@ -4809,7 +4816,11 @@ j2k_perceptual_sb_entry(float base_step, int sb_idx, bool is_4k)
         1.20f, 1.20f, 1.20f         /* sb 13-15: L1 (finest detail) */
     };
     float w = (sb_idx < 16) ? kWeights[sb_idx] : 1.0f;
-    return j2k_qcd_step_entry(base_step * w);
+    /* HH subbands: sb 3,6,9,12,15 (sb_idx>=3 && sb_idx%3==0).
+     * Multiply QCD step by HH T1 gain so OPJ dequantizes with the actual T1 step. */
+    bool is_hh = (sb_idx >= 3 && sb_idx % 3 == 0);
+    float gain = is_hh ? kHH_T1_GAIN_QCD : 1.0f;
+    return j2k_qcd_step_entry(base_step * w * gain);
 }
 
 /**
@@ -5486,19 +5497,17 @@ CudaJ2KEncoder::encode_ebcot(
     constexpr int EBCOT_THREADS = 64;
     /* Correct mode: MQ coder, all bit-planes, full D2H. */
     const int  bp_skip    = 0;
-    const bool use_bypass = true;  /* V243: BYPASS+RESTART */
+    const bool use_bypass = false;  /* V243: BYPASS+RESTART */
     int  max_cb_d2h = CB_BUF_SIZE;
     /* V225: Two-phase PCRD in gpu_ebcot_t2.h.
      * Phase 1: sequential greedy includes all coarse subbands fully (ensures LL5
      * and intermediate levels always encoded; V224 proportional gave LL5 only 38%
      * when total_t1=676KB >> budget=260KB → dominant gradient poorly reconstructed).
      * Phase 2: proportional budget + PCRD-OPT within each overflow subband. */
-    /* V222: CB buffer overflow guard in gpu_ebcot.h T1 kernel.
-     * High-content code blocks (checker_8 HL3/HL4 with ~11 bit-planes × 200B/bp
-     * = 2200B > CB_BUF_SIZE=2048) caused mq.bp to advance past the allocated
-     * output buffer, corrupting adjacent code blocks in parallel CUDA execution.
-     * Fix: break the bit-plane loop when >= CB_BUF_SIZE-768 bytes are used,
-     * leaving 768B headroom for the last bit-plane (SPP+MRP+CUP+flush ≤ 700B). */
+    /* V222/V229: CB buffer overflow guard in gpu_ebcot.h T1 kernel.
+     * V229 raised CB_BUF_SIZE from 2048 → 16384 so that dense checker code blocks
+     * (13 bitplanes × ~700B/bp ≈ 9100 bytes) are fully coded instead of truncated
+     * to ~1 bitplane.  Guard leaves 768B headroom for the final bitplane flush. */
     /* V220: up to 3 attempts (2 halvings) with a pmax safety floor.
      * The ZBP tag tree in T2 encodes z=pmax-nb against threshold=pmax.  When
      * pmax>16, z can be so large it corrupts the codestream (V218 catastrophe:
@@ -5586,7 +5595,7 @@ CudaJ2KEncoder::encode_ebcot(
          * of all non-bypass/bypass branches in the kernel. */
         if (current_step < 0.049f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, true, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, false, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5594,7 +5603,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_ebcot_numbp[c], bp_skip);
         } else if (current_step < 0.097f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, true, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, false, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5602,7 +5611,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_ebcot_numbp[c], bp_skip);
         } else {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, true, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5690,11 +5699,11 @@ CudaJ2KEncoder::encode_ebcot(
     base_step = current_step;  /* T2 codestream uses the final step for QCD */
 
     /* V237: Compact final D2H — transfer only ceil(max_coded_len / 64) * 64 bytes
-     * per code block instead of the full CB_BUF_SIZE=2048.
+     * per code block instead of the full CB_BUF_SIZE=16384.
      * h_ebcot_len was already transferred (V236 lengths-only loop above).
      * For sparse content (flat, gradients, title cards): max coded_len is a few
-     * hundred bytes → D2H shrinks from 13.4 MB to < 1 MB per component.
-     * For dense content (checker, noise): max_coded_len ≈ CB_BUF_SIZE → no change.
+     * hundred bytes → D2H shrinks from 53 MB to < 1 MB per component.
+     * For dense content (checker): max_coded_len ≈ 8000–12000 bytes.
      * min 64 bytes: handles zero-coded CBs (sentinel byte + 1 coded byte = safe). */
     {
         uint16_t max_coded = 1;
@@ -5784,6 +5793,7 @@ CudaJ2KEncoder::encode_ebcot(
     const uint16_t* pl[3] = { _impl->h_ebcot_passlens[0], _impl->h_ebcot_passlens[1], _impl->h_ebcot_passlens[2] };
     const uint8_t*  nb[3] = { _impl->h_ebcot_numbp[0], _impl->h_ebcot_numbp[1], _impl->h_ebcot_numbp[2] };
 
+    _impl->last_max_cb_d2h = max_cb_d2h;
     auto result = build_ebcot_codestream(
         width, height, is_4k, is_3d,
         num_levels, base_step,
@@ -5817,6 +5827,15 @@ CudaJ2KEncoder::debug_get_dwt_output(int c, int width, int height)
 }
 
 
+std::vector<uint16_t>
+CudaJ2KEncoder::debug_get_cb_lengths(int c)
+{
+    if (!_initialized || c < 0 || c >= 3) return {};
+    int n = _impl->ebcot_num_cbs;
+    if (n <= 0 || !_impl->h_ebcot_len[c]) return {};
+    return std::vector<uint16_t>(_impl->h_ebcot_len[c], _impl->h_ebcot_len[c] + n);
+}
+
 std::vector<float>
 CudaJ2KEncoder::debug_get_dwt_f32(int c, int width, int height)
 {
@@ -5824,6 +5843,31 @@ CudaJ2KEncoder::debug_get_dwt_f32(int c, int width, int height)
     std::vector<float> out(size_t(width) * height);
     cudaMemcpy(out.data(), _impl->d_a_f32[c],
                out.size() * sizeof(float), cudaMemcpyDeviceToHost);
+    return out;
+}
+
+
+CudaJ2KEncoder::CbDebugData
+CudaJ2KEncoder::debug_get_cb_data(int c, int cb_idx)
+{
+    CbDebugData out;
+    if (!_initialized || c < 0 || c >= 3) return out;
+    int n = _impl->ebcot_num_cbs;
+    if (cb_idx < 0 || cb_idx >= n) return out;
+    if (!_impl->h_ebcot_data[c] || !_impl->h_ebcot_passlens[c]) return out;
+
+    out.coded_len  = _impl->h_ebcot_len[c][cb_idx];
+    out.num_passes = _impl->h_ebcot_npasses[c][cb_idx];
+    out.num_bp     = _impl->h_ebcot_numbp[c][cb_idx];
+
+    /* Coded bytes start at offset 1 (skip sentinel byte).
+     * After compaction h_ebcot_data has stride last_max_cb_d2h, not CB_BUF_SIZE. */
+    int stride = _impl->last_max_cb_d2h;
+    const uint8_t* src = _impl->h_ebcot_data[c] + (size_t)cb_idx * stride + 1;
+    out.bytes.assign(src, src + out.coded_len);
+
+    const uint16_t* pl = _impl->h_ebcot_passlens[c] + (size_t)cb_idx * MAX_PASSES;
+    out.pass_lens.assign(pl, pl + out.num_passes);
     return out;
 }
 

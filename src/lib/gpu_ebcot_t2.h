@@ -384,10 +384,19 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         const int numgbits = is_4k ? 2 : 1;
         const uint8_t sqcd = static_cast<uint8_t>((numgbits << 5) | 0x02); /* sqty=2 expounded (OPJ: bits4:0=style, bits7:5=guard) */
         w8(sqcd);
+        /* V254: QCD must encode the actual T1 quantization step (step * gain) for HH
+         * subbands so OPJ dequantizes at the correct amplitude.  subbands[i].step
+         * stores the pre-gain step; we apply the HH T1 gain (5.5f) here.
+         * Without this, OPJ reconstructs HH at 1/gain amplitude (systematic undershoot). */
+        static constexpr float kHH_T1_GAIN = 5.5f;
         /* Encode step for each subband in standard order */
         /* LL, then for each level (coarsest→finest): HL, LH, HH */
         for (int i = 0; i < nsb; i++) {
             float step_val = (i < static_cast<int>(subbands.size())) ? subbands[i].step : base_step;
+            /* Apply HH T1 gain to QCD so decoder dequantizes with the exact T1 step */
+            bool is_hh = (i < static_cast<int>(subbands.size()) &&
+                          subbands[i].type == SUBBAND_HH);
+            if (is_hh) step_val *= kHH_T1_GAIN;
             /* Encode as (eps<<11)|man per ITU-T T.800 A.6.4.
              * OPJ decoder (tcd.c): stepsize = (1+man/2048)*2^(Rb-eps), Rb=prec=12 (irreversible).
              * Set eps=12-log2s so stepsize = (1+man/2048)*2^log2s = step_val. */
@@ -627,8 +636,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
             float step  = std::max(subbands[sb].step, 0.001f);
             /* V247: PCRD step2 uses T1 quantization step (step * gain), not step * CDF97_NORMS.
-             * CDF97_NORMS[HH]≈2.08 but T1 uses gain=4 for HH → 3.7× PCRD underestimate → HH
-             * underfunded → 28 dB on checker patterns.  HL/LH: norm≈gain≈2 so no impact. */
+             * CDF97_NORMS[HH]≈2.08 but T1 uses gain=5.5 for HH.  gain_pcrd=4.0 (not 5.5) is
+             * intentional: empirically gain_pcrd=5.5 over-allocates HH bytes, hurting HL/LH
+             * (noise/photo -2.3 dB) with no HH improvement (ZBP-regime limited). */
             float gain_pcrd = (subbands[sb].type == SUBBAND_HH) ? 4.0f :
                               (subbands[sb].type == SUBBAND_LL) ? 1.0f : 2.0f;
             float step2  = (step * gain_pcrd) * (step * gain_pcrd);
