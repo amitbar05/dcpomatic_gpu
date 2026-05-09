@@ -477,15 +477,19 @@ inline PcrdResult compute_pcrd_truncation(
                         + static_cast<size_t>(cb_idx) * MAX_PASSES;
                     hull_stack.clear();
                     uint16_t prev_cum = 0;
+                    /* V302: hoist decay/scale outside pass loop — one exp2f per CB vs two per pass */
+                    float decay = (sb_type == SUBBAND_HH) ? 0.68f
+                                : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
+                    float scale = std::exp2f(-decay);
+                    float Dcur  = base;  /* base * scale^p, starts at p=0 */
                     for (int p = 0; p < np; ++p) {
                         uint16_t cum = pl[p];
                         if (cum > cb_len) cum = cb_len;
                         int dr = (int)cum - (int)prev_cum;
+                        float Dnext = Dcur * scale;
+                        float dd = Dcur - Dnext;
+                        Dcur = Dnext;
                         if (dr <= 0) { prev_cum = cum; continue; }
-                        float decay = (sb_type == SUBBAND_HH) ? 0.68f
-                                    : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
-                        float dd = base * std::exp2f(-p * decay)
-                                 - base * std::exp2f(-(p+1) * decay);
                         HullSeg seg{dd / (float)dr, dd, p, p, cum, (uint16_t)dr};
                         while (!hull_stack.empty()
                                && hull_stack.back().slope <= seg.slope) {
@@ -534,8 +538,12 @@ inline PcrdResult compute_pcrd_truncation(
 
 
 /* Build a complete J2K codestream from EBCOT T1 coded data.
- * This is a single-tile, single-layer, CPRL implementation. */
-inline std::vector<uint8_t> build_ebcot_codestream(
+ * This is a single-tile, single-layer, CPRL implementation.
+ * V302: cs and comp_arena are persistent caller-provided buffers cleared+reused each frame,
+ * eliminating ~1.5ms of mmap/page-fault overhead vs allocating them locally each call. */
+inline void build_ebcot_codestream(
+    std::vector<uint8_t>& cs,         /* V302: out-param; caller clears+reuses across frames */
+    std::vector<uint8_t>* comp_arena, /* V302: ptr to [3] per-component arenas; cleared+reused */
     int width, int height, bool is_4k, bool is_3d,
     int num_levels, float base_step,
     const std::vector<SubbandGeom>& subbands,
@@ -550,8 +558,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     bool use_bypass = false,         /* V205: COD BYPASS bit must match T1 bypass usage */
     const PcrdResult* pre_pcrd = nullptr) /* V301: pre-computed PCRD (skips re-run) */
 {
-    std::vector<uint8_t> cs;
-    cs.reserve(target_bytes > 0 ? target_bytes + 1024 : 1024*1024);
+    cs.clear();
+    { size_t need = target_bytes > 0 ? (size_t)target_bytes + 1024u : (size_t)(1024*1024);
+      if (cs.capacity() < need) cs.reserve(need); }
 
     auto w16 = [&](uint16_t v) { cs.push_back(v >> 8); cs.push_back(v & 0xFF); };
     auto w32 = [&](uint32_t v) { cs.push_back((v>>24)&0xFF); cs.push_back((v>>16)&0xFF);
@@ -645,12 +654,14 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     /* V234: Flat packet arena — one contiguous buffer per component instead of
      * 177 per-precinct vectors.  comp_arena[c] holds all packets for component c;
      * pkt_refs[c][r][prec_idx] records {offset, size} within that arena.
-     * Eliminates ~177 vector alloc/free calls per frame. */
+     * Eliminates ~177 vector alloc/free calls per frame.
+     * V302: comp_arena is caller-provided persistent buffer array (cleared, capacity kept). */
     struct PktRef { uint32_t offset; uint32_t size; };
-    std::vector<uint8_t> comp_arena[3];
     std::vector<std::vector<std::vector<PktRef>>> pkt_refs(3);
     for (int c = 0; c < 3; ++c) {
-        comp_arena[c].reserve((target_bytes > 0) ? target_bytes / 3 + 16384 : 512*1024);
+        comp_arena[c].clear();
+        { size_t need = target_bytes > 0 ? (size_t)(target_bytes / 3 + 16384) : (size_t)(512*1024);
+          if (comp_arena[c].capacity() < need) comp_arena[c].reserve(need); }
         pkt_refs[c].resize(num_levels + 1);
         for (int r = 0; r <= num_levels; ++r)
             pkt_refs[c][r].assign(rg[r].nPx * rg[r].nPy, PktRef{0, 0});
@@ -913,18 +924,21 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     hull_stack.clear();
                     uint16_t prev_cum = 0;
 
+                    /* V302: hoist decay/scale outside pass loop — one exp2f per CB vs two per pass */
+                    /* V290: per-type decay — HH=0.68, HL/LH=0.69, LL=0.67 */
+                    float decay = (sb_type == SUBBAND_HH) ? 0.68f
+                                : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
+                    float scale = std::exp2f(-decay);
+                    float Dcur  = base;  /* base * scale^p, starts at p=0 */
+
                     for (int p = 0; p < np; ++p) {
                         uint16_t cum = pl[p];
                         if (cum > cb_len) cum = cb_len;
                         int dr = static_cast<int>(cum) - static_cast<int>(prev_cum);
+                        float Dnext = Dcur * scale;
+                        float dd  = Dcur - Dnext;
+                        Dcur = Dnext;
                         if (dr <= 0) { prev_cum = cum; continue; }
-
-                        /* V290: per-type decay — HH=0.68, HL/LH=0.69, LL=0.67 */
-                        float decay = (sb_type == SUBBAND_HH) ? 0.68f
-                                    : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
-                        float Dbefore = base * std::exp2f(-p * decay);
-                        float Dafter  = base * std::exp2f(-(p+1) * decay);
-                        float dd  = Dbefore - Dafter;
                         float dr_f = static_cast<float>(dr);
 
                         HullSeg seg;
@@ -1311,8 +1325,6 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
     /* EOC — final marker.  V139 FIX: NEVER pad after EOC. */
     w16(J2K_EOC_M);
-
-    return cs;
 }
 
 

@@ -4144,6 +4144,10 @@ struct CudaJ2KEncoderImpl
     int       last_max_cb_d2h   = CB_BUF_SIZE;  /* stride used by last encode */
     std::vector<SubbandGeom> ebcot_subbands;
     std::vector<CodeBlockInfo> ebcot_cb_table;
+    /* V302: Persistent T2 frame buffers — reused each frame to eliminate mmap/page-fault
+     * overhead (~1.5ms/frame) from fresh allocation of large cs and comp_arena vectors. */
+    std::vector<uint8_t>  t2_cs;            /* output codestream (cleared each frame) */
+    std::vector<uint8_t>  t2_comp_arena[3]; /* per-component packet arenas (cleared each frame) */
 
     bool init() {
         for (int c = 0; c < 3; ++c) {
@@ -5832,7 +5836,9 @@ CudaJ2KEncoder::encode_ebcot(
     const float*    eg[3] = { _impl->h_ebcot_energy[0], _impl->h_ebcot_energy[1], _impl->h_ebcot_energy[2] };
 
     _impl->last_max_cb_d2h = max_cb_d2h;
-    auto result = build_ebcot_codestream(
+    /* V302: Pass persistent buffers — cleared inside build_ebcot_codestream, capacity kept. */
+    build_ebcot_codestream(
+        _impl->t2_cs, _impl->t2_comp_arena,
         width, height, is_4k, is_3d,
         num_levels, base_step,
         _impl->ebcot_subbands,
@@ -5842,7 +5848,7 @@ CudaJ2KEncoder::encode_ebcot(
         use_bypass,
         use_pre_pcrd ? &pcrd : nullptr);
     tmark("T2+CS");
-    return result;
+    return _impl->t2_cs;
 }
 
 
