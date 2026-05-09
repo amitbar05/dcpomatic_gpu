@@ -39,6 +39,7 @@ run_test "Quantization/QCD"     test/quantization_correctness
 run_test "J2K-Structure"        test/j2k_structure_correctness
 run_test "T1-Coefficient"       test/t1_coefficient_correctness
 run_test "Roundtrip"            test/verify_roundtrip
+run_test "Rate-Distortion"      test/rate_distortion_correctness
 
 echo ""
 echo "=== Summary: $PASS PASS, $FAIL FAIL, $SKIP SKIP ==="
