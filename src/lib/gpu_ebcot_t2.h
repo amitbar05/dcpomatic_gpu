@@ -125,14 +125,14 @@ inline void build_codeblock_table(
             sg.ncby = (sg.height + CB_DIM - 1) / CB_DIM;
             sg.cb_start_idx = static_cast<int>(cb_infos.size());
             sg.cb_x0 = 0; sg.cb_y0 = 0;
-            /* V185: irreversible 9/7 inverse DWT amplifies HL/LH by 2x and HH by 4x
-             * (OPJ uses two_invK = 2/K instead of invK; see opj dwt.c "BUG_WEIRD_TWO_INVK").
-             * To compensate, T1 must quantize with step × inv_dwt_gain so dequantized
-             * coefficients are pre-scaled smaller; the inverse DWT then amplifies them
-             * back to the right magnitude.  QCD writes the unscaled `step`.
-             * V216: restored — V211 removal was wrong; NORM_L/NORM_H only make the
-             * L→L round-trip unity; OPJ two_invK still doubles H subbands. */
-            float gain = (defs[s].type == SUBBAND_HH) ? 4.0f : 2.0f;
+            /* V252: T1 gain for HH subbands.
+             * GPU HH1 DWT amplifies 2D Nyquist checker by ~4×; OPJ G_inv≈1.50 (measured).
+             * ZBP regime transition at gain≈4.06 (fast_math precision boundary):
+             *   gain≤4.05: nb_T1=16, G_inv×forward≈7.4, AC_recon=1858 (overshoot)
+             *   gain≥4.06: nb_T1=15 (one less bp coded), AC_recon≈850 (undershoot)
+             * Empirical sweep (150Mbps psnr_battery): gain=5.5 gives best overall PSNR:
+             *   hh1=21.1, hh2=22.2, hh3=18.3, checker_64=31.4, impulse=85.7 dB. */
+            float gain = (defs[s].type == SUBBAND_HH) ? 5.5f : 2.0f;
             float t1_step = step * gain;
             for (int cby = 0; cby < sg.ncby; cby++) {
                 for (int cbx = 0; cbx < sg.ncbx; cbx++) {
@@ -382,7 +382,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         /* V192: numgbits 2 → 1 for 2K, 2 for 4K (DCP spec).  band->numbps formula
          * `eps + numgbits - 1` shifts; pmax computation below adjusted to match. */
         const int numgbits = is_4k ? 2 : 1;
-        const uint8_t sqcd = static_cast<uint8_t>((numgbits << 5) | 0x02); /* sqty=2 expounded */
+        const uint8_t sqcd = static_cast<uint8_t>((numgbits << 5) | 0x02); /* sqty=2 expounded (OPJ: bits4:0=style, bits7:5=guard) */
         w8(sqcd);
         /* Encode step for each subband in standard order */
         /* LL, then for each level (coarsest→finest): HL, LH, HH */
@@ -560,8 +560,12 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         size_t pcrd_start = subbands.size();
 
         for (size_t sb = 0; sb < subbands.size(); ++sb) {
-            /* Stop Phase 1 at lv0 and lv1 subbands — let Phase 2 handle them. */
-            if (subbands[sb].level < 2) {
+            /* Stop Phase 1 at lv0/lv1/lv2 subbands — let Phase 2 handle them.
+             * V227: raised threshold from <2 to <3 so HL3/LH3/HH3 (level=2)
+             * participate in PCRD-OPT. For checker_8, HH3 has ~57KB T1 data
+             * which used to consume most of the budget before fine subbands got
+             * any allocation, causing massive ringing (15 dB PSNR). */
+            if (subbands[sb].level < 3) {
                 pcrd_start = sb;
                 break;
             }
@@ -589,40 +593,50 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
         if (pcrd_start >= subbands.size()) continue; /* all fit — nothing more to do */
 
-        /* Phase 2: proportional PCRD for the overflow subbands (pcrd_start..end). */
+        /* Phase 2: global PCRD-OPT across all overflow subbands (V228).
+         *
+         * V224-V227 used per-subband proportional budget allocation (T1-bytes
+         * proportional).  That failed for checker_8: HH3 dominates T1 but gets
+         * only its proportional share (~5 KB), leaving it under-coded; HL1/LH1
+         * ringing harmonics also get too little → 15-17 dB PSNR.
+         *
+         * V228 collects convex-hull entries from ALL Phase 2 subbands, sorts
+         * globally by slope, and greedy-includes until the remaining budget is
+         * exhausted.  This is true PCRD-OPT: high-slope entries (dominant
+         * subbands like HH3 for checker_8) consume their small T1 quickly,
+         * leaving plenty of budget for fine-subband ringing removal.
+         *
+         * Phase 1 already handles LL5 and levels 3-4 (tiny, never need
+         * truncation), so the norm-ratio in Phase 2 is at most 7.585/2.022≈3.75
+         * (level-2 vs level-0), far below the V223 problem of 33.84/2.022≈16.7
+         * that caused photo_synth regression when LL5 participated. */
         size_t remaining_budget = (per_comp_target > comp_bytes)
             ? per_comp_target - comp_bytes : 0;
-        size_t remaining_t1 = 0;
-        for (size_t sb = pcrd_start; sb < subbands.size(); ++sb)
-            remaining_t1 += t1_per_sb[sb];
+
+        /* Collect all convex-hull entries from every Phase 2 subband. */
+        std::vector<PcrdEntry> all_entries;
+        {
+            size_t p2_cbs = 0;
+            for (size_t sb = pcrd_start; sb < subbands.size(); ++sb)
+                p2_cbs += static_cast<size_t>(subbands[sb].ncbx) * subbands[sb].ncby;
+            all_entries.reserve(p2_cbs * 6);
+        }
 
         for (size_t sb = pcrd_start; sb < subbands.size(); ++sb) {
-            size_t t1_sb = t1_per_sb[sb];
-            if (t1_sb == 0) continue;
-
-            size_t sb_budget = (remaining_t1 > 0)
-                ? static_cast<size_t>(
-                      static_cast<double>(remaining_budget) * t1_sb / remaining_t1 + 0.5)
-                : 0;
-            if (sb_budget == 0) continue;
+            if (t1_per_sb[sb] == 0) continue;
 
             float step  = std::max(subbands[sb].step, 0.001f);
-            int norm_row = (subbands[sb].type == SUBBAND_LH) ? 1 :
-                           (subbands[sb].type == SUBBAND_HH) ? 3 :
-                           (subbands[sb].type == SUBBAND_HL) ? 2 : 0;
-            int norm_col = std::min(static_cast<int>(subbands[sb].level), 9);
-            float norm   = CDF97_NORMS[norm_row][norm_col];
-            float step2  = (step * norm) * (step * norm);
+            /* V247: PCRD step2 uses T1 quantization step (step * gain), not step * CDF97_NORMS.
+             * CDF97_NORMS[HH]≈2.08 but T1 uses gain=4 for HH → 3.7× PCRD underestimate → HH
+             * underfunded → 28 dB on checker patterns.  HL/LH: norm≈gain≈2 so no impact. */
+            float gain_pcrd = (subbands[sb].type == SUBBAND_HH) ? 4.0f :
+                              (subbands[sb].type == SUBBAND_LL) ? 1.0f : 2.0f;
+            float step2  = (step * gain_pcrd) * (step * gain_pcrd);
             int cb_start = subbands[sb].cb_start_idx;
             int ncbx     = subbands[sb].ncbx;
             int ncby     = subbands[sb].ncby;
             int sb_w     = subbands[sb].width;
             int sb_h     = subbands[sb].height;
-            int ncbs     = ncbx * ncby;
-
-            /* Build convex-hull PCRD entries for each CB in this subband. */
-            std::vector<PcrdEntry> entries_sb;
-            entries_sb.reserve(static_cast<size_t>(ncbs) * 6);
 
             for (int iy = 0; iy < ncby; ++iy) {
                 for (int ix = 0; ix < ncbx; ++ix) {
@@ -679,33 +693,30 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     }
 
                     for (const auto& seg : hull_stack) {
-                        entries_sb.push_back({seg.slope, cb_idx,
+                        all_entries.push_back({seg.slope, cb_idx,
                                               static_cast<uint8_t>(seg.p_from),
                                               static_cast<uint8_t>(seg.p_to),
                                               seg.cum_len, seg.delta_r});
                     }
                 }
             }
+        }
 
-            std::sort(entries_sb.begin(), entries_sb.end(),
-                      [](const PcrdEntry& a, const PcrdEntry& b){
-                          return a.slope > b.slope;
-                      });
+        std::sort(all_entries.begin(), all_entries.end(),
+                  [](const PcrdEntry& a, const PcrdEntry& b){
+                      return a.slope > b.slope;
+                  });
 
-            /* Greedy inclusion within this subband's proportional budget. */
-            std::vector<uint8_t> nxt(ncbs, 0);
-            size_t sb_used = 0;
+        /* Global greedy inclusion — pcrd_np_use[c] serves as per-CB pass tracker.
+         * Phase 2 CBs start at 0; Phase 1 CBs already have their passes set. */
+        size_t global_used = 0;
+        for (const auto& e : all_entries) {
+            if (global_used >= remaining_budget) break;
+            if (e.p_from < static_cast<int>(pcrd_np_use[c][e.cb_idx])) continue;
 
-            for (const auto& e : entries_sb) {
-                if (sb_used >= sb_budget) break;
-                int local_idx = e.cb_idx - cb_start;
-                if (e.p_from < nxt[local_idx]) continue;
-
-                nxt[local_idx] = e.p_to + 1;
-                pcrd_np_use [c][e.cb_idx] = e.p_to + 1;
-                pcrd_len_use[c][e.cb_idx] = e.cum_len;
-                sb_used += static_cast<size_t>(e.delta_r);
-            }
+            pcrd_np_use [c][e.cb_idx] = e.p_to + 1;
+            pcrd_len_use[c][e.cb_idx] = e.cum_len;
+            global_used += static_cast<size_t>(e.delta_r);
         }
     }
 
