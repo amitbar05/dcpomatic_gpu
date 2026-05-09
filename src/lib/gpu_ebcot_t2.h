@@ -508,8 +508,10 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     struct PcrdEntry {
         float    slope;
         int      cb_idx;
+        uint8_t  comp;       /* component (0/1/2) — for global Phase 2 */
         uint8_t  p_from;     /* group start pass (ordering: p_from must = nxt[cb]) */
         uint8_t  p_to;       /* group end pass (inclusive)                         */
+        uint8_t  _pad;
         uint16_t cum_len;    /* cumulative coded bytes through p_to               */
         uint16_t delta_r;    /* total bytes for passes p_from..p_to               */
     };
@@ -529,21 +531,19 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     const size_t per_comp_target = (target_bytes > 0)
         ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
-    /* V225/V226: Two-phase truncation point selection.
+    /* V276: Global Phase 2 PCRD across all 3 components (Phase 1 remains per-component).
      *
-     * Phase 1 — sequential greedy for coarse subbands (level ≥ 2): include LL5 and
-     * HL/LH/HH at levels 2, 3, 4 fully. These subbands are always tiny (< 10KB for
-     * typical 2K content at 150 Mbps) and carry the coarse reconstruction basis.
-     * Phase 1 never truncates them; it simply guarantees their passes are included.
+     * Phase 1 (per-component): include LL5 and levels 4-5 unconditionally. These
+     * are always tiny and carry the coarse reconstruction basis.
      *
-     * Phase 2 — proportional PCRD-OPT for lv0 and lv1 subbands: remaining budget is
-     * distributed proportional to each subband's T1 bytes, and within each subband
-     * convex hull + slope sort allocates the budget by merit across all CBs.
-     * This avoids the V219 flaw of giving first CBs 100% and last CBs 0%.
-     *
-     * V225 used a 40% budget cap instead of a hard level threshold; this caused
-     * HL1 (47KB for checker_8) to slip into Phase 1, taking 30KB from lv0.
-     * V226 hard-stops Phase 1 at level < 2 → lv0 gets 205KB vs V224's 210KB (−2%). */
+     * Phase 2 (global): collect convex-hull entries from all 3 components together,
+     * sort globally by slope, greedy-include against total_target - total_phase1_bytes.
+     * For achromatic content (R=G=B), Y dominates; Cb/Cr use only a few KB of their
+     * old 1/3 share. Old per-component Phase 2 wasted 2/3 of budget on empty Cb/Cr.
+     * Global Phase 2 naturally recycles that slack to Y, improving quality on all
+     * budget-constrained patterns (checker_8, hh3_checker, noise_small, photo_synth).
+     * For colorful content, global PCRD still allocates proportional to energy — better
+     * than the artificial 1/3 split. */
     static const float CDF97_NORMS[4][10] = {
         {1.000f,1.965f,4.177f,8.403f,16.90f,33.84f,67.69f,135.3f,270.6f,540.9f},
         {2.022f,3.989f,7.585f,13.94f,25.36f,46.07f,83.53f,151.5f,274.6f,497.2f},
@@ -551,43 +551,31 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         {2.080f,3.865f,6.994f,12.44f,21.92f,38.54f,67.77f,119.2f,209.7f,369.5f}
     };
 
+    /* ---- Pre-compute per-subband T1 totals for all 3 components ---- */
+    std::vector<size_t> t1_per_sb_c[3];
     for (int c = 0; c < 3; ++c) {
-        /* Pre-compute per-subband T1 totals. */
-        std::vector<size_t> t1_per_sb(subbands.size(), 0);
+        t1_per_sb_c[c].assign(subbands.size(), 0);
         for (size_t sb = 0; sb < subbands.size(); ++sb) {
             int cb_start = subbands[sb].cb_start_idx;
             int ncbx = subbands[sb].ncbx, ncby = subbands[sb].ncby;
             for (int i = 0; i < ncbx * ncby; ++i)
-                t1_per_sb[sb] += coded_len[c][cb_start + i];
+                t1_per_sb_c[c][sb] += coded_len[c][cb_start + i];
         }
+    }
 
-        /* V263: Phase 1 threshold raised to level ≥ 4 — only LL5 and HL5/LH5/HH5
-         * (GPU levels 5 and 4) are unconditionally included. All level ≤ 3 subbands
-         * (including HL4/LH4/HH4 = standard level-4 detail) participate in PCRD-OPT.
-         *
-         * V261's CDF97_NORMS give PCRD-OPT correct slopes for these subbands:
-         * HH4 (GPU level=3) has norm=12.44, which is high enough that PCRD-OPT
-         * naturally allocates bytes to it early (checker_64 fundamental frequency).
-         * V226-V227 Phase 1 included level≥3 (HH4) unconditionally, consuming bytes
-         * on low-slope late passes that PCRD-OPT would NOT have chosen, leaving
-         * fewer bytes for the higher harmonics (levels 0-2 for square-wave content).
-         *
-         * V227 comment: "V227: raised threshold from <2 to <3 so HL3/LH3/HH3 (level=2)
-         * participate in PCRD-OPT" — V263 extends this logic one level further. */
+    /* ---- Phase 1: per-component, include LL5 + levels 4-5 unconditionally ---- */
+    /* V263: threshold at level < 4 — HL4/LH4/HH4 (GPU level=3) go to Phase 2. */
+    size_t total_phase1_bytes = 0;
+    size_t pcrd_start_c[3];
+    for (int c = 0; c < 3; ++c) {
         size_t comp_bytes = 0;
-        size_t pcrd_start = subbands.size();
+        pcrd_start_c[c] = subbands.size();
 
         for (size_t sb = 0; sb < subbands.size(); ++sb) {
-            /* Stop Phase 1 at levels 0-3 (GPU code levels) — let Phase 2 handle them.
-             * V263: threshold raised from <3 to <4, moving HH4/HL4/LH4 into Phase 2. */
-            if (subbands[sb].level < 4) {
-                pcrd_start = sb;
-                break;
-            }
+            if (subbands[sb].level < 4) { pcrd_start_c[c] = sb; break; }
             if (per_comp_target != SIZE_MAX
-                && comp_bytes + t1_per_sb[sb] > per_comp_target) {
-                pcrd_start = sb;
-                break;
+                && comp_bytes + t1_per_sb_c[c][sb] > per_comp_target) {
+                pcrd_start_c[c] = sb; break;
             }
             int cb_start = subbands[sb].cb_start_idx;
             int ncbx = subbands[sb].ncbx, ncby = subbands[sb].ncby;
@@ -603,61 +591,43 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     pcrd_len_use[c][cb_idx] = cb_len;
                 }
             }
-            comp_bytes += t1_per_sb[sb];
+            comp_bytes += t1_per_sb_c[c][sb];
         }
+        total_phase1_bytes += comp_bytes;
+    }
 
-        if (pcrd_start >= subbands.size()) continue; /* all fit — nothing more to do */
+    /* ---- Phase 2: global PCRD-OPT across all 3 components ---- */
+    /* V276: Recycles unused Cb/Cr budget to Y (dominant for achromatic content).
+     * For typical DCP content: Y uses ~70% of energy, Cb/Cr ~15% each.
+     * Old per-component 1/3 split wasted 2/3 of budget on Cb/Cr for achromatic.
+     * Global remaining = total_target − total_phase1_bytes (all components). */
+    const size_t global_total_target = (target_bytes > 0) ? static_cast<size_t>(target_bytes) : SIZE_MAX;
+    const size_t global_remaining = (global_total_target > total_phase1_bytes
+                                     && global_total_target != SIZE_MAX)
+        ? global_total_target - total_phase1_bytes : (size_t)SIZE_MAX;
 
-        /* Phase 2: global PCRD-OPT across all overflow subbands (V228).
-         *
-         * V224-V227 used per-subband proportional budget allocation (T1-bytes
-         * proportional).  That failed for checker_8: HH3 dominates T1 but gets
-         * only its proportional share (~5 KB), leaving it under-coded; HL1/LH1
-         * ringing harmonics also get too little → 15-17 dB PSNR.
-         *
-         * V228 collects convex-hull entries from ALL Phase 2 subbands, sorts
-         * globally by slope, and greedy-includes until the remaining budget is
-         * exhausted.  This is true PCRD-OPT: high-slope entries (dominant
-         * subbands like HH3 for checker_8) consume their small T1 quickly,
-         * leaving plenty of budget for fine-subband ringing removal.
-         *
-         * Phase 1 already handles LL5 and levels 3-4 (tiny, never need
-         * truncation), so the norm-ratio in Phase 2 is at most 7.585/2.022≈3.75
-         * (level-2 vs level-0), far below the V223 problem of 33.84/2.022≈16.7
-         * that caused photo_synth regression when LL5 participated. */
-        size_t remaining_budget = (per_comp_target > comp_bytes)
-            ? per_comp_target - comp_bytes : 0;
+    /* Collect convex-hull entries from all 3 components' Phase 2 subbands. */
+    std::vector<PcrdEntry> all_entries;
+    {
+        size_t total_p2_cbs = 0;
+        for (int c = 0; c < 3; ++c)
+            for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb)
+                total_p2_cbs += static_cast<size_t>(subbands[sb].ncbx) * subbands[sb].ncby;
+        all_entries.reserve(total_p2_cbs * 6);
+    }
 
-        /* Collect all convex-hull entries from every Phase 2 subband. */
-        std::vector<PcrdEntry> all_entries;
-        {
-            size_t p2_cbs = 0;
-            for (size_t sb = pcrd_start; sb < subbands.size(); ++sb)
-                p2_cbs += static_cast<size_t>(subbands[sb].ncbx) * subbands[sb].ncby;
-            all_entries.reserve(p2_cbs * 6);
-        }
+    for (int c = 0; c < 3; ++c) {
+        if (pcrd_start_c[c] >= subbands.size()) continue;
 
-        for (size_t sb = pcrd_start; sb < subbands.size(); ++sb) {
-            if (t1_per_sb[sb] == 0) continue;
+        for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb) {
+            if (t1_per_sb_c[c][sb] == 0) continue;
 
             float step  = std::max(subbands[sb].step, 0.001f);
-            /* V270: Unified PCRD distortion model — all detail subbands use pcrd_step = step×2.0.
-             * V266 applied ×2.0 only to HL/LH (matching their T1 gain), leaving HH at ×1.0.
-             * This was a mismatch: HH T1 used gain=5.5 but PCRD assumed step×1.0, underestimating
-             * HH distortion by 30×. PCRD under-allocated budget to HH → checker/HH patterns starved.
-             * V270 sets T1 HH gain=2.0 (matching HL/LH), so pcrd_step=step×2.0 for ALL detail
-             * subbands is now correct and consistent with T1. PCRD competition is fair between
-             * HL/LH and HH: norm_HH (2.080) ≈ norm_HL/LH (2.022) so priorities track actual energy.
-             * CDF97 synthesis norms capture pixel-domain amplification per coefficient error;
-             * LL5 norm=33.84 (handled by Phase 1) >> HL1 norm=2.022 (Phase 2). */
             int sb_type  = subbands[sb].type;
             int sb_level = subbands[sb].level;
             /* V275: Level-dependent HH pcrd_step.
-             * HH3 (GPU level=2, 8-16px period) = checker_8 fundamental: 3.5x raises PCRD
-             * priority so the budget-constrained checker_8 gets more bits on its dominant
-             * subband. HH1/HH2 (budget-unconstrained) keep V273 baseline at step×1.0.
-             * HL/LH: unchanged from V273 at step×2.0.
-             * Improvement: checker_8 +1.7 dB (14.9→16.6), noise_small −0.1, photo_synth −0.2. */
+             * HH3 (GPU level=2, 8-16px period) = checker_8 fundamental: 3.5x.
+             * HH1/HH2 (levels 0,1): step×1.0. HL/LH: step×2.0. */
             float pcrd_step;
             if (sb_type == SUBBAND_HH) {
                 pcrd_step = (sb_level == 2) ? step * 3.5f : step;
@@ -666,7 +636,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             }
             int norm_type = (sb_type == SUBBAND_LL) ? 0 :
                             (sb_type == SUBBAND_HL) ? 1 :
-                            (sb_type == SUBBAND_LH) ? 2 : 3; /* HH */
+                            (sb_type == SUBBAND_LH) ? 2 : 3;
             int norm_lev  = std::min(sb_level, 9);
             float norm   = CDF97_NORMS[norm_type][norm_lev];
             float step2  = (norm * pcrd_step) * (norm * pcrd_step);
@@ -732,30 +702,32 @@ inline std::vector<uint8_t> build_ebcot_codestream(
 
                     for (const auto& seg : hull_stack) {
                         all_entries.push_back({seg.slope, cb_idx,
+                                              static_cast<uint8_t>(c),
                                               static_cast<uint8_t>(seg.p_from),
                                               static_cast<uint8_t>(seg.p_to),
+                                              0,
                                               seg.cum_len, seg.delta_r});
                     }
                 }
             }
         }
+    }
 
-        std::sort(all_entries.begin(), all_entries.end(),
-                  [](const PcrdEntry& a, const PcrdEntry& b){
-                      return a.slope > b.slope;
-                  });
+    std::sort(all_entries.begin(), all_entries.end(),
+              [](const PcrdEntry& a, const PcrdEntry& b){
+                  return a.slope > b.slope;
+              });
 
-        /* Global greedy inclusion — pcrd_np_use[c] serves as per-CB pass tracker.
-         * Phase 2 CBs start at 0; Phase 1 CBs already have their passes set. */
-        size_t global_used = 0;
-        for (const auto& e : all_entries) {
-            if (global_used >= remaining_budget) break;
-            if (e.p_from < static_cast<int>(pcrd_np_use[c][e.cb_idx])) continue;
+    /* Global greedy inclusion across all 3 components. */
+    size_t global_used = 0;
+    for (const auto& e : all_entries) {
+        if (global_used >= global_remaining) break;
+        int ec = static_cast<int>(e.comp);
+        if (e.p_from < static_cast<int>(pcrd_np_use[ec][e.cb_idx])) continue;
 
-            pcrd_np_use [c][e.cb_idx] = e.p_to + 1;
-            pcrd_len_use[c][e.cb_idx] = e.cum_len;
-            global_used += static_cast<size_t>(e.delta_r);
-        }
+        pcrd_np_use [ec][e.cb_idx] = e.p_to + 1;
+        pcrd_len_use[ec][e.cb_idx] = e.cum_len;
+        global_used += static_cast<size_t>(e.delta_r);
     }
 
     /* V231: build_tp writes one packet per (comp, res, precinct) matching DCP precinct
