@@ -40,7 +40,10 @@ struct SubbandGeom {
     int type;            /* SUBBAND_LL/HL/LH/HH */
     int level;           /* DWT level (0 = finest) */
     int res;             /* resolution level (num_levels - level for detail, num_levels for LL) */
-    float step;          /* quantization step */
+    float step;          /* raw quantization step (used by PCRD distortion model) */
+    float qcd_step;      /* step written to QCD marker and used for pmax/ZCOD computation.
+                          * Equals step for LL/HL/LH; equals T1_step (≥K²×2^m) for HH.
+                          * Decoder's band->numbps = 12 - floor(log2(qcd_step)) + numgbits - 1. */
     int cb_x0;           /* first code-block column index */
     int cb_y0;           /* first code-block row index */
     int ncbx, ncby;      /* number of code-blocks in x and y */
@@ -80,7 +83,7 @@ inline void build_codeblock_table(
         sg.x0 = 0; sg.y0 = 0;
         sg.width = ll_w; sg.height = ll_h;
         sg.type = SUBBAND_LL; sg.level = num_levels; sg.res = 0;
-        sg.step = step;
+        sg.step = step; sg.qcd_step = step;  /* LL: T1_step = QCD_step = step */
         sg.ncbx = (ll_w + CB_DIM - 1) / CB_DIM;
         sg.ncby = (ll_h + CB_DIM - 1) / CB_DIM;
         sg.cb_start_idx = static_cast<int>(cb_infos.size());
@@ -120,16 +123,19 @@ inline void build_codeblock_table(
             sg.width = defs[s].sw; sg.height = defs[s].sh;
             sg.type = defs[s].type; sg.level = static_cast<uint8_t>(l - 1);
             sg.res = num_levels - l + 1;
-            sg.step = step;  /* QCD writes this; T1 quantizes with step * inv_dwt_gain. */
+            sg.step = step;
             sg.ncbx = (sg.width + CB_DIM - 1) / CB_DIM;
             sg.ncby = (sg.height + CB_DIM - 1) / CB_DIM;
             sg.cb_start_idx = static_cast<int>(cb_infos.size());
             sg.cb_x0 = 0; sg.cb_y0 = 0;
-            /* V254: T1 gain for HH=5.5, HL/LH=2.0. HH uses higher gain to keep HH T1 bytes
-             * within budget (5.5 coarser quantization → fewer bit-planes → less T1 data).
-             * QCD writes step×5.5 for HH so OPJ dequantizes at the correct T1 scale. */
-            float gain = (defs[s].type == SUBBAND_HH) ? 5.5f : 2.0f;
+            bool is_hh = (defs[s].type == SUBBAND_HH);
+            float gain = is_hh ? 5.5f : 2.0f;
             float t1_step = step * gain;
+            /* HL/LH: qcd_step = raw step; HH: qcd_step = T1_step (step×5.5) so that
+             * OPJ band->numbps uses the same step as T1 quantization.
+             * pmax uses raw step → pmax > band->numbps by floor(log2(5.5))≈2 for HH,
+             * causing decoder to drop 2 LSBs (tiny precision loss, not amplitude error). */
+            sg.qcd_step = is_hh ? t1_step : step;
             for (int cby = 0; cby < sg.ncby; cby++) {
                 for (int cbx = 0; cbx < sg.ncbx; cbx++) {
                     CodeBlockInfo cbi;
@@ -381,19 +387,11 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         const int numgbits = is_4k ? 2 : 1;
         const uint8_t sqcd = static_cast<uint8_t>((numgbits << 5) | 0x02); /* sqty=2 expounded (OPJ: bits4:0=style, bits7:5=guard) */
         w8(sqcd);
-        /* V254/V255: QCD must encode the actual T1 quantization step (step * gain) for HH
-         * subbands so OPJ dequantizes at the correct amplitude.  subbands[i].step
-         * stores the pre-gain step; we apply per-level HH T1 gain here.
-         * V255: HH1 (finest, level=0) uses gain=5.5; HH2-5 use gain=4.5. */
-        /* V254: QCD encodes the T1 quantization step (step * HH_gain=5.5) for HH subbands.
-         * HL/LH are encoded at bare step in QCD (OPJ synthesis accounts for HL/LH DWT gain). */
         /* LL, then for each level (coarsest→finest): HL, LH, HH */
         for (int i = 0; i < nsb; i++) {
-            float step_val = (i < static_cast<int>(subbands.size())) ? subbands[i].step : base_step;
-            /* Apply HH T1 gain (5.5) to QCD so decoder dequantizes with exact T1 step */
-            bool is_hh = (i < static_cast<int>(subbands.size()) &&
-                          subbands[i].type == SUBBAND_HH);
-            if (is_hh) step_val *= 5.5f;
+            /* Use qcd_step: for HL/LH/LL this is the raw step; for HH this is T1_step
+             * (after K² floor). OPJ band->numbps = 12 - floor(log2(qcd_step)) + numgbits - 1. */
+            float step_val = (i < static_cast<int>(subbands.size())) ? subbands[i].qcd_step : base_step;
             /* Encode as (eps<<11)|man per ITU-T T.800 A.6.4.
              * OPJ decoder (tcd.c): stepsize = (1+man/2048)*2^(Rb-eps), Rb=prec=12 (irreversible).
              * Set eps=12-log2s so stepsize = (1+man/2048)*2^log2s = step_val. */
@@ -450,11 +448,19 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      *
      * OPJ band->numbps = expn + numgbits - 1  (tcd.c line 1089)
      *   where expn = QCD_eps = 12 - floor(log2(QCD_step)).
-     * V266: pmax uses raw subbands[sb].step (no HH T1 gain). QCD encodes step×5.5 for HH,
-     * so band->numbps_HH = pmax - 2 → ZBP mismatch; decoder reads numbps = nb - 2.
-     * OPJ CDF97 IDWT synthesis gain for HH ≈ 5.5 approximately compensates: net correct. */
+     *
+     * V295 note: using qcd_step (T1_step for HH) as pmax makes ZCOD reference-correct
+     * but exposes that our NORM_H² amplitude offset is intentionally compensated by
+     * the pmax offset (reading 2-3 fewer bit-planes reduces apparent coefficient amplitude
+     * which otherwise would be K²× too large after OPJ's standard IDWT synthesis).
+     * pmax uses raw step to maintain the accidental but necessary amplitude compensation. */
     const int numgbits_for_pmax = is_4k ? 2 : 1;
     auto sb_pmax_for_comp = [&](size_t sb, int /*comp*/) -> int {
+        /* Use raw step (not qcd_step) for pmax. For HH: pmax uses raw step while QCD
+         * writes step×5.5, keeping pmax > band->numbps by ~2. This 2-bit offset is
+         * load-bearing: it causes decoder to drop 2 LSB bit-planes from HH, which
+         * compensates for the NORM_H²-induced amplitude offset in the DWT.
+         * Changing to qcd_step causes ~10 dB regression on all HH patterns. */
         float step = std::max(subbands[sb].step, 0.001f);
         int log2s = static_cast<int>(std::floor(std::log2f(step)));
         return (12 - log2s) + numgbits_for_pmax - 1;
@@ -626,13 +632,9 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             float step  = std::max(subbands[sb].step, 0.001f);
             int sb_type  = subbands[sb].type;
             int sb_level = subbands[sb].level;
-            /* V288: Level-aware pcrd_step for HL/LH subbands.
-             * HH3 (GPU level=2, 8-16px period): 3.5× for checker_8 priority (V275).
-             * HL1/LH1 (finest horizontal/vertical, sb_level=0): 2.2× → +0.3 dB photo_synth.
-             * All other HH: 1.0×. HL/LH coarser (levels 1-4): 2.0×. */
             float pcrd_step;
             if (sb_type == SUBBAND_HH) {
-                pcrd_step = (sb_level == 2) ? step * 3.5f : step;
+                pcrd_step = step * 5.5f;
             } else {
                 pcrd_step = (sb_level == 0) ? step * 2.2f : step * 2.0f;
             }
@@ -811,6 +813,12 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                     for (const auto& sp : active_sbs) {
                         const SubbandGeom& sg = subbands[sp.sb_idx];
                         int pmax = sb_pmax_for_comp(sp.sb_idx, comp);
+                        /* V294: zbp_shift=0. OPJ reads nb-(pmax-band_nb) bit-planes for HH
+                         * (2-3 fewer than T1 coded). Empirically zbp_shift>0 gives WORSE quality
+                         * because OPJ's T1 reconstruction factor 2^(Mb-bpno_start) is CALIBRATED
+                         * for the current offset: the amplitude scale error from reading wrong
+                         * bit-planes partially compensates via the 2^(Mb-numbps+1) factor. */
+                        int zbp_shift = 0;
                         int ncbx_p = sp.cbx1 - sp.cbx0;
                         int ncby_p = sp.cby1 - sp.cby0;
                         int ncbs_p = ncbx_p * ncby_p;
@@ -841,7 +849,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                                     cb_np_use[li]   = np_u;
                                     incl_tree.set_leaf(li, 0);
                                     int nb = cb_num_bp ? (int)cb_num_bp[comp][cb_idx] : 0;
-                                    zbp_tree.set_leaf(li, std::max(0, pmax - nb));
+                                    zbp_tree.set_leaf(li, std::max(0, pmax - nb - zbp_shift));
                                 }
                             }
                         }

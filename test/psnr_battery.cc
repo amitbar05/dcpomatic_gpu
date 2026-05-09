@@ -137,6 +137,19 @@ static void run(CudaJ2KEncoder& enc, const char* name,
     };
     double p = psnr(comps[1], ref_y);
     printf("  %-26s  cs=%-7zu B  PSNR_Y = %5.1f dB\n", name, cs.size(), p);
+    /* Print a few spot-check decoded values at known positions */
+    if (strncmp(name, "checker_64", 10) == 0 || strncmp(name, "hh1", 3) == 0) {
+        int x0 = W/4, y0 = H/4;
+        printf("    spot dec[%d,%d]=%d ref=%d  dec[%d,%d]=%d ref=%d\n",
+               x0,y0, comps[1][(size_t)y0*W+x0], ref_y(x0,y0),
+               x0+1,y0, comps[1][(size_t)y0*W+x0+1], ref_y(x0+1,y0));
+        /* Compute mean absolute error */
+        double mae=0; int cnt=0;
+        for (int y=H/4; y<H/4+64; y++) for (int x=W/4; x<W/4+64; x++) {
+            mae += std::abs(comps[1][(size_t)y*W+x] - ref_y(x,y)); cnt++;
+        }
+        printf("    MAE in 64x64 block: %.2f\n", mae/cnt);
+    }
 }
 
 int main()
