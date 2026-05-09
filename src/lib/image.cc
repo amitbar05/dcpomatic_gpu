@@ -190,7 +190,8 @@ Image::crop_source_pointers(Crop crop) const
 		corrected_crop.bottom = size().height - 4;
 	}
 
-	std::vector<uint8_t*> pointers(planes());
+	/* FFmpeg memcpy()s this array and assumes it has 4 entries */
+	std::vector<uint8_t*> pointers(4);
 	for (int c = 0; c < planes(); ++c) {
 		int const x = lrintf(bytes_per_pixel(c) * corrected_crop.left);
 		pointers[c] = data()[c] + x + stride()[c] * (corrected_crop.top / vertical_factor(c));
@@ -286,7 +287,8 @@ Image::crop_scale_window(
 		round_height_for_subsampling((out_size.height - inter_size.height) / 2, out_desc)
 		);
 
-	std::vector<uint8_t*> scale_out_data(out->planes());
+	/* FFmpeg memcpy()s this array and assumes it has 4 entries */
+	std::vector<uint8_t*> scale_out_data(4);
 	for (int c = 0; c < out->planes(); ++c) {
 		int const x = lrintf(out->bytes_per_pixel(c) * corner.x);
 		scale_out_data[c] = out->data()[c] + x + out->stride()[c] * (corner.y / out->vertical_factor(c));
