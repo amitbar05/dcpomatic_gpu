@@ -4134,11 +4134,13 @@ struct CudaJ2KEncoderImpl
     uint8_t*  d_ebcot_npasses[3] = {nullptr, nullptr, nullptr};
     uint16_t* d_ebcot_passlens[3]= {nullptr, nullptr, nullptr};
     uint8_t*  d_ebcot_numbp[3]   = {nullptr, nullptr, nullptr};
+    float*    d_ebcot_energy[3]  = {nullptr, nullptr, nullptr};  /* V287: per-CB energy */
     uint8_t*  h_ebcot_data[3]    = {nullptr, nullptr, nullptr};
     uint16_t* h_ebcot_len[3]     = {nullptr, nullptr, nullptr};
     uint8_t*  h_ebcot_npasses[3] = {nullptr, nullptr, nullptr};
     uint16_t* h_ebcot_passlens[3]= {nullptr, nullptr, nullptr};
     uint8_t*  h_ebcot_numbp[3]   = {nullptr, nullptr, nullptr};
+    float*    h_ebcot_energy[3]  = {nullptr, nullptr, nullptr};  /* V287: per-CB energy */
     int       ebcot_num_cbs      = 0;
     int       last_max_cb_d2h   = CB_BUF_SIZE;  /* stride used by last encode */
     std::vector<SubbandGeom> ebcot_subbands;
@@ -4357,11 +4359,13 @@ struct CudaJ2KEncoderImpl
             if (d_ebcot_npasses[c])   { cudaFree(d_ebcot_npasses[c]);   d_ebcot_npasses[c]   = nullptr; }
             if (d_ebcot_passlens[c])  { cudaFree(d_ebcot_passlens[c]);  d_ebcot_passlens[c]  = nullptr; }
             if (d_ebcot_numbp[c])    { cudaFree(d_ebcot_numbp[c]);    d_ebcot_numbp[c]    = nullptr; }
+            if (d_ebcot_energy[c])   { cudaFree(d_ebcot_energy[c]);   d_ebcot_energy[c]   = nullptr; }
             if (h_ebcot_data[c])     { cudaFreeHost(h_ebcot_data[c]);     h_ebcot_data[c]     = nullptr; }
             if (h_ebcot_len[c])      { cudaFreeHost(h_ebcot_len[c]);      h_ebcot_len[c]      = nullptr; }
             if (h_ebcot_npasses[c])   { cudaFreeHost(h_ebcot_npasses[c]);   h_ebcot_npasses[c]   = nullptr; }
             if (h_ebcot_passlens[c])  { cudaFreeHost(h_ebcot_passlens[c]);  h_ebcot_passlens[c]  = nullptr; }
             if (h_ebcot_numbp[c])    { cudaFreeHost(h_ebcot_numbp[c]);    h_ebcot_numbp[c]    = nullptr; }
+            if (h_ebcot_energy[c])   { cudaFreeHost(h_ebcot_energy[c]);   h_ebcot_energy[c]   = nullptr; }
         }
         ebcot_num_cbs = 0;
         ebcot_cb_table.clear();
@@ -5565,11 +5569,13 @@ CudaJ2KEncoder::encode_ebcot(
                     if (_impl->d_ebcot_npasses[c])   cudaFree(_impl->d_ebcot_npasses[c]);
                     if (_impl->d_ebcot_passlens[c])  cudaFree(_impl->d_ebcot_passlens[c]);
                     if (_impl->d_ebcot_numbp[c])    cudaFree(_impl->d_ebcot_numbp[c]);
+                    if (_impl->d_ebcot_energy[c])   cudaFree(_impl->d_ebcot_energy[c]);
                     if (_impl->h_ebcot_data[c])     cudaFreeHost(_impl->h_ebcot_data[c]);
                     if (_impl->h_ebcot_len[c])      cudaFreeHost(_impl->h_ebcot_len[c]);
                     if (_impl->h_ebcot_npasses[c])   cudaFreeHost(_impl->h_ebcot_npasses[c]);
                     if (_impl->h_ebcot_passlens[c])  cudaFreeHost(_impl->h_ebcot_passlens[c]);
                     if (_impl->h_ebcot_numbp[c])    cudaFreeHost(_impl->h_ebcot_numbp[c]);
+                    if (_impl->h_ebcot_energy[c])   cudaFreeHost(_impl->h_ebcot_energy[c]);
                 }
                 cudaMalloc(&_impl->d_cb_info, num_cbs * sizeof(CodeBlockInfo));
                 for (int c = 0; c < 3; ++c) {
@@ -5579,11 +5585,13 @@ CudaJ2KEncoder::encode_ebcot(
                     cudaMalloc(&_impl->d_ebcot_npasses[c],  num_cbs * sizeof(uint8_t));
                     cudaMalloc(&_impl->d_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t));
                     cudaMalloc(&_impl->d_ebcot_numbp[c],   num_cbs * sizeof(uint8_t));
+                    cudaMalloc(&_impl->d_ebcot_energy[c],  num_cbs * sizeof(float));
                     cudaHostAlloc(&_impl->h_ebcot_data[c],    (size_t)num_cbs * CB_BUF_SIZE, cudaHostAllocDefault);
                     cudaHostAlloc(&_impl->h_ebcot_len[c],     num_cbs * sizeof(uint16_t), cudaHostAllocDefault);
                     cudaHostAlloc(&_impl->h_ebcot_npasses[c],  num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
                     cudaHostAlloc(&_impl->h_ebcot_passlens[c], (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t), cudaHostAllocDefault);
                     cudaHostAlloc(&_impl->h_ebcot_numbp[c],   num_cbs * sizeof(uint8_t), cudaHostAllocDefault);
+                    cudaHostAlloc(&_impl->h_ebcot_energy[c],  num_cbs * sizeof(float), cudaHostAllocDefault);
                 }
                 _impl->ebcot_num_cbs = num_cbs;
             }
@@ -5606,7 +5614,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
                     _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip);
+                    _impl->d_ebcot_numbp[c], _impl->d_ebcot_energy[c], bp_skip);
         } else if (current_step < 0.097f) {
             for (int c = 0; c < 3; ++c)
                 kernel_ebcot_t1<false, false, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
@@ -5614,7 +5622,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
                     _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip);
+                    _impl->d_ebcot_numbp[c], _impl->d_ebcot_energy[c], bp_skip);
         } else {
             for (int c = 0; c < 3; ++c)
                 kernel_ebcot_t1<false, false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
@@ -5622,7 +5630,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
                     _impl->d_ebcot_npasses[c], _impl->d_ebcot_passlens[c],
-                    _impl->d_ebcot_numbp[c], bp_skip);
+                    _impl->d_ebcot_numbp[c], _impl->d_ebcot_energy[c], bp_skip);
         }
         if (attempt == 0) tmark("EBCOT_T1");
 
@@ -5750,6 +5758,8 @@ CudaJ2KEncoder::encode_ebcot(
         cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
                         (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
                         cudaMemcpyDeviceToHost, _impl->stream[c]);
+        cudaMemcpyAsync(_impl->h_ebcot_energy[c], _impl->d_ebcot_energy[c],
+                        num_cbs * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
     }
     for (int c = 0; c < 3; ++c)
         cudaStreamSynchronize(_impl->stream[c]);
@@ -5798,13 +5808,14 @@ CudaJ2KEncoder::encode_ebcot(
     const uint8_t*  np[3] = { _impl->h_ebcot_npasses[0], _impl->h_ebcot_npasses[1], _impl->h_ebcot_npasses[2] };
     const uint16_t* pl[3] = { _impl->h_ebcot_passlens[0], _impl->h_ebcot_passlens[1], _impl->h_ebcot_passlens[2] };
     const uint8_t*  nb[3] = { _impl->h_ebcot_numbp[0], _impl->h_ebcot_numbp[1], _impl->h_ebcot_numbp[2] };
+    const float*    eg[3] = { _impl->h_ebcot_energy[0], _impl->h_ebcot_energy[1], _impl->h_ebcot_energy[2] };
 
     _impl->last_max_cb_d2h = max_cb_d2h;
     auto result = build_ebcot_codestream(
         width, height, is_4k, is_3d,
         num_levels, base_step,
         _impl->ebcot_subbands,
-        cd, cl, np, pl, nb,
+        cd, cl, np, pl, nb, eg,
         target_bytes,
         max_cb_d2h,
         use_bypass);

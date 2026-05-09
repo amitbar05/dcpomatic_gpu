@@ -321,6 +321,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     const uint8_t*  num_passes[3],   /* passes per CB */
     const uint16_t* pass_lengths[3], /* cumulative pass lengths per CB */
     const uint8_t*  cb_num_bp[3],    /* coded bit-planes per CB (from T1 kernel) */
+    const float*    cb_energy[3],    /* V287: per-CB DWT energy sum(coeff²) for PCRD */
     int64_t target_bytes,
     int cb_stride = CB_BUF_SIZE,     /* V137: row stride of coded_data (bytes per CB) */
     bool use_bypass = false)         /* V205: COD BYPASS bit must match T1 bypass usage */
@@ -625,14 +626,16 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             float step  = std::max(subbands[sb].step, 0.001f);
             int sb_type  = subbands[sb].type;
             int sb_level = subbands[sb].level;
-            /* V275: Level-dependent HH pcrd_step.
-             * HH3 (GPU level=2, 8-16px period) = checker_8 fundamental: 3.5x.
-             * HH1/HH2 (levels 0,1): step×1.0. HL/LH: step×2.0. */
+            /* V288: Level-aware pcrd_step for HL/LH subbands.
+             * HH3 (GPU level=2, 8-16px period): 3.5× for checker_8 priority (V275).
+             * HL1/LH1 (finest horizontal/vertical, sb_level=0): 2.2× — boosts PCRD
+             * priority for finest detail subbands → photo_synth +0.3 dB vs V276
+             * with zero regressions. All other HH: 1.0×. HL/LH coarser: 2.0×. */
             float pcrd_step;
             if (sb_type == SUBBAND_HH) {
                 pcrd_step = (sb_level == 2) ? step * 3.5f : step;
             } else {
-                pcrd_step = step * 2.0f;
+                pcrd_step = (sb_level == 0) ? step * 2.2f : step * 2.0f;
             }
             int norm_type = (sb_type == SUBBAND_LL) ? 0 :
                             (sb_type == SUBBAND_HL) ? 1 :

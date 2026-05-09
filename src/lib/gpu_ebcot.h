@@ -679,6 +679,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     uint8_t*  __restrict__ d_num_passes, /* output: number of coding passes per CB */
     uint16_t* __restrict__ d_pass_lengths, /* output: cumulative length at each pass (num_cbs * MAX_PASSES) */
     uint8_t*  __restrict__ d_num_bp,    /* output: number of coded bit-planes per CB (for T2 z-field) */
+    float*    __restrict__ d_energy,    /* output: sum(coeff²) per CB for energy-based PCRD */
     int bp_skip = 0                     /* V143: skip this many LSB bit-planes (fast mode) */
 )
 {
@@ -724,8 +725,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     float inv_step = __frcp_rn(cbi.quant_step);  /* fast reciprocal */
 
-    /* Pass 1: compute sign_bits[], max_mag */
+    /* Pass 1: compute sign_bits[], max_mag, energy_sum (for PCRD) */
     int max_mag = 0;
+    float energy_sum = 0.0f;
     for (int r = 0; r < cbh; r++) {
         uint32_t sb = 0;
         const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
@@ -734,6 +736,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
             int q = __float2int_rd(fabsf(val) * inv_step)  /* V211 */;
             if (val < 0.0f) sb |= (1u << c);
             max_mag |= q;  /* bitwise OR — captures all bits for num_bp */
+            energy_sum += val * val;  /* V287: per-CB energy for PCRD distortion model */
         }
         sign_bits[r] = sb;
     }
@@ -747,6 +750,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      *   All 2K blocks have ≤7 bp at 150Mbps (empirically verified: capping at 7 and 10
      *   produce identical output size). Unrolled loop enables software pipelining. */
     if (num_bp > MAX_BP) num_bp = MAX_BP;
+    d_energy[cb_idx] = energy_sum;  /* always store (even for zero-pass CBs) */
     if (num_bp == 0) {
         d_coded_len[cb_idx] = 0;
         d_num_passes[cb_idx] = 0;
