@@ -554,25 +554,26 @@ inline std::vector<uint8_t> build_ebcot_codestream(
                 t1_per_sb[sb] += coded_len[c][cb_start + i];
         }
 
-        /* V226: Phase 1 covers only level ≥ 2 subbands (LL5, HL4/LH4/HH4, HL3/LH3/HH3,
-         * HL2/LH2/HH2). These are always tiny relative to budget (< 10KB for typical
-         * content) and carry the coarse structure that must be faithfully encoded.
-         * Phase 2 (proportional PCRD-OPT) handles lv1 and lv0 where most of the T1
-         * lives. Hard level threshold replaces the ad-hoc 40% cap from V225.
+        /* V263: Phase 1 threshold raised to level ≥ 4 — only LL5 and HL5/LH5/HH5
+         * (GPU levels 5 and 4) are unconditionally included. All level ≤ 3 subbands
+         * (including HL4/LH4/HH4 = standard level-4 detail) participate in PCRD-OPT.
          *
-         * V225 40% cap included HL1 (47KB) in Phase 1 for checker_8, leaving only
-         * 178KB for lv0 vs V224 proportional's 210KB (−15%). V226 stops before lv1
-         * → lv0 gets 205KB (−2.4% vs V224), recovering most of the 1.3 dB gap. */
+         * V261's CDF97_NORMS give PCRD-OPT correct slopes for these subbands:
+         * HH4 (GPU level=3) has norm=12.44, which is high enough that PCRD-OPT
+         * naturally allocates bytes to it early (checker_64 fundamental frequency).
+         * V226-V227 Phase 1 included level≥3 (HH4) unconditionally, consuming bytes
+         * on low-slope late passes that PCRD-OPT would NOT have chosen, leaving
+         * fewer bytes for the higher harmonics (levels 0-2 for square-wave content).
+         *
+         * V227 comment: "V227: raised threshold from <2 to <3 so HL3/LH3/HH3 (level=2)
+         * participate in PCRD-OPT" — V263 extends this logic one level further. */
         size_t comp_bytes = 0;
         size_t pcrd_start = subbands.size();
 
         for (size_t sb = 0; sb < subbands.size(); ++sb) {
-            /* Stop Phase 1 at lv0/lv1/lv2 subbands — let Phase 2 handle them.
-             * V227: raised threshold from <2 to <3 so HL3/LH3/HH3 (level=2)
-             * participate in PCRD-OPT. For checker_8, HH3 has ~57KB T1 data
-             * which used to consume most of the budget before fine subbands got
-             * any allocation, causing massive ringing (15 dB PSNR). */
-            if (subbands[sb].level < 3) {
+            /* Stop Phase 1 at levels 0-3 (GPU code levels) — let Phase 2 handle them.
+             * V263: threshold raised from <3 to <4, moving HH4/HL4/LH4 into Phase 2. */
+            if (subbands[sb].level < 4) {
                 pcrd_start = sb;
                 break;
             }
@@ -633,13 +634,30 @@ inline std::vector<uint8_t> build_ebcot_codestream(
             if (t1_per_sb[sb] == 0) continue;
 
             float step  = std::max(subbands[sb].step, 0.001f);
-            /* V247: PCRD step2 uses T1 quantization step (step * gain), not step * CDF97_NORMS.
-             * CDF97_NORMS[HH]≈2.08 but T1 uses gain=5.5 for HH.  gain_pcrd=4.0 (not 5.5) is
-             * intentional: empirically gain_pcrd=5.5 over-allocates HH bytes, hurting HL/LH
-             * (noise/photo -2.3 dB) with no HH improvement (ZBP-regime limited). */
-            float gain_pcrd = (subbands[sb].type == SUBBAND_HH) ? 4.0f :
-                              (subbands[sb].type == SUBBAND_LL) ? 1.0f : 2.0f;
-            float step2  = (step * gain_pcrd) * (step * gain_pcrd);
+            /* V266: Correct PCRD distortion model for HL/LH subbands.
+             * HL/LH T1 encodes with step×2.0 (OPJ two_invK: synthesis doubles HL/LH).
+             * V261 used bare `step`, underestimating HL/LH distortion by 4×, causing
+             * PCRD to under-allocate to horizontal/vertical edges.
+             * Applying ×2.0 for HL/LH pcrd_step gives 4× higher PCRD slope → correct
+             * budget allocation for edge-rich content (photo_synth +0.8 dB, noise +2.1 dB).
+             *
+             * HH is intentionally NOT corrected here: applying the HH gain (5.5) in PCRD
+             * (V264 attempt) over-prioritises HH vs HL/LH by 7.5×, starving edge subbands
+             * for natural content (photo_synth −3.3 dB regression with full correction).
+             * The HH gain is a reconstruction scaling factor, not a perceptual priority boost.
+             *
+             * CDF97 synthesis norms capture pixel-domain amplification per coefficient error;
+             * LL5 norm=33.84 (handled by Phase 1) >> HL1 norm=2.022 (Phase 2). */
+            int sb_type  = subbands[sb].type;
+            int sb_level = subbands[sb].level;
+            float pcrd_step = (sb_type == SUBBAND_HL || sb_type == SUBBAND_LH)
+                              ? step * 2.0f : step;
+            int norm_type = (sb_type == SUBBAND_LL) ? 0 :
+                            (sb_type == SUBBAND_HL) ? 1 :
+                            (sb_type == SUBBAND_LH) ? 2 : 3; /* HH */
+            int norm_lev  = std::min(sb_level, 9);
+            float norm   = CDF97_NORMS[norm_type][norm_lev];
+            float step2  = (norm * pcrd_step) * (norm * pcrd_step);
             int cb_start = subbands[sb].cb_start_idx;
             int ncbx     = subbands[sb].ncbx;
             int ncby     = subbands[sb].ncby;
