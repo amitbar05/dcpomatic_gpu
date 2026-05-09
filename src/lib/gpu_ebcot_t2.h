@@ -327,6 +327,212 @@ struct TagTree {
 };
 
 
+/* V301: Pre-computed PCRD result.  Computed from small metadata (lengths, npasses,
+ * passlens) BEFORE the coded-byte DMA so the DMA can use a compact stride. */
+struct PcrdResult {
+    size_t total_cbs;
+    std::vector<uint8_t>  np_use[3];
+    std::vector<uint16_t> len_use[3];
+    int max_trunc_len;  /* max(len_use) rounded up to 64 bytes — use as compact stride */
+};
+
+static const float CDF97_NORMS_G[4][10] = {
+    {1.000f,1.965f,4.177f,8.403f,16.90f,33.84f,67.69f,135.3f,270.6f,540.9f},
+    {2.022f,3.989f,7.585f,13.94f,25.36f,46.07f,83.53f,151.5f,274.6f,497.2f},
+    {2.022f,3.989f,7.585f,13.94f,25.36f,46.07f,83.53f,151.5f,274.6f,497.2f},
+    {2.080f,3.865f,6.994f,12.44f,21.92f,38.54f,67.77f,119.2f,209.7f,369.5f}
+};
+
+/* V301: Run PCRD using only small metadata (no coded bytes needed).
+ * Called before the coded-byte DMA to determine compact transfer stride. */
+inline PcrdResult compute_pcrd_truncation(
+    const std::vector<SubbandGeom>& subbands,
+    const uint16_t* coded_len[3],
+    const uint8_t*  num_passes[3],
+    const uint16_t* pass_lengths[3],
+    int64_t target_bytes)
+{
+    PcrdResult res;
+    res.total_cbs = 0;
+    res.max_trunc_len = 64;
+    if (!subbands.empty()) {
+        const SubbandGeom& last = subbands.back();
+        res.total_cbs = static_cast<size_t>(last.cb_start_idx)
+                      + static_cast<size_t>(last.ncbx) * last.ncby;
+    }
+    for (int c = 0; c < 3; ++c) {
+        res.np_use[c].assign(res.total_cbs, 0);
+        res.len_use[c].assign(res.total_cbs, 0);
+    }
+    if (res.total_cbs == 0) return res;
+
+    struct PcrdEntry {
+        float    slope;
+        int      cb_idx;
+        uint8_t  comp;
+        uint8_t  p_from;
+        uint8_t  p_to;
+        uint8_t  _pad;
+        uint16_t cum_len;
+        uint16_t delta_r;
+    };
+    struct HullSeg {
+        float    slope, delta_d;
+        int      p_from, p_to;
+        uint16_t cum_len, delta_r;
+    };
+
+    std::vector<size_t> t1_per_sb_c[3];
+    for (int c = 0; c < 3; ++c) {
+        t1_per_sb_c[c].assign(subbands.size(), 0);
+        for (size_t sb = 0; sb < subbands.size(); ++sb) {
+            int cb_start = subbands[sb].cb_start_idx;
+            int ncbx = subbands[sb].ncbx, ncby = subbands[sb].ncby;
+            for (int i = 0; i < ncbx * ncby; ++i)
+                t1_per_sb_c[c][sb] += coded_len[c][cb_start + i];
+        }
+    }
+
+    const size_t per_comp_target = (target_bytes > 0)
+        ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
+
+    /* Phase 1: include LL5 + levels 4-5 unconditionally */
+    size_t total_phase1_bytes = 0;
+    size_t pcrd_start_c[3];
+    for (int c = 0; c < 3; ++c) {
+        size_t comp_bytes = 0;
+        pcrd_start_c[c] = subbands.size();
+        for (size_t sb = 0; sb < subbands.size(); ++sb) {
+            if (subbands[sb].level < 4) { pcrd_start_c[c] = sb; break; }
+            if (per_comp_target != SIZE_MAX
+                && comp_bytes + t1_per_sb_c[c][sb] > per_comp_target) {
+                pcrd_start_c[c] = sb; break;
+            }
+            int cb_start = subbands[sb].cb_start_idx;
+            int ncbx = subbands[sb].ncbx, ncby = subbands[sb].ncby;
+            for (int iy = 0; iy < ncby; ++iy) {
+                for (int ix = 0; ix < ncbx; ++ix) {
+                    int cb_idx = cb_start + iy * ncbx + ix;
+                    uint8_t  np     = num_passes[c][cb_idx];
+                    uint16_t cb_len = coded_len [c][cb_idx];
+                    if (np == 0 || cb_len == 0) continue;
+                    res.np_use [c][cb_idx] = np;
+                    res.len_use[c][cb_idx] = cb_len;
+                }
+            }
+            comp_bytes += t1_per_sb_c[c][sb];
+        }
+        total_phase1_bytes += comp_bytes;
+    }
+
+    /* Phase 2: global PCRD-OPT */
+    const size_t hdr_reserve = (target_bytes > 0)
+        ? static_cast<size_t>(target_bytes / 10) : 0;
+    const size_t global_total_target = (target_bytes > 0 && (size_t)target_bytes > hdr_reserve)
+        ? static_cast<size_t>(target_bytes) - hdr_reserve
+        : (target_bytes > 0 ? static_cast<size_t>(target_bytes) / 2 : SIZE_MAX);
+    const size_t global_remaining = (global_total_target > total_phase1_bytes
+                                     && global_total_target != SIZE_MAX)
+        ? global_total_target - total_phase1_bytes : (size_t)SIZE_MAX;
+
+    std::vector<PcrdEntry> all_entries;
+    {
+        size_t total_p2_cbs = 0;
+        for (int c = 0; c < 3; ++c)
+            for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb)
+                total_p2_cbs += static_cast<size_t>(subbands[sb].ncbx) * subbands[sb].ncby;
+        all_entries.reserve(total_p2_cbs * 6);
+    }
+
+    std::vector<HullSeg> hull_stack;
+    hull_stack.reserve(MAX_PASSES);
+
+    for (int c = 0; c < 3; ++c) {
+        if (pcrd_start_c[c] >= subbands.size()) continue;
+        for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb) {
+            if (t1_per_sb_c[c][sb] == 0) continue;
+            float step = std::max(subbands[sb].step, 0.001f);
+            int sb_type = subbands[sb].type, sb_level = subbands[sb].level;
+            float pcrd_step = (sb_type == SUBBAND_HH) ? step * 5.5f
+                            : (sb_level == 0) ? step * 2.2f : step * 2.0f;
+            int norm_type = (sb_type == SUBBAND_LL) ? 0 : (sb_type == SUBBAND_HL) ? 1
+                          : (sb_type == SUBBAND_LH) ? 2 : 3;
+            float norm = CDF97_NORMS_G[norm_type][std::min(sb_level, 9)];
+            float step2 = (norm * pcrd_step) * (norm * pcrd_step);
+            int cb_start = subbands[sb].cb_start_idx;
+            int ncbx = subbands[sb].ncbx, ncby = subbands[sb].ncby;
+            int sb_w = subbands[sb].width, sb_h = subbands[sb].height;
+
+            for (int iy = 0; iy < ncby; ++iy) {
+                for (int ix = 0; ix < ncbx; ++ix) {
+                    int cb_idx = cb_start + iy * ncbx + ix;
+                    uint8_t  np     = num_passes[c][cb_idx];
+                    uint16_t cb_len = coded_len [c][cb_idx];
+                    if (np == 0 || cb_len == 0) continue;
+                    int cbw = std::min(CB_DIM, sb_w - ix * CB_DIM);
+                    int cbh = std::min(CB_DIM, sb_h - iy * CB_DIM);
+                    float density = std::min((float)np / (3.0f * 18.0f), 1.0f);
+                    float base = step2 * static_cast<float>(cbw * cbh) * (1.0f + density);
+                    const uint16_t* pl = pass_lengths[c]
+                        + static_cast<size_t>(cb_idx) * MAX_PASSES;
+                    hull_stack.clear();
+                    uint16_t prev_cum = 0;
+                    for (int p = 0; p < np; ++p) {
+                        uint16_t cum = pl[p];
+                        if (cum > cb_len) cum = cb_len;
+                        int dr = (int)cum - (int)prev_cum;
+                        if (dr <= 0) { prev_cum = cum; continue; }
+                        float decay = (sb_type == SUBBAND_HH) ? 0.68f
+                                    : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
+                        float dd = base * std::exp2f(-p * decay)
+                                 - base * std::exp2f(-(p+1) * decay);
+                        HullSeg seg{dd / (float)dr, dd, p, p, cum, (uint16_t)dr};
+                        while (!hull_stack.empty()
+                               && hull_stack.back().slope <= seg.slope) {
+                            const HullSeg& top = hull_stack.back();
+                            seg.delta_d += top.delta_d;
+                            seg.delta_r = (uint16_t)((int)seg.delta_r + top.delta_r);
+                            seg.p_from  = top.p_from;
+                            seg.slope   = seg.delta_d / (float)seg.delta_r;
+                            hull_stack.pop_back();
+                        }
+                        hull_stack.push_back(seg);
+                        prev_cum = cum;
+                        if (cum >= cb_len) break;
+                    }
+                    for (const auto& seg : hull_stack)
+                        all_entries.push_back({seg.slope, cb_idx,
+                            (uint8_t)c, (uint8_t)seg.p_from, (uint8_t)seg.p_to, 0,
+                            seg.cum_len, seg.delta_r});
+                }
+            }
+        }
+    }
+
+    std::sort(all_entries.begin(), all_entries.end(),
+              [](const PcrdEntry& a, const PcrdEntry& b){ return a.slope > b.slope; });
+
+    size_t global_used = 0;
+    for (const auto& e : all_entries) {
+        if (global_used >= global_remaining) break;
+        int ec = (int)e.comp;
+        if (e.p_from < (int)res.np_use[ec][e.cb_idx]) continue;
+        res.np_use [ec][e.cb_idx] = e.p_to + 1;
+        res.len_use[ec][e.cb_idx] = e.cum_len;
+        global_used += (size_t)e.delta_r;
+    }
+
+    /* Compute max_trunc_len from max PCRD truncation length */
+    uint16_t mx = 1;
+    for (int c = 0; c < 3; ++c)
+        for (size_t i = 0; i < res.total_cbs; ++i)
+            if (res.len_use[c][i] > mx) mx = res.len_use[c][i];
+    res.max_trunc_len = static_cast<int>(((unsigned)mx + 64u + 63u) & ~63u);
+    if (res.max_trunc_len > CB_BUF_SIZE) res.max_trunc_len = CB_BUF_SIZE;
+    return res;
+}
+
+
 /* Build a complete J2K codestream from EBCOT T1 coded data.
  * This is a single-tile, single-layer, CPRL implementation. */
 inline std::vector<uint8_t> build_ebcot_codestream(
@@ -341,7 +547,8 @@ inline std::vector<uint8_t> build_ebcot_codestream(
     const float*    cb_energy[3],    /* V287: per-CB DWT energy sum(coeff²) for PCRD */
     int64_t target_bytes,
     int cb_stride = CB_BUF_SIZE,     /* V137: row stride of coded_data (bytes per CB) */
-    bool use_bypass = false)         /* V205: COD BYPASS bit must match T1 bypass usage */
+    bool use_bypass = false,         /* V205: COD BYPASS bit must match T1 bypass usage */
+    const PcrdResult* pre_pcrd = nullptr) /* V301: pre-computed PCRD (skips re-run) */
 {
     std::vector<uint8_t> cs;
     cs.reserve(target_bytes > 0 ? target_bytes + 1024 : 1024*1024);
@@ -507,6 +714,16 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         pcrd_np_use[c].assign(total_cbs, 0);
         pcrd_len_use[c].assign(total_cbs, 0);
     }
+
+    /* V301: If pre-computed PCRD provided, use it directly — skip re-computation. */
+    if (pre_pcrd != nullptr) {
+        for (int c = 0; c < 3; ++c) {
+            if (pre_pcrd->np_use[c].size() == total_cbs)
+                pcrd_np_use[c] = pre_pcrd->np_use[c];
+            if (pre_pcrd->len_use[c].size() == total_cbs)
+                pcrd_len_use[c] = pre_pcrd->len_use[c];
+        }
+    } else {
 
     /* V224: Hybrid proportional-PCRD truncation point selection.
      *
@@ -762,6 +979,7 @@ inline std::vector<uint8_t> build_ebcot_codestream(
         pcrd_len_use[ec][e.cb_idx] = e.cum_len;
         global_used += static_cast<size_t>(e.delta_r);
     }
+    } /* end else (PCRD not pre-computed) */
 
     /* V231: build_tp writes one packet per (comp, res, precinct) matching DCP precinct
      * sizes (r=0: 0x77=128×128, r≥1: 0x88=256×256).  Each precinct's packet contains

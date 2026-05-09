@@ -5711,28 +5711,48 @@ CudaJ2KEncoder::encode_ebcot(
     }
     base_step = current_step;  /* T2 codestream uses the final step for QCD */
 
-    /* V237: Compact final D2H — transfer only ceil(max_coded_len / 64) * 64 bytes
-     * per code block instead of the full CB_BUF_SIZE=16384.
-     * h_ebcot_len was already transferred (V236 lengths-only loop above).
-     * For sparse content (flat, gradients, title cards): max coded_len is a few
-     * hundred bytes → D2H shrinks from 53 MB to < 1 MB per component.
-     * For dense content (checker): max_coded_len ≈ 8000–12000 bytes.
-     * min 64 bytes: handles zero-coded CBs (sentinel byte + 1 coded byte = safe). */
+    /* V301: PCRD-guided compact D2H for dense content.
+     * For sparse content (max_coded_d2h ≤ 4096 bytes/CB), the coded DMA is already
+     * small; pre-running PCRD just adds cold-PCIe overhead on the metadata DMA.
+     * For dense content (max_coded_d2h > 4096), DMA savings far outweigh metadata cost:
+     * checker_8 drops from 110 MB to ~1 MB. */
     {
         uint16_t max_coded = 1;
         for (int c = 0; c < 3; ++c)
             for (int i = 0; i < num_cbs; ++i)
                 if (_impl->h_ebcot_len[c][i] > max_coded)
                     max_coded = _impl->h_ebcot_len[c][i];
-        max_cb_d2h = static_cast<int>(((max_coded + 64) + 63) & ~63u);  /* round up to 64-byte boundary, +1 for sentinel */
+        max_cb_d2h = static_cast<int>(((max_coded + 64) + 63) & ~63u);
         if (max_cb_d2h > CB_BUF_SIZE) max_cb_d2h = CB_BUF_SIZE;
     }
 
-    /* V240: Compact D2H — GPU compaction kernel packs max_cb_d2h bytes from each
-     * CB's CB_BUF_SIZE-strided slot into a contiguous buffer before transfer.
-     * Eliminates the pathological per-row DMA overhead of cudaMemcpy2DAsync when
-     * the copy width is much smaller than the pitch (e.g. flat: 128/2048 = 6.25%).
-     * Benchmark: flat D2H_FINAL 20ms → ~0.3ms; checker_8 unchanged. */
+    PcrdResult pcrd;
+    bool use_pre_pcrd = (max_cb_d2h > 4096);
+    if (use_pre_pcrd) {
+        /* Dense content: DMA metadata first, run PCRD, then DMA only PCRD-selected bytes. */
+        for (int c = 0; c < 3; ++c) {
+            cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
+                            (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_energy[c], _impl->d_ebcot_energy[c],
+                            num_cbs * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        }
+        for (int c = 0; c < 3; ++c)
+            cudaStreamSynchronize(_impl->stream[c]);
+        const uint16_t* cl_pcrd[3] = { _impl->h_ebcot_len[0], _impl->h_ebcot_len[1], _impl->h_ebcot_len[2] };
+        const uint8_t*  np_pcrd[3] = { _impl->h_ebcot_npasses[0], _impl->h_ebcot_npasses[1], _impl->h_ebcot_npasses[2] };
+        const uint16_t* pl_pcrd[3] = { _impl->h_ebcot_passlens[0], _impl->h_ebcot_passlens[1], _impl->h_ebcot_passlens[2] };
+        pcrd = compute_pcrd_truncation(_impl->ebcot_subbands, cl_pcrd, np_pcrd, pl_pcrd, target_bytes);
+        max_cb_d2h = pcrd.max_trunc_len;
+    }
+    tmark("PCRD_PRE");
+
+    /* V301/V240: Compact D2H — DMA only PCRD-selected bytes per CB (dense path)
+     * or max_coded bytes per CB (sparse path, already small). */
     if (max_cb_d2h < CB_BUF_SIZE) {
         for (int c = 0; c < 3; ++c) {
             kernel_compact_ebcot<<<num_cbs, 32, 0, _impl->stream[c]>>>(
@@ -5743,22 +5763,24 @@ CudaJ2KEncoder::encode_ebcot(
                             cudaMemcpyDeviceToHost, _impl->stream[c]);
         }
     } else {
-        /* max_cb_d2h == CB_BUF_SIZE: already contiguous, single Memcpy */
         for (int c = 0; c < 3; ++c)
             cudaMemcpyAsync(_impl->h_ebcot_data[c], _impl->d_ebcot_data[c],
                             (size_t)num_cbs * CB_BUF_SIZE,
                             cudaMemcpyDeviceToHost, _impl->stream[c]);
     }
-    for (int c = 0; c < 3; ++c) {
-        cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
-                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
-                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
-                        (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
-                        cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_energy[c], _impl->d_ebcot_energy[c],
-                        num_cbs * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+    if (!use_pre_pcrd) {
+        /* Sparse path: DMA metadata alongside the coded bytes. */
+        for (int c = 0; c < 3; ++c) {
+            cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
+                            (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_energy[c], _impl->d_ebcot_energy[c],
+                            num_cbs * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        }
     }
     for (int c = 0; c < 3; ++c)
         cudaStreamSynchronize(_impl->stream[c]);
@@ -5817,7 +5839,8 @@ CudaJ2KEncoder::encode_ebcot(
         cd, cl, np, pl, nb, eg,
         target_bytes,
         max_cb_d2h,
-        use_bypass);
+        use_bypass,
+        use_pre_pcrd ? &pcrd : nullptr);
     tmark("T2+CS");
     return result;
 }
