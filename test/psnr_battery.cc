@@ -179,5 +179,12 @@ int main()
         if (v < 1000) v = 1000; if (v > 65000) v = 65000;
         return uint16_t(v);
     });
+
+    /* Targeted HH isolation tests */
+    run(enc, "hh1_pixel_checker",   [](int x,int y){ return uint16_t(((x+y)&1) ? 50000 : 10000); });
+    run(enc, "hh2_checker",         [](int x,int y){ return uint16_t((((x/2)+(y/2))&1) ? 50000 : 10000); });
+    run(enc, "hh3_checker",         [](int x,int y){ return uint16_t((((x/4)+(y/4))&1) ? 50000 : 10000); });
+    run(enc, "hl_bars_64",          [](int x,int){ return uint16_t(((x/64)&1) ? 50000 : 10000); });
+    run(enc, "lh_bars_64",          [](int,int y){ return uint16_t(((y/64)&1) ? 50000 : 10000); });
     return 0;
 }

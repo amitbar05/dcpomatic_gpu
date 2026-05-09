@@ -71,8 +71,8 @@ int main() {
             rgb[((size_t)y*W + x)*3 + 2] = v;
         }
 
-    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000LL, 24, false, false, false);
-    auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000LL, 24, false, false, false);
+    enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000LL, 24, false, false);
+    auto cs = enc.encode_ebcot(rgb.data(), W, H, W*3, 150000000LL, 24, false, false);
     printf("encoded cs_size=%zu B\n", cs.size());
 
     std::vector<std::vector<int>> dec; int dW, dH;

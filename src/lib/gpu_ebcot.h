@@ -34,7 +34,11 @@ static constexpr int STRIPE_H    = 4;    /* T1 stripe height */
  * Formula: max passes = 3*MAX_BP - 2 = 3*18-2 = 52 ≤ MAX_PASSES=54. */
 static constexpr int MAX_BPLANES = 18;
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;  /* 3 passes per bit-plane */
-static constexpr int CB_BUF_SIZE = 2048; /* max coded bytes per code-block — ~avg 500 bytes at 150Mbps */
+/* V229: Raised from 2048 to 16384.  Dense checker patterns (checker_8 HL1/LH1/HH1) have
+ * up to 13 bitplanes × ~700 bytes/bp ≈ 9100 bytes per code block.  The old 2048-byte
+ * limit stopped coding after ~1280 bytes (guard = CB_BUF_SIZE - 768), truncating dense
+ * CBs to ~1 bitplane and capping checker PSNR at 17–30 dB regardless of bitrate. */
+static constexpr int CB_BUF_SIZE = 16384; /* max coded bytes per code-block */
 
 /* Subband types */
 static constexpr int SUBBAND_LL = 0;
@@ -814,11 +818,9 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     int actual_bp_skip = (bp_skip > 0) ? (bp_skip < num_bp ? bp_skip : num_bp - 1) : 0;
 
     for (int bp = num_bp - 1; bp >= 0; bp--) {
-        /* V222: CB buffer overflow guard. Each bit-plane (SPP+MRP+CUP bypass) can
-         * write up to ~700 bytes (400B MQ SPP + 128B MRP + 128B CUP + flush).
-         * Leave 768 bytes headroom to prevent mq.bp from crossing into the next
-         * codeblock's buffer — which causes cascading data-race corruption on
-         * high-content patterns (checker_8 HL3/HL4 overflowed at ~11 bp). */
+        /* V222: CB buffer overflow guard. Leave 768 bytes headroom for the final
+         * bitplane (SPP+MRP+CUP+flush ≤ 700 bytes).  With CB_BUF_SIZE=16384 this
+         * allows up to 15616 bytes, enough for 13 bitplanes × ~700 bytes/bp. */
         if (static_cast<int>(mq.bp - mq.start) >= CB_BUF_SIZE - 768) break;
         bool first_bp = (bp == num_bp - 1);
         /* V172: bp_idx for FAST4 mag_bp_flat indexing (MSB plane = bp_idx 0) */
@@ -836,10 +838,11 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         /* --- Significance Propagation Pass (SPP) — skip for first bit-plane --- */
         if (!first_bp) {
         if (bp_bypass) {
-            /* V245: Bypass SPP — raw significance + sign bits (no MQ context, no sign XOR).
-             * Matches OpenJPEG t1.c dec_sigpass_raw: same ZC neighbor check, raw bit output.
-             * V245 adds: (a) spp_all_sig column-skip (matches MQ SPP optimisation);
-             *             (b) bypass_write_bits(sig<<1|sign,2) fuses sig+sign write. */
+            /* V245: Bypass SPP — raw significance + raw sign bits.
+             * ISO 15444-1 C.3.8: in bypass mode the sign is encoded as the raw
+             * actual_sign bit (no XOR with sign prediction).  OpenJPEG's
+             * dec_sigpass_raw reads it directly without any XOR.  Using XOR here
+             * (V247 attempt) caused gradient patterns to regress from 88→41 dB. */
             BypassCoder bc;
             bc.bp = mq.bp + 1;  bc.accum = 0;  bc.cnt = 0;
             if (any_significant) {

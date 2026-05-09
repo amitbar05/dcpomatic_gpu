@@ -734,7 +734,7 @@ int main()
                 uint16_t ncomp = (cs[i+38]<<8)|cs[i+39];
 
                 CHECK(lsiz >= 41, "SIZ: Lsiz >= 41");
-                CHECK(rsiz == 0x0000, "SIZ: Rsiz=0x0000 (no profile, DCP-compliant)");
+                CHECK(rsiz == 0x0003 || rsiz == 0x0004, "SIZ: Rsiz=0x0003/0x0004 (DCI cinema profile)");
                 CHECK(xsiz == (uint32_t)W, "SIZ: Xsiz matches input width");
                 CHECK(ysiz == (uint32_t)H, "SIZ: Ysiz matches input height");
                 CHECK(ncomp == 3, "SIZ: Csiz=3 components");
@@ -768,19 +768,21 @@ int main()
                 uint8_t scod = cs[i+4];
                 uint8_t sgcod_prog = cs[i+5];
                 uint8_t sgcod_nlevels = cs[i+9];
-                uint8_t spcod_cbsize = cs[i+10];
-                uint8_t spcod_style  = cs[i+11];
-                uint8_t spcod_filter  = cs[i+12];
+                uint8_t spcod_xcb     = cs[i+10]; /* xcb'-2: code-block width exponent */
+                uint8_t spcod_ycb     = cs[i+11]; /* ycb'-2: code-block height exponent */
+                uint8_t spcod_style   = cs[i+12]; /* SPcod cblk_style: coding mode switches */
+                uint8_t spcod_filter  = cs[i+13]; /* SPcod filter: 0=9/7 irreversible */
+                (void)spcod_style;
 
                 char msg[80];
                 snprintf(msg, sizeof(msg), "COD: SGcod num levels=%d (expected 5)", sgcod_nlevels);
                 CHECK(sgcod_nlevels == 5, msg);
-                /* OPJ reads cbsize as one nibble-packed byte: upper=xcb'(w), lower=ycb'(h).
-                 * Our byte=3 → xcb'=0(w=4), ycb'=3(h=32). In practice code-blocks work as 32×32
-                 * because T1 kernel uses 32×32 regardless of COD marker values. */
-                snprintf(msg, sizeof(msg), "COD: SPcod cbsize=3 (xcb'=%d,ycb'=%d)",
-                         (spcod_cbsize>>4)&0x0F, spcod_cbsize&0x0F);
-                CHECK(spcod_cbsize == 3, msg);
+                /* Standard J2K: xcb' and ycb' are separate bytes.
+                 * xcb'=3 → 2^(3+2)=32 pixel width, ycb'=3 → 32 pixel height. */
+                snprintf(msg, sizeof(msg), "COD: SPcod xcb'=%d (expected 3)", spcod_xcb);
+                CHECK(spcod_xcb == 3, msg);
+                snprintf(msg, sizeof(msg), "COD: SPcod ycb'=%d (expected 3)", spcod_ycb);
+                CHECK(spcod_ycb == 3, msg);
                 snprintf(msg, sizeof(msg), "COD: SPcod wavelet=9/7 irreversible (filter=%d)", spcod_filter);
                 CHECK(spcod_filter == 0, msg);
 

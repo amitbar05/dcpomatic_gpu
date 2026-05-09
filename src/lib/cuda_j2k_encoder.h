@@ -127,6 +127,19 @@ public:
 	std::vector<float> debug_get_dwt_output(int c, int width, int height);
 	/* Debug: download d_a_f32[c] (FP32 DWT output used by encode_ebcot). */
 	std::vector<float> debug_get_dwt_f32(int c, int width, int height);
+	/* Debug: get T1 coded-byte lengths per code block for component c. */
+	std::vector<uint16_t> debug_get_cb_lengths(int c);
+
+	/* Debug: get raw T1 coded bytes for one codeblock (after encode_ebcot).
+	 * cb_idx is the flat codeblock index within component c. */
+	struct CbDebugData {
+		std::vector<uint8_t>  bytes;       /* coded bytes (starting after sentinel) */
+		std::vector<uint16_t> pass_lens;   /* cumulative pass lengths (MAX_PASSES entries) */
+		int num_passes = 0;
+		int num_bp     = 0;
+		int coded_len  = 0;
+	};
+	CbDebugData debug_get_cb_data(int c, int cb_idx);
 
 private:
 	std::unique_ptr<CudaJ2KEncoderImpl> _impl;
