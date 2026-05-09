@@ -1069,11 +1069,12 @@ kernel_rgb48_to_xyz12_planar(
     yv = fminf(fmaxf(yv, 0.0f), 1.0f);
     zv = fminf(fmaxf(zv, 0.0f), 1.0f);
 
-    /* Output LUT: linear [0,1] → 12-bit DCI value */
+    /* Output LUT: linear [0,1] → 12-bit DCI value.
+     * Use (v * 4095 + 0.5) to match CPU reference round-half-up. */
     int out_idx = y * width + x;
-    d_xyz_x[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(xv * 4095.5f)]);
-    d_xyz_y[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(yv * 4095.5f)]);
-    d_xyz_z[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(zv * 4095.5f)]);
+    d_xyz_x[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(xv * 4095.0f + 0.5f)]);
+    d_xyz_y[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(yv * 4095.0f + 0.5f)]);
+    d_xyz_z[out_idx] = static_cast<int32_t>(d_lut_out[static_cast<int>(zv * 4095.0f + 0.5f)]);
 }
 
 /* ===== CUDA Kernels ===== */

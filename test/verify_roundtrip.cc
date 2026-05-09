@@ -315,6 +315,7 @@ struct RoundTripResult {
     int dec_w, dec_h, dec_ncomp;
     bool non_trivial;    /* output is not all-zero */
     bool bits_in_range;  /* all decoded values in [0, 4095] */
+    size_t cs_bytes;     /* codestream size in bytes */
 };
 
 static RoundTripResult run_roundtrip(CudaJ2KEncoder& enc,
@@ -323,6 +324,7 @@ static RoundTripResult run_roundtrip(CudaJ2KEncoder& enc,
 {
     RoundTripResult r{};
     auto cs = enc.encode_ebcot(rgb, w, h, w*3, br, fps, false, false);
+    r.cs_bytes = cs.size();
     if (cs.empty()) return r;
 
     std::vector<std::vector<int32_t>> comps;
@@ -706,11 +708,25 @@ int main()
             CHECK(r.bits_in_range, msg);
         }
 
-        /* Higher bitrate should produce higher PSNR (quality monotonicity) */
-        auto r50  = run_roundtrip(enc, rgb.data(), W, H,  50000000LL, 24, false);
-        auto r200 = run_roundtrip(enc, rgb.data(), W, H, 200000000LL, 24, false);
-        CHECK(r200.psnr_Y >= r50.psnr_Y - 0.5,
-              "200Mbps PSNR >= 50Mbps PSNR (quality monotonicity)");
+        /* Bitrate monotonicity: higher bitrate → larger codestream.
+         * We test codestream size rather than PSNR because smooth patterns can encode
+         * near-losslessly even at low bitrates, making PSNR non-monotone across
+         * bitrate steps. Use noise (high entropy) for the PSNR monotonicity check. */
+        auto r50_sine  = run_roundtrip(enc, rgb.data(), W, H,  50000000LL, 24, false);
+        auto r200_sine = run_roundtrip(enc, rgb.data(), W, H, 200000000LL, 24, false);
+        char mono_msg[160];
+        snprintf(mono_msg, sizeof(mono_msg), "200Mbps cs_bytes(%zu) >= 50Mbps cs_bytes(%zu)",
+                 r200_sine.cs_bytes, r50_sine.cs_bytes);
+        CHECK(r200_sine.cs_bytes >= r50_sine.cs_bytes, mono_msg);
+
+        /* PSNR monotonicity on noise (information-rich pattern clears budget) */
+        std::vector<uint16_t> rgb_noise(3*(size_t)W*H);
+        gen_random(rgb_noise.data(), W, H);
+        auto rn50  = run_roundtrip(enc, rgb_noise.data(), W, H,  50000000LL, 24, false);
+        auto rn200 = run_roundtrip(enc, rgb_noise.data(), W, H, 200000000LL, 24, false);
+        snprintf(mono_msg, sizeof(mono_msg),
+                 "noise: 200Mbps PSNR(%.1fdB) >= 50Mbps PSNR(%.1fdB)", rn200.psnr_Y, rn50.psnr_Y);
+        CHECK(rn200.psnr_Y >= rn50.psnr_Y - 0.5, mono_msg);
     }
 
     /* ---- Test 15: J2K marker field verification ---- */

@@ -164,12 +164,18 @@ static T1Result run_t1(
     cudaMemset(d_passlens, 0, pl_bytes);
     cudaMemset(d_num_bp,   0, num_cbs * sizeof(uint8_t));
 
-    /* Launch T1: correct path, MAX_BP=13, float DWT input */
+    /* Launch T1: FAST4=false, BYPASS is compile-time template, MAX_BP=13, float */
     constexpr int THREADS = 64;
     int grid = (num_cbs + THREADS - 1) / THREADS;
-    kernel_ebcot_t1<false, 13, float><<<grid, THREADS>>>(
-        d_dwt, w, d_cb_info, num_cbs,
-        d_data, d_len, d_npasses, d_passlens, d_num_bp, bp_skip, use_bypass);
+    if (use_bypass) {
+        kernel_ebcot_t1<false, true, 13, float><<<grid, THREADS>>>(
+            d_dwt, w, d_cb_info, num_cbs,
+            d_data, d_len, d_npasses, d_passlens, d_num_bp, bp_skip);
+    } else {
+        kernel_ebcot_t1<false, false, 13, float><<<grid, THREADS>>>(
+            d_dwt, w, d_cb_info, num_cbs,
+            d_data, d_len, d_npasses, d_passlens, d_num_bp, bp_skip);
+    }
 
     cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();

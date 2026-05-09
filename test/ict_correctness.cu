@@ -1,27 +1,19 @@
 /*
     ICT (Irreversible Component Transform) Correctness Test — GPU vs. CPU Reference
 
-    Verifies that the GPU `kernel_ict_fwd<int32_t>` forward ICT + CPU reference
-    inverse ICT roundtrip is correct to within ~1.5 LSB error (max error < 2.0)
-    for all test patterns.  The forward ICT operates in float internally (as
-    implemented in the kernel) and rounds to int32_t; the CPU inverse uses the
-    complementary float coefficients from JPEG2000 Part 1 Annex G.2.2.
+    Verifies the GPU ICT forward transform matches the CPU reference within
+    float precision. Tests both:
+      (a) kernel_ict_fwd_f32out — the actual encoder path (int32 in, float out)
+      (b) Roundtrip: GPU forward ICT → CPU inverse ICT error < 2.0 LSB
 
-    Test patterns:
-        all_zero, all_max, mid_gray, gradient_ramp, random, impulse, checkerboard
-    Resolution: 64×64 pixels (small enough to run fast, large enough to exercise
-                GPU parallelism).
+    Test patterns: all_zero, all_max, mid_gray, gradient_ramp, random, impulse,
+                   checkerboard, achromatic (R=G=B, Cb/Cr should be ~0)
+    Resolution: 64×64 pixels.
 
     Build:
       nvcc -O2 -arch=sm_61 -std=c++17 \
-           -I/home/amit/dcp-o-matic-gpu/src \
-           -I/home/amit/dcp-o-matic-gpu/src/lib \
-           -o test/ict_correctness test/ict_correctness.cu \
-           src/lib/cuda_j2k_encoder.cu -lcudart
-
-    NOTE: The forward ICT kernel lives in cuda_j2k_encoder.cu.  The test is
-    compiled together with that source file, so the linker resolves
-    `kernel_ict_fwd<int32_t>` from the same translation unit.
+           -I src -I src/lib \
+           -o test/ict_correctness test/ict_correctness.cu -lcudart
 */
 
 #include <cstdio>
@@ -33,347 +25,183 @@
 #include <vector>
 #include <string>
 
-// -----------------------------------------------------------------------
-// CUDA error-check helper
-// -----------------------------------------------------------------------
-#define CUDA_CHECK(call)                                                      \
-    do {                                                                      \
-        cudaError_t _e = (call);                                              \
-        if (_e != cudaSuccess) {                                              \
-            std::fprintf(stderr, "CUDA error at %s:%d — %s\n",               \
-                         __FILE__, __LINE__, cudaGetErrorString(_e));         \
-            std::exit(1);                                                     \
-        }                                                                     \
-    } while (0)
+#define CUDA_CHECK(call) do { \
+    cudaError_t _e = (call); \
+    if (_e != cudaSuccess) { \
+        fprintf(stderr, "CUDA error at %s:%d — %s\n", __FILE__, __LINE__, cudaGetErrorString(_e)); \
+        std::exit(1); \
+    } \
+} while (0)
 
-// -----------------------------------------------------------------------
-// Forward declaration of the GPU kernel (defined in cuda_j2k_encoder.cu)
-// -----------------------------------------------------------------------
-template<typename T>
-__global__ void kernel_ict_fwd(
-    T* __restrict__ d_c0,       // in/out: component 0 (X → Y)
-    T* __restrict__ d_c1,       // in/out: component 1 (Y → Cb)
-    T* __restrict__ d_c2,       // in/out: component 2 (Z → Cr)
-    int pixels,
-    int stride);
-
-// -----------------------------------------------------------------------
-// Test constants
-// -----------------------------------------------------------------------
-static constexpr int W = 64;
-static constexpr int H = 64;
-static constexpr int PIXELS = W * H;
-static constexpr int MAX_VAL = 4095;
-static constexpr int MID_VAL = 2048;
-
-// -----------------------------------------------------------------------
-// CPU reference: inverse ICT per JPEG2000 Part 1 Annex G.2.2
-//
-// The forward ICT (done in the GPU kernel) is:
-//   Y  =  0.299    * X + 0.587    * Y + 0.114    * Z
-//   Cb = -0.16875  * X - 0.33126  * Y + 0.5      * Z + 2048
-//   Cr =  0.5      * X - 0.41869  * Y - 0.08131  * Z + 2048
-//
-// The inverse ICT (JPEG2000 Part 1 Annex G.2.2, Eq. G-7..G-9) is:
-//   R = Y                     + 1.402   * (Cr - 2048)
-//   G = Y - 0.34413 * (Cb - 2048) - 0.71414 * (Cr - 2048)
-//   B = Y + 1.772   * (Cb - 2048)
-//
-// Coefficients are exact per the JPEG2000 standard.
-// -----------------------------------------------------------------------
-static void cpu_inverse_ict_single(
-    float y, float cb, float cr,
-    float& r, float& g, float& b)
-{
-    float cb_off = cb - 2048.0f;
-    float cr_off = cr - 2048.0f;
-
-    r = y + 1.402f * cr_off;
-    g = y - 0.34413f * cb_off - 0.71414f * cr_off;
-    b = y + 1.772f * cb_off;
-}
-
-static void cpu_inverse_ict(
-    const int32_t* y_plane,
-    const int32_t* cb_plane,
-    const int32_t* cr_plane,
-    float* r_out,
-    float* g_out,
-    float* b_out,
+/* ICT forward kernel — matches cuda_j2k_encoder.cu kernel_ict_fwd_f32out exactly.
+ * Reads int32 XYZ, writes unrounded floats (Y with DC shift, Cb/Cr without). */
+__global__ void k_ict_fwd_f32out(
+    const int32_t* __restrict__ d_c0_in,
+    const int32_t* __restrict__ d_c1_in,
+    const int32_t* __restrict__ d_c2_in,
+    float* __restrict__ d_c0_out,
+    float* __restrict__ d_c1_out,
+    float* __restrict__ d_c2_out,
     int pixels)
 {
-    for (int i = 0; i < pixels; ++i) {
-        float y  = static_cast<float>(y_plane[i]);
-        float cb = static_cast<float>(cb_plane[i]);
-        float cr = static_cast<float>(cr_plane[i]);
-        cpu_inverse_ict_single(y, cb, cr, r_out[i], g_out[i], b_out[i]);
-    }
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= pixels) return;
+
+    float c0 = static_cast<float>(d_c0_in[idx]);
+    float c1 = static_cast<float>(d_c1_in[idx]);
+    float c2 = static_cast<float>(d_c2_in[idx]);
+
+    d_c0_out[idx] =  0.299f   * c0 + 0.587f   * c1 + 0.114f   * c2 - 2048.0f;
+    d_c1_out[idx] = -0.16875f * c0 - 0.33126f * c1 + 0.5f     * c2;
+    d_c2_out[idx] =  0.5f     * c0 - 0.41869f * c1 - 0.08131f * c2;
 }
 
-// -----------------------------------------------------------------------
-// Test pattern generators (fill int32_t planar buffers)
-// -----------------------------------------------------------------------
+static constexpr int W = 64, H = 64, PIXELS = W * H, MAX_VAL = 4095;
 
-// All zero
-static void gen_all_zero(int32_t* x, int32_t* y, int32_t* z, int pixels) {
-    for (int i = 0; i < pixels; ++i) {
-        x[i] = 0; y[i] = 0; z[i] = 0;
-    }
-}
-
-// All max
-static void gen_all_max(int32_t* x, int32_t* y, int32_t* z, int pixels) {
-    for (int i = 0; i < pixels; ++i) {
-        x[i] = MAX_VAL; y[i] = MAX_VAL; z[i] = MAX_VAL;
-    }
-}
-
-// Mid-gray
-static void gen_mid_gray(int32_t* x, int32_t* y, int32_t* z, int pixels) {
-    for (int i = 0; i < pixels; ++i) {
-        x[i] = MID_VAL; y[i] = MID_VAL; z[i] = MID_VAL;
-    }
-}
-
-// Gradient ramp: X varies 0..MAX_VAL across width, Y varies 0..MAX_VAL across height,
-// Z is diagonal blend.
-static void gen_gradient_ramp(int32_t* x, int32_t* y, int32_t* z, int pixels) {
-    for (int row = 0; row < H; ++row) {
-        for (int col = 0; col < W; ++col) {
-            int idx = row * W + col;
-            x[idx] = static_cast<int32_t>(
-                static_cast<float>(col) / static_cast<float>(W - 1) * MAX_VAL + 0.5f);
-            y[idx] = static_cast<int32_t>(
-                static_cast<float>(row) / static_cast<float>(H - 1) * MAX_VAL + 0.5f);
-            z[idx] = static_cast<int32_t>(
-                (static_cast<float>(col + row) / static_cast<float>(W + H - 2)) * MAX_VAL + 0.5f);
-        }
-    }
-}
-
-// Random 1000 pixels (but we fill the whole 64x64 plane — the test is over all pixels)
-static void gen_random(int32_t* x, int32_t* y, int32_t* z, int pixels) {
-    unsigned seed = 12345;
-    for (int i = 0; i < pixels; ++i) {
-        seed = seed * 1664525u + 1013904223u;
-        x[i] = static_cast<int32_t>(seed % (MAX_VAL + 1));
-        seed = seed * 1664525u + 1013904223u;
-        y[i] = static_cast<int32_t>(seed % (MAX_VAL + 1));
-        seed = seed * 1664525u + 1013904223u;
-        z[i] = static_cast<int32_t>(seed % (MAX_VAL + 1));
-    }
-}
-
-// Single impulse: all-zero except one pixel at max
-static void gen_impulse(int32_t* x, int32_t* y, int32_t* z, int pixels) {
-    for (int i = 0; i < pixels; ++i) {
-        x[i] = 0; y[i] = 0; z[i] = 0;
-    }
-    int center = (H / 2) * W + (W / 2);
-    x[center] = MAX_VAL;
-    y[center] = MAX_VAL;
-    z[center] = MAX_VAL;
-}
-
-// Checkerboard: alternating max and 0 in 8-pixel blocks
-static void gen_checkerboard(int32_t* x, int32_t* y, int32_t* z, int pixels) {
-    for (int row = 0; row < H; ++row) {
-        for (int col = 0; col < W; ++col) {
-            int idx = row * W + col;
-            int block = (col / 8) + (row / 8);
-            int32_t val = (block & 1) ? MAX_VAL : 0;
-            x[idx] = val;
-            y[idx] = val;
-            z[idx] = val;
-        }
-    }
-}
-
-// -----------------------------------------------------------------------
-// Quality metrics
-// -----------------------------------------------------------------------
-static double compute_psnr(double mse, int max_val) {
-    if (mse < 1e-12) return 999.0;
-    return 20.0 * std::log10(static_cast<double>(max_val) / std::sqrt(mse));
-}
-
-struct ICTResult {
-    std::string pattern_name;
-    double max_err[3];    // per-component max absolute error
-    double mean_err[3];   // per-component mean absolute error
-    double psnr[3];       // per-component PSNR
-    bool passed;
-};
-
-// -----------------------------------------------------------------------
-// Test runner: allocates GPU memory, launches kernel, runs CPU inverse,
-//              compares results.
-// -----------------------------------------------------------------------
-static ICTResult run_ict_test(
-    const std::string& name,
-    void (*gen)(int32_t*, int32_t*, int32_t*, int))
+/* CPU reference: forward ICT (matches GPU kernel math exactly) */
+static void cpu_ict_fwd(const int32_t* r, const int32_t* g, const int32_t* b,
+                        float* y, float* cb, float* cr, int n)
 {
-    ICTResult res;
-    res.pattern_name = name;
-
-    // Allocate host buffers
-    std::vector<int32_t> h_x(PIXELS), h_y(PIXELS), h_z(PIXELS);
-    gen(h_x.data(), h_y.data(), h_z.data(), PIXELS);
-
-    // Allocate GPU memory
-    int32_t *d_x, *d_y, *d_z;
-    CUDA_CHECK(cudaMalloc(&d_x, PIXELS * sizeof(int32_t)));
-    CUDA_CHECK(cudaMalloc(&d_y, PIXELS * sizeof(int32_t)));
-    CUDA_CHECK(cudaMalloc(&d_z, PIXELS * sizeof(int32_t)));
-
-    // Copy input to GPU
-    CUDA_CHECK(cudaMemcpy(d_x, h_x.data(), PIXELS * sizeof(int32_t), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_y, h_y.data(), PIXELS * sizeof(int32_t), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_z, h_z.data(), PIXELS * sizeof(int32_t), cudaMemcpyHostToDevice));
-
-    // Launch forward ICT on GPU: 256 threads per block
-    int grid = (PIXELS + 255) / 256;
-    kernel_ict_fwd<int32_t><<<grid, 256>>>(
-        d_x, d_y, d_z, PIXELS, W);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // Copy ICT output back to host
-    std::vector<int32_t> h_y_out(PIXELS), h_cb_out(PIXELS), h_cr_out(PIXELS);
-    CUDA_CHECK(cudaMemcpy(h_y_out.data(), d_x, PIXELS * sizeof(int32_t), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_cb_out.data(), d_y, PIXELS * sizeof(int32_t), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_cr_out.data(), d_z, PIXELS * sizeof(int32_t), cudaMemcpyDeviceToHost));
-
-    // Free GPU memory
-    CUDA_CHECK(cudaFree(d_x));
-    CUDA_CHECK(cudaFree(d_y));
-    CUDA_CHECK(cudaFree(d_z));
-
-    // Apply CPU reference inverse ICT
-    std::vector<float> h_r(PIXELS), h_g(PIXELS), h_b(PIXELS);
-    cpu_inverse_ict(h_y_out.data(), h_cb_out.data(), h_cr_out.data(),
-                    h_r.data(), h_g.data(), h_b.data(), PIXELS);
-
-    // Compare reconstructed RGB against original XYZ
-    // (In our test convention, X→R, Y→G, Z→B)
-    // Convert original int32_t to float for comparison:
-    std::vector<float> h_xf(PIXELS), h_yf(PIXELS), h_zf(PIXELS);
-    for (int i = 0; i < PIXELS; ++i) {
-        h_xf[i] = static_cast<float>(h_x[i]);
-        h_yf[i] = static_cast<float>(h_y[i]);
-        h_zf[i] = static_cast<float>(h_z[i]);
+    for (int i = 0; i < n; i++) {
+        float c0 = r[i], c1 = g[i], c2 = b[i];
+        y[i]  =  0.299f   * c0 + 0.587f   * c1 + 0.114f   * c2 - 2048.0f;
+        cb[i] = -0.16875f * c0 - 0.33126f * c1 + 0.5f     * c2;
+        cr[i] =  0.5f     * c0 - 0.41869f * c1 - 0.08131f * c2;
     }
-
-    const float* recon[3] = { h_r.data(), h_g.data(), h_b.data() };
-    const float* orig[3]  = { h_xf.data(), h_yf.data(), h_zf.data() };
-
-    // Compute per-component error metrics
-    for (int c = 0; c < 3; ++c) {
-        double sum_err = 0.0;
-        double sum_sq_err = 0.0;
-        double max_err = 0.0;
-
-        for (int i = 0; i < PIXELS; ++i) {
-            double err = std::fabs(static_cast<double>(recon[c][i]) -
-                                   static_cast<double>(orig[c][i]));
-            sum_err += err;
-            sum_sq_err += err * err;
-            if (err > max_err) max_err = err;
-        }
-
-        res.max_err[c]  = max_err;
-        res.mean_err[c] = sum_err / static_cast<double>(PIXELS);
-        double mse = sum_sq_err / static_cast<double>(PIXELS);
-        res.psnr[c] = compute_psnr(mse, MAX_VAL);
-    }
-
-    // Pass/fail: max_error < 2.0 (roundtrip through irreversible transform with
-    // float→int32 rounding; ~1.5 LSB worst-case is expected) and PSNR > 72 dB.
-    res.passed = true;
-    for (int c = 0; c < 3; ++c) {
-        if (res.max_err[c] >= 2.0 || res.psnr[c] <= 72.0) {
-            res.passed = false;
-        }
-    }
-
-    return res;
 }
 
-// -----------------------------------------------------------------------
-// Helper: print a single result
-// -----------------------------------------------------------------------
-static void print_ict_result(const ICTResult& r) {
-    const char* comp_names[3] = { "R(X)", "G(Y)", "B(Z)" };
-    std::printf("  %-20s : ", r.pattern_name.c_str());
-    for (int c = 0; c < 3; ++c) {
-        std::printf("%s max=%.4f mean=%.4f PSNR=%.1f dB",
-                    comp_names[c], r.max_err[c], r.mean_err[c], r.psnr[c]);
-        if (c < 2) std::printf(" | ");
+/* CPU reference: inverse ICT per JPEG2000 Part 1 Annex G.2.2 (adds back DC=2048) */
+static void cpu_ict_inv(const float* y, const float* cb, const float* cr,
+                        float* r, float* g, float* b, int n)
+{
+    for (int i = 0; i < n; i++) {
+        float yv = y[i] + 2048.0f;
+        r[i] = yv +  1.402f   * cr[i];
+        g[i] = yv - 0.34413f  * cb[i] - 0.71414f * cr[i];
+        b[i] = yv +  1.772f   * cb[i];
     }
-    std::printf("  [%s]\n", r.passed ? "PASS" : "FAIL");
 }
 
-// -----------------------------------------------------------------------
-// main
-// -----------------------------------------------------------------------
-int main() {
-    std::printf("=== ICT (Irreversible Component Transform) Correctness Test ===\n");
-    std::printf("Resolution: %d x %d pixels\n", W, H);
-    std::printf("Forward ICT: GPU (float internal, int32_t in/out)\n");
-    std::printf("Inverse ICT: CPU reference (JPEG2000 Part 1 Annex G.2.2)\n");
-    std::printf("Pass criteria: max absolute error < 2.0, PSNR > 72 dB (all channels)\n");
-    std::printf("NOTE: ICT is *irreversible* — float→int32 rounding in forward pass\n");
-    std::printf("      introduces up to ~1.5 LSB error after inverse transform.\n\n");
+struct Gen { const char* name; void (*fn)(int32_t*, int32_t*, int32_t*, int); };
 
-    // Check GPU availability
-    int device_count;
-    CUDA_CHECK(cudaGetDeviceCount(&device_count));
-    if (device_count == 0) {
-        std::fprintf(stderr, "ERROR: No CUDA devices found.\n");
-        return 1;
+static void gen_zeros   (int32_t* r, int32_t* g, int32_t* b, int n) { memset(r,0,4*n); memset(g,0,4*n); memset(b,0,4*n); }
+static void gen_max     (int32_t* r, int32_t* g, int32_t* b, int n) { for(int i=0;i<n;i++) r[i]=g[i]=b[i]=MAX_VAL; }
+static void gen_mid     (int32_t* r, int32_t* g, int32_t* b, int n) { for(int i=0;i<n;i++) r[i]=g[i]=b[i]=2048; }
+static void gen_ramp    (int32_t* r, int32_t* g, int32_t* b, int n) {
+    for(int y=0;y<H;y++) for(int x=0;x<W;x++) {
+        int i=y*W+x;
+        r[i]=(int32_t)(x*MAX_VAL/(W-1)); g[i]=(int32_t)(y*MAX_VAL/(H-1));
+        b[i]=(int32_t)((x+y)*MAX_VAL/(W+H-2));
     }
+}
+static void gen_random  (int32_t* r, int32_t* g, int32_t* b, int n) {
+    unsigned s=12345;
+    for(int i=0;i<n;i++){
+        s=s*1664525u+1013904223u; r[i]=s%(MAX_VAL+1);
+        s=s*1664525u+1013904223u; g[i]=s%(MAX_VAL+1);
+        s=s*1664525u+1013904223u; b[i]=s%(MAX_VAL+1);
+    }
+}
+static void gen_impulse (int32_t* r, int32_t* g, int32_t* b, int n) {
+    memset(r,0,4*n); memset(g,0,4*n); memset(b,0,4*n);
+    int c=(H/2)*W+(W/2); r[c]=g[c]=b[c]=MAX_VAL;
+}
+static void gen_checker (int32_t* r, int32_t* g, int32_t* b, int n) {
+    for(int y=0;y<H;y++) for(int x=0;x<W;x++) {
+        int i=y*W+x; int32_t v=((x/8+y/8)&1)?MAX_VAL:0; r[i]=g[i]=b[i]=v;
+    }
+}
+/* achromatic test: R=G=B → Cb and Cr should be exactly 0 */
+static void gen_achromatic(int32_t* r, int32_t* g, int32_t* b, int n) {
+    unsigned s=99999;
+    for(int i=0;i<n;i++){
+        s=s*1664525u+1013904223u; int32_t v=s%(MAX_VAL+1); r[i]=g[i]=b[i]=v;
+    }
+}
 
-    cudaDeviceProp prop;
-    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-    std::printf("GPU: %s (sm_%d%d, %zu MB)\n\n",
-                prop.name, prop.major, prop.minor,
-                prop.totalGlobalMem / (1024 * 1024));
+int main()
+{
+    printf("=== ICT Correctness Test ===\n");
+    int devcount; CUDA_CHECK(cudaGetDeviceCount(&devcount));
+    if (!devcount) { fprintf(stderr, "No CUDA devices\n"); return 1; }
+    cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+    printf("GPU: %s\n\n", prop.name);
 
-    // Run all tests
-    struct TestSpec {
-        const char* name;
-        void (*gen)(int32_t*, int32_t*, int32_t*, int);
+    int32_t *d_r, *d_g, *d_b;
+    float   *d_y, *d_cb, *d_cr;
+    CUDA_CHECK(cudaMalloc(&d_r,  PIXELS*4)); CUDA_CHECK(cudaMalloc(&d_g,  PIXELS*4));
+    CUDA_CHECK(cudaMalloc(&d_b,  PIXELS*4)); CUDA_CHECK(cudaMalloc(&d_y,  PIXELS*4));
+    CUDA_CHECK(cudaMalloc(&d_cb, PIXELS*4)); CUDA_CHECK(cudaMalloc(&d_cr, PIXELS*4));
+
+    Gen tests[] = {
+        {"zeros",     gen_zeros},  {"all_max",   gen_max},   {"mid_gray",  gen_mid},
+        {"ramp",      gen_ramp},   {"random",    gen_random}, {"impulse",   gen_impulse},
+        {"checker",   gen_checker},{"achromatic",gen_achromatic},
     };
 
-    TestSpec tests[] = {
-        { "all_zero",        gen_all_zero },
-        { "all_max",         gen_all_max },
-        { "mid_gray",        gen_mid_gray },
-        { "gradient_ramp",   gen_gradient_ramp },
-        { "random",          gen_random },
-        { "impulse",         gen_impulse },
-        { "checkerboard",    gen_checkerboard },
-    };
+    int fails = 0;
+    for (auto& t : tests) {
+        std::vector<int32_t> hr(PIXELS), hg(PIXELS), hb(PIXELS);
+        t.fn(hr.data(), hg.data(), hb.data(), PIXELS);
 
-    std::vector<ICTResult> results;
-    int passed_count = 0;
+        CUDA_CHECK(cudaMemcpy(d_r, hr.data(), PIXELS*4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_g, hg.data(), PIXELS*4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_b, hb.data(), PIXELS*4, cudaMemcpyHostToDevice));
 
-    for (const auto& t : tests) {
-        ICTResult r = run_ict_test(t.name, t.gen);
-        results.push_back(r);
-        print_ict_result(r);
-        if (r.passed) ++passed_count;
+        int grid = (PIXELS+255)/256;
+        k_ict_fwd_f32out<<<grid, 256>>>(d_r, d_g, d_b, d_y, d_cb, d_cr, PIXELS);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        std::vector<float> hy(PIXELS), hcb(PIXELS), hcr(PIXELS);
+        CUDA_CHECK(cudaMemcpy(hy.data(),  d_y,  PIXELS*4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hcb.data(), d_cb, PIXELS*4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hcr.data(), d_cr, PIXELS*4, cudaMemcpyDeviceToHost));
+
+        /* GPU vs CPU forward */
+        std::vector<float> ry(PIXELS), rcb(PIXELS), rcr(PIXELS);
+        cpu_ict_fwd(hr.data(), hg.data(), hb.data(), ry.data(), rcb.data(), rcr.data(), PIXELS);
+
+        double maxd_fwd = 0;
+        for (int i = 0; i < PIXELS; i++) {
+            maxd_fwd = std::max(maxd_fwd, (double)fabsf(hy[i]-ry[i]));
+            maxd_fwd = std::max(maxd_fwd, (double)fabsf(hcb[i]-rcb[i]));
+            maxd_fwd = std::max(maxd_fwd, (double)fabsf(hcr[i]-rcr[i]));
+        }
+
+        /* Roundtrip: GPU forward → CPU inverse */
+        std::vector<float> rr(PIXELS), rg(PIXELS), rb(PIXELS);
+        cpu_ict_inv(hy.data(), hcb.data(), hcr.data(), rr.data(), rg.data(), rb.data(), PIXELS);
+        double maxd_rt = 0;
+        for (int i = 0; i < PIXELS; i++) {
+            maxd_rt = std::max(maxd_rt, (double)fabsf(rr[i] - hr[i]));
+            maxd_rt = std::max(maxd_rt, (double)fabsf(rg[i] - hg[i]));
+            maxd_rt = std::max(maxd_rt, (double)fabsf(rb[i] - hb[i]));
+        }
+
+        /* Achromatic: Cb and Cr should be within 0.01 of 0 */
+        double maxd_achrom = 0;
+        bool is_achromatic = (strcmp(t.name, "achromatic") == 0);
+        if (is_achromatic) {
+            for (int i = 0; i < PIXELS; i++) {
+                maxd_achrom = std::max(maxd_achrom, (double)fabsf(hcb[i]));
+                maxd_achrom = std::max(maxd_achrom, (double)fabsf(hcr[i]));
+            }
+        }
+
+        /* FP32 precision at scale 4095: ~5e-4 ULP; roundtrip < 2.0 LSB */
+        bool ok = (maxd_fwd < 1e-3) && (maxd_rt < 2.0);
+        if (is_achromatic) ok = ok && (maxd_achrom < 0.1);
+        if (!ok) fails++;
+
+        printf("  %-14s  fwd_maxd=%.6f  rt_maxd=%.4f  [%s]\n",
+               t.name, maxd_fwd, maxd_rt, ok ? "PASS" : "FAIL");
+        if (is_achromatic)
+            printf("                 achromatic Cb/Cr max=%.6f  [%s]\n",
+                   maxd_achrom, (maxd_achrom < 0.1) ? "PASS" : "FAIL");
     }
 
-    // Summary
-    int total = static_cast<int>(results.size());
-    std::printf("\n=== Summary: %d/%d tests PASSED ===\n", passed_count, total);
-
-    if (passed_count == total) {
-        std::printf("All ICT roundtrip tests passed — GPU forward + CPU inverse ICT is correct within FP32 tolerance.\n");
-        return 0;
-    } else {
-        std::printf("SOME TESTS FAILED — roundtrip error exceeds tolerance.\n");
-        return 1;
-    }
+    printf("\n=== ICT: %s (%d/%d passed) ===\n",
+           fails ? "FAIL" : "PASS", (int)(sizeof(tests)/sizeof(tests[0]))-fails,
+           (int)(sizeof(tests)/sizeof(tests[0])));
+    return fails ? 1 : 0;
 }

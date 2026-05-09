@@ -11,7 +11,7 @@ static constexpr int CB_DIM      = 32;
 static constexpr int CB_PIXELS   = CB_DIM * CB_DIM;
 static constexpr int MAX_BPLANES = 16;
 static constexpr int MAX_PASSES  = MAX_BPLANES * 3;
-static constexpr int CB_BUF_SIZE = 2048;
+static constexpr int CB_BUF_SIZE = 16384;
 
 static constexpr int SUBBAND_LL = 0;
 static constexpr int SUBBAND_HL = 1;
