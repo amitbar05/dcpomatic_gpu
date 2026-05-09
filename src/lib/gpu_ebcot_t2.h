@@ -770,9 +770,6 @@ inline void build_ebcot_codestream(
         uint16_t cum_len;
         uint16_t delta_r;
     };
-    std::vector<HullSeg> hull_stack;
-    hull_stack.reserve(MAX_PASSES);
-
     const size_t per_comp_target = (target_bytes > 0)
         ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
@@ -865,18 +862,25 @@ inline void build_ebcot_codestream(
                                      && global_total_target != SIZE_MAX)
         ? global_total_target - total_phase1_bytes : (size_t)SIZE_MAX;
 
-    /* Collect convex-hull entries from all 3 components' Phase 2 subbands. */
-    std::vector<PcrdEntry> all_entries;
+    /* V304: Parallel Phase 2 convex-hull across 3 components using std::async.
+     * Each component's hull computation is independent; merge afterwards.
+     * Saves ~2/3 of Phase 2 PCRD wall-clock time for dense patterns. */
+    std::vector<PcrdEntry> entries_c[3];
     {
         size_t total_p2_cbs = 0;
         for (int c = 0; c < 3; ++c)
             for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb)
                 total_p2_cbs += static_cast<size_t>(subbands[sb].ncbx) * subbands[sb].ncby;
-        all_entries.reserve(total_p2_cbs * 6);
+        size_t reserve_per_c = (total_p2_cbs / 3 + 1) * 6;
+        for (int c = 0; c < 3; ++c)
+            entries_c[c].reserve(reserve_per_c);
     }
 
-    for (int c = 0; c < 3; ++c) {
-        if (pcrd_start_c[c] >= subbands.size()) continue;
+    auto phase2_hull = [&](int c) {
+        if (pcrd_start_c[c] >= subbands.size()) return;
+        std::vector<HullSeg> hs;
+        hs.reserve(MAX_PASSES);
+        std::vector<PcrdEntry>& ents = entries_c[c];
 
         for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb) {
             if (t1_per_sb_c[c][sb] == 0) continue;
@@ -913,23 +917,19 @@ inline void build_ebcot_codestream(
 
                     int cbw = std::min(CB_DIM, sb_w - ix * CB_DIM);
                     int cbh = std::min(CB_DIM, sb_h - iy * CB_DIM);
-                    /* V291: density boost — dense CBs (many passes) get higher PCRD priority.
-                     * 1.0× factor: photo_synth +0.2 dB (65.3→65.5), noise_small +0.1 dB (53.9→54.0). */
                     float density = std::min((float)np / (3.0f * 18.0f), 1.0f);
                     float base = step2 * static_cast<float>(cbw * cbh) * (1.0f + density);
 
                     const uint16_t* pl = pass_lengths[c]
                         + static_cast<size_t>(cb_idx) * MAX_PASSES;
 
-                    hull_stack.clear();
+                    hs.clear();
                     uint16_t prev_cum = 0;
 
-                    /* V302: hoist decay/scale outside pass loop — one exp2f per CB vs two per pass */
-                    /* V290: per-type decay — HH=0.68, HL/LH=0.69, LL=0.67 */
                     float decay = (sb_type == SUBBAND_HH) ? 0.68f
                                 : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
                     float scale = std::exp2f(-decay);
-                    float Dcur  = base;  /* base * scale^p, starts at p=0 */
+                    float Dcur  = base;
 
                     for (int p = 0; p < np; ++p) {
                         uint16_t cum = pl[p];
@@ -949,33 +949,45 @@ inline void build_ebcot_codestream(
                         seg.delta_d = dd;
                         seg.slope   = dd / dr_f;
 
-                        while (!hull_stack.empty()
-                               && hull_stack.back().slope <= seg.slope) {
-                            const HullSeg& top = hull_stack.back();
+                        while (!hs.empty() && hs.back().slope <= seg.slope) {
+                            const HullSeg& top = hs.back();
                             seg.delta_d += top.delta_d;
                             seg.delta_r  = static_cast<uint16_t>(
                                 static_cast<int>(seg.delta_r) + top.delta_r);
                             seg.p_from  = top.p_from;
                             seg.slope   = seg.delta_d / static_cast<float>(seg.delta_r);
-                            hull_stack.pop_back();
+                            hs.pop_back();
                         }
-                        hull_stack.push_back(seg);
+                        hs.push_back(seg);
                         prev_cum = cum;
                         if (cum >= cb_len) break;
                     }
 
-                    for (const auto& seg : hull_stack) {
-                        all_entries.push_back({seg.slope, cb_idx,
-                                              static_cast<uint8_t>(c),
-                                              static_cast<uint8_t>(seg.p_from),
-                                              static_cast<uint8_t>(seg.p_to),
-                                              0,
-                                              seg.cum_len, seg.delta_r});
+                    for (const auto& seg : hs) {
+                        ents.push_back({seg.slope, cb_idx,
+                                        static_cast<uint8_t>(c),
+                                        static_cast<uint8_t>(seg.p_from),
+                                        static_cast<uint8_t>(seg.p_to),
+                                        0,
+                                        seg.cum_len, seg.delta_r});
                     }
                 }
             }
         }
+    };
+
+    {
+        auto f0 = std::async(std::launch::async, phase2_hull, 0);
+        auto f1 = std::async(std::launch::async, phase2_hull, 1);
+        phase2_hull(2);
+        f0.wait(); f1.wait();
     }
+
+    /* Merge per-component entry vectors into a single sorted list. */
+    std::vector<PcrdEntry> all_entries;
+    all_entries.reserve(entries_c[0].size() + entries_c[1].size() + entries_c[2].size());
+    for (int c = 0; c < 3; ++c)
+        all_entries.insert(all_entries.end(), entries_c[c].begin(), entries_c[c].end());
 
     std::sort(all_entries.begin(), all_entries.end(),
               [](const PcrdEntry& a, const PcrdEntry& b){
