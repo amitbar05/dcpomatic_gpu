@@ -41,9 +41,13 @@ struct SubbandGeom {
     int level;           /* DWT level (0 = finest) */
     int res;             /* resolution level (num_levels - level for detail, num_levels for LL) */
     float step;          /* raw quantization step (used by PCRD distortion model) */
-    float qcd_step;      /* step written to QCD marker and used for pmax/ZCOD computation.
-                          * Equals step for LL/HL/LH; equals T1_step (≥K²×2^m) for HH.
-                          * Decoder's band->numbps = 12 - floor(log2(qcd_step)) + numgbits - 1. */
+    float qcd_step;      /* step written to QCD marker, used for OPJ band->numbps computation.
+                          * LL/HL/LH: equals raw step (pre-gain). OPJ synthesis ×2/K per H pass;
+                          *   T1 uses step×2 but QCD writes step so decoder reconstructs at half
+                          *   the T1 amplitude, which synthesis ×2 restores to original. ✓
+                          * HH: equals T1_step = step×5.5. T1 and QCD match (correct amplitude);
+                          *   HH synthesis ×(2/K)² compensated by pmax's 2-bit offset.
+                          * band->numbps = 12 - floor(log2(qcd_step)) + numgbits - 1. */
     int cb_x0;           /* first code-block column index */
     int cb_y0;           /* first code-block row index */
     int ncbx, ncby;      /* number of code-blocks in x and y */
@@ -131,10 +135,17 @@ inline void build_codeblock_table(
             bool is_hh = (defs[s].type == SUBBAND_HH);
             float gain = is_hh ? 5.5f : 2.0f;
             float t1_step = step * gain;
-            /* HL/LH: qcd_step = raw step; HH: qcd_step = T1_step (step×5.5) so that
-             * OPJ band->numbps uses the same step as T1 quantization.
-             * pmax uses raw step → pmax > band->numbps by floor(log2(5.5))≈2 for HH,
-             * causing decoder to drop 2 LSBs (tiny precision loss, not amplitude error). */
+            /* HL/LH: qcd_step = raw step (NOT t1_step). OPJ synthesis uses two_invK=2/K
+             * per H pass. T1 encodes with step×2 (coarser); QCD writes step (finer)
+             * so decoder reconstructs at half the T1 amplitude. After synthesis ×(2/K)×K=2,
+             * the amplitude is restored: (coeff/step×2)×step × 2/K × K = coeff. ✓
+             * Using t1_step=step×2 for qcd_step would write larger QCD, decoder
+             * reconstructs at full T1 amplitude → ×2 after synthesis → 2× over-shoot.
+             *
+             * HH: qcd_step = t1_step (step×5.5). T1 and QCD match for correct amplitude.
+             * HH synthesis ×(2/K)² = 4/K² compensated by pmax's 2-bit offset.
+             * Empirical: gain=5.5 outperforms gain=4.0 (hh1: 24.7 vs 17.3 dB)
+             * because it allocates more PCRD budget to HH via larger pcrd_step. */
             sg.qcd_step = is_hh ? t1_step : step;
             for (int cby = 0; cby < sg.ncby; cby++) {
                 for (int cbx = 0; cbx < sg.ncbx; cbx++) {
@@ -454,10 +465,12 @@ inline std::vector<uint8_t> build_ebcot_codestream(
      * for HH: the 2-bit offset compensates for the NORM_H²/OPJ synthesis interaction. */
     const int numgbits_for_pmax = is_4k ? 2 : 1;
     auto sb_pmax_for_comp = [&](size_t sb, int /*comp*/) -> int {
-        /* Use raw step (not qcd_step) for pmax. For HH: pmax uses raw step while QCD
-         * writes step×5.5, keeping pmax > band->numbps by ~2. This 2-bit offset is
-         * load-bearing: it causes decoder to drop 2 LSB bit-planes from HH, which
-         * compensates for the NORM_H/OPJ synthesis interaction. */
+        /* pmax uses raw step (subbands[sb].step, pre-gain).
+         * For HL/LH: gain=2 → pmax = band->numbps + 1 (1-bit log2_gain offset).
+         * For HH: gain=4 → pmax = band->numbps + 2 (2-bit log2_gain offset).
+         * These match the OPJ log2_gain convention (floor(log2(K×2/K))=1 per H filter).
+         * Using qcd_step here breaks decoding — empirically confirmed by catastrophic
+         * quality loss on hl_bars_64 (101→18 dB) when qcd_step pmax was tried. */
         float step = std::max(subbands[sb].step, 0.001f);
         int log2s = static_cast<int>(std::floor(std::log2f(step)));
         return (12 - log2s) + numgbits_for_pmax - 1;
