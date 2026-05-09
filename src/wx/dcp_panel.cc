@@ -913,29 +913,23 @@ DCPPanel::add_video_panel_to_grid()
 	int r = 0;
 
 	add_label_to_sizer(_video_grid, _container_label, true, wxGBPosition(r, 0));
-	{
-		auto s = new wxBoxSizer(wxHORIZONTAL);
-		s->Add(_container, 1, wxEXPAND | wxRIGHT, DCPOMATIC_SIZER_X_GAP);
-		s->Add(_container_size, 1, wxLEFT | wxALIGN_CENTER_VERTICAL);
-		_video_grid->Add(s, wxGBPosition(r, 1));
-		++r;
-	}
+	_video_grid->Add(_container, wxGBPosition(r, 1), wxDefaultSpan, wxEXPAND);
+	_video_grid->Add(_container_size, wxGBPosition(r, 2), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
+	++r;
 
 	add_label_to_sizer(_video_grid, _resolution_label, true, wxGBPosition(r, 0));
-	_video_grid->Add(_resolution, wxGBPosition(r, 1));
+	_video_grid->Add(_resolution, wxGBPosition(r, 1), wxDefaultSpan, wxEXPAND);
 	++r;
 
 	add_label_to_sizer(_video_grid, _frame_rate_label, true, wxGBPosition(r, 0));
-	{
-		_frame_rate_sizer = new wxBoxSizer(wxHORIZONTAL);
-		_frame_rate_sizer->Add(_frame_rate_choice, 1, wxALIGN_CENTER_VERTICAL);
-		_frame_rate_sizer->Add(_frame_rate_spin, 1, wxALIGN_CENTER_VERTICAL);
-		_frame_rate_sizer->Add(_best_frame_rate, 1, wxLEFT | wxALIGN_CENTER_VERTICAL, DCPOMATIC_SIZER_X_GAP);
-		_video_grid->Add(_frame_rate_sizer, wxGBPosition(r, 1));
-		++r;
-	}
+	_frame_rate_sizer = new wxBoxSizer(wxHORIZONTAL);
+	_frame_rate_sizer->Add(_frame_rate_choice, 1, wxALIGN_CENTER_VERTICAL);
+	_frame_rate_sizer->Add(_frame_rate_spin, 1, wxALIGN_CENTER_VERTICAL);
+	_video_grid->Add(_frame_rate_sizer, wxGBPosition(r, 1), wxDefaultSpan, wxEXPAND);
+	_video_grid->Add(_best_frame_rate, wxGBPosition(r, 2));
+	++r;
 
-	_video_grid->Add(_three_d, wxGBPosition(r, 0), wxGBSpan(1, 2));
+	_video_grid->Add(_three_d, wxGBPosition(r, 0), wxGBSpan(1, 3));
 	++r;
 
 	add_label_to_sizer(_video_grid, _video_bit_rate_label, true, wxGBPosition(r, 0));
@@ -944,7 +938,7 @@ DCPPanel::add_video_panel_to_grid()
 	add_label_to_sizer(s, _mbits_label, false, 0, wxLEFT | wxALIGN_CENTER_VERTICAL);
 	_video_grid->Add(s, wxGBPosition(r, 1), wxDefaultSpan);
 	++r;
-	_video_grid->Add(_reencode_j2k, wxGBPosition(r, 0), wxGBSpan(1, 2));
+	_video_grid->Add(_reencode_j2k, wxGBPosition(r, 0), wxGBSpan(1, 3));
 }
 
 
