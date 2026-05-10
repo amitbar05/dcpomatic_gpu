@@ -761,14 +761,13 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     /* V303: CHUNK_BP chunked mag_bp_flat — reduce LMEM from MAX_BP*CB_DIM*4 to
      * CHUNK_BP*CB_DIM*4. Build CHUNK_BP bit-planes per d_dwt scan instead of all
      * MAX_BP at once.
-     * V307: CHUNK_BP raised from 4 to 8. For checker_64/checker_8 (num_bp≈14),
-     * d_dwt scans drop from ceil(14/4)=4 to ceil(14/8)=2, halving DRAM reads.
-     * LMEM: 8*32*4=1024B chunk + 272B sigma_pad + 384B sign/ref/coded = 1680B/thread.
-     * At 1024 threads/SM: 1.72MB — still under L2 (40MB total, ~1MB effective/SM).
-     * Inner bit-building loop doubles per scan but total work stays the same; net gain
-     * is the saved DRAM reads for the repeated d_dwt scans on dense patterns.
-     * Previous V303 (CHUNK_BP=4): 512+656=1168B/thread, ceil(14/4)=4 d_dwt scans for checker. */
-    constexpr int CHUNK_BP = 8;
+     * V307: CHUNK_BP raised from 4 to 8.
+     * V308: CHUNK_BP raised from 8 to 16. For checker_64/checker_8 (num_bp≈14),
+     * d_dwt scans drop from ceil(14/8)=2 to ceil(14/16)=1, halving DRAM reads again.
+     * For flat/gradient patterns (num_bp≤13), drops from 2 to 1 scan (same benefit).
+     * LMEM: 16*32*4=2048B chunk + 272B sigma_pad + 384B sign/ref/coded = 2704B/thread.
+     * Previous V307 (CHUNK_BP=8): 1024+656=1680B/thread, ceil(14/8)=2 d_dwt scans. */
+    constexpr int CHUNK_BP = 16;
     uint32_t mag_bp_flat[CHUNK_BP * CB_DIM];
 
     /* 3. Initialize MQ coder */
