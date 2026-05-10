@@ -32,38 +32,38 @@ using std::setfill;
 using std::setw;
 
 
-Digester::Digester ()
+Digester::Digester()
 {
-	md5_init (&_context);
+	md5_init(&_context);
 }
 
 
-Digester::~Digester ()
+Digester::~Digester()
 {
-	get ();
-}
-
-
-void
-Digester::add (void const * data, size_t size)
-{
-	md5_update (&_context, size, reinterpret_cast<uint8_t const *>(data));
+	get();
 }
 
 
 void
-Digester::add (string const & s)
+Digester::add(void const * data, size_t size)
 {
-	add (s.c_str(), s.length());
+	md5_update(&_context, size, reinterpret_cast<uint8_t const *>(data));
+}
+
+
+void
+Digester::add(string const & s)
+{
+	add(s.c_str(), s.length());
 }
 
 
 string
-Digester::get () const
+Digester::get() const
 {
 	if (!_digest) {
 		unsigned char digest[MD5_DIGEST_SIZE];
-		md5_digest (&_context, MD5_DIGEST_SIZE, digest);
+		md5_digest(&_context, MD5_DIGEST_SIZE, digest);
 
 		char hex[MD5_DIGEST_SIZE * 2 + 1];
 		for (int i = 0; i < MD5_DIGEST_SIZE; ++i) {
@@ -73,19 +73,19 @@ Digester::get () const
 		_digest = hex;
 	}
 
-	return _digest.get ();
+	return _digest.get();
 }
 
 
 void
-Digester::get (uint8_t* buffer) const
+Digester::get(uint8_t* buffer) const
 {
-	md5_digest (&_context, MD5_DIGEST_SIZE, buffer);
+	md5_digest(&_context, MD5_DIGEST_SIZE, buffer);
 }
 
 
 int
-Digester::size () const
+Digester::size() const
 {
 	return MD5_DIGEST_SIZE;
 }

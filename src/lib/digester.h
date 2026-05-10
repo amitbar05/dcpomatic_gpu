@@ -27,26 +27,26 @@
 class Digester
 {
 public:
-	Digester ();
-	~Digester ();
+	Digester();
+	~Digester();
 
-	Digester (Digester const&) = delete;
-	Digester& operator= (Digester const&) = delete;
+	Digester(Digester const&) = delete;
+	Digester& operator=(Digester const&) = delete;
 
-	void add (void const * data, size_t size);
+	void add(void const * data, size_t size);
 
 	template <class T>
-	void add (T data) {
-		add (&data, sizeof (T));
+	void add(T data) {
+		add(&data, sizeof(T));
 	}
 
-	void add (std::string const & s);
+	void add(std::string const & s);
 
-	std::string get () const;
+	std::string get() const;
 
-	void get (uint8_t* buffer) const;
+	void get(uint8_t* buffer) const;
 
-	int size () const;
+	int size() const;
 
 private:
 	mutable md5_ctx _context;
