@@ -22,6 +22,7 @@
 #include "digester.h"
 #include "dcpomatic_assert.h"
 #include <nettle/md5.h>
+#include <nettle/version.h>
 #include <iomanip>
 #include <cstdio>
 
@@ -63,7 +64,11 @@ Digester::get() const
 {
 	if (!_digest) {
 		unsigned char digest[MD5_DIGEST_SIZE];
+#if NETTLE_VERSION_MAJOR >= 4
+		md5_digest(&_context, digest);
+#else
 		md5_digest(&_context, MD5_DIGEST_SIZE, digest);
+#endif
 
 		char hex[MD5_DIGEST_SIZE * 2 + 1];
 		for (int i = 0; i < MD5_DIGEST_SIZE; ++i) {
@@ -80,7 +85,11 @@ Digester::get() const
 void
 Digester::get(uint8_t* buffer) const
 {
+#if NETTLE_VERSION_MAJOR >= 4
+	md5_digest(&_context, buffer);
+#else
 	md5_digest(&_context, MD5_DIGEST_SIZE, buffer);
+#endif
 }
 
 
