@@ -90,7 +90,6 @@ if [ "$(uname)" == "Darwin" ]; then
     else
         export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:$environment/$(uname -m)/10.10/lib:$DIR/../../../lib
     fi
-    echo $DYLD_LIBRARY_PATH
 fi
 
 if [ "$check" == "1" ]; then
