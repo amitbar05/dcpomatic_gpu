@@ -86,6 +86,7 @@ using namespace dcpomatic;
 Player::Player(shared_ptr<const Film> film, Image::Alignment subtitle_alignment, bool tolerant)
 	: _film(film)
 	, _suspended(0)
+	, _video_container_size(dcp::Size{})
 	, _ignore_video(false)
 	, _ignore_audio(false)
 	, _ignore_text(false)
@@ -94,6 +95,7 @@ Player::Player(shared_ptr<const Film> film, Image::Alignment subtitle_alignment,
 	, _tolerant(tolerant)
 	, _play_referenced(false)
 	, _audio_merger(film->audio_frame_rate())
+	, _playback_length(dcpomatic::DCPTime{})
 	, _subtitle_alignment(subtitle_alignment)
 {
 	construct();
@@ -104,6 +106,7 @@ Player::Player(shared_ptr<const Film> film, shared_ptr<const Playlist> playlist_
 	: _film(film)
 	, _playlist(playlist_)
 	, _suspended(0)
+	, _video_container_size(dcp::Size{})
 	, _ignore_video(false)
 	, _ignore_audio(false)
 	, _ignore_text(false)
@@ -112,6 +115,7 @@ Player::Player(shared_ptr<const Film> film, shared_ptr<const Playlist> playlist_
 	, _tolerant(tolerant)
 	, _play_referenced(false)
 	, _audio_merger(film->audio_frame_rate())
+	, _playback_length(dcpomatic::DCPTime{})
 {
 	construct();
 }

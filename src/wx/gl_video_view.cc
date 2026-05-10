@@ -71,6 +71,7 @@ using namespace dcpomatic::gl;
 GLVideoView::GLVideoView(FilmViewer* viewer, wxWindow *parent, bool wake)
 	: VideoView(viewer, wake)
 	, _context(nullptr)
+	, _canvas_size(wxSize{})
 	, _rec2020(false)
 	, _vsync_enabled(false)
 	, _playing(false)
