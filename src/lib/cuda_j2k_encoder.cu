@@ -4026,6 +4026,56 @@ kernel_ict_fwd_f32out(
 }
 
 
+/* V314: Combined DWT energy split + significance count kernel.
+ * Replaces V312's kernel_dwt_energy_split; adds coefficient significance counting
+ * at threshold=base_step in the same pass to avoid a second scan of d_a_f32.
+ *
+ * Energy outputs (per component, accumulated via atomicAdd):
+ *   d_en_lo: sum(val²) for the LL5 region (top-left ll5_w × ll5_h)
+ *   d_en_hi: sum(val²) for all HF subbands (remainder)
+ *
+ * Significance output:
+ *   d_sig_cnt: count of coefficients with |val| >= threshold.
+ *   sig_frac = (total sig across all 3 components) / (3 × width × height) estimates
+ *   byte_ratio_0 without running T1.  Used to pre-select the starting step:
+ *     sig_frac < SIG_SKIP_MIN(0.004)  → jump to min_step (saves attempt-0 T1)
+ *     sig_frac < SIG_JUMP_2X(0.065)   → jump step/4 (bars patterns)
+ *      *  gap zone [0.065, 0.30): checker_64, hh1 — no action (DWT leakage fills CBs)
+ *     SIG_HALVE_LO(0.30) ≤ frac < SIG_HALVE_HI(0.55) → halve (photo_synth) */
+__global__ void kernel_energy_and_sig(
+    const float* __restrict__ d_a, int n, int stride,
+    int ll5_w, int ll5_h, float threshold,
+    float* d_en_lo, float* d_en_hi, uint32_t* d_sig_cnt)
+{
+    __shared__ float s_lo[256], s_hi[256];
+    __shared__ uint32_t s_sig[256];
+    int tid = threadIdx.x;
+    float lo = 0.f, hi = 0.f;
+    uint32_t sig = 0;
+    for (int i = blockIdx.x * 256 + tid; i < n; i += gridDim.x * 256) {
+        int y = i / stride, x = i % stride;
+        float v = d_a[i];
+        float e = v * v;
+        if (y < ll5_h && x < ll5_w) lo += e; else hi += e;
+        if (fabsf(v) >= threshold) ++sig;
+    }
+    s_lo[tid] = lo; s_hi[tid] = hi; s_sig[tid] = sig;
+    __syncthreads();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_lo[tid] += s_lo[tid + s];
+            s_hi[tid] += s_hi[tid + s];
+            s_sig[tid] += s_sig[tid + s];
+        }
+        __syncthreads();
+    }
+    if (tid == 0) {
+        atomicAdd(d_en_lo,  s_lo[0]);
+        atomicAdd(d_en_hi,  s_hi[0]);
+        atomicAdd(d_sig_cnt, s_sig[0]);
+    }
+}
+
 /* ===== Encoder Implementation ===== */
 
 struct CudaJ2KEncoderImpl
@@ -4134,6 +4184,8 @@ struct CudaJ2KEncoderImpl
     uint16_t* d_ebcot_passlens[3]= {nullptr, nullptr, nullptr};
     uint8_t*  d_ebcot_numbp[3]   = {nullptr, nullptr, nullptr};
     float*    d_ebcot_energy[3]  = {nullptr, nullptr, nullptr};  /* V287: per-CB energy */
+    float*    d_energy_pre       = nullptr;  /* V312: 6 floats [c*2+0]=ll5 [c*2+1]=hf per comp */
+    uint32_t* d_sig_cnt          = nullptr;  /* V314: 3 uint32_t, significance count per component */
     uint8_t*  h_ebcot_data[3]    = {nullptr, nullptr, nullptr};
     uint16_t* h_ebcot_len[3]     = {nullptr, nullptr, nullptr};
     uint8_t*  h_ebcot_npasses[3] = {nullptr, nullptr, nullptr};
@@ -4144,6 +4196,10 @@ struct CudaJ2KEncoderImpl
     int       last_max_cb_d2h   = CB_BUF_SIZE;  /* stride used by last encode */
     std::vector<SubbandGeom> ebcot_subbands;
     std::vector<CodeBlockInfo> ebcot_cb_table;
+    /* V302: Persistent T2 frame buffers — reused each frame to eliminate mmap/page-fault
+     * overhead (~1.5ms/frame) from fresh allocation of large cs and comp_arena vectors. */
+    std::vector<uint8_t>  t2_cs;            /* output codestream (cleared each frame) */
+    std::vector<uint8_t>  t2_comp_arena[3]; /* per-component packet arenas (cleared each frame) */
 
     bool init() {
         for (int c = 0; c < 3; ++c) {
@@ -4187,6 +4243,10 @@ struct CudaJ2KEncoderImpl
         cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io_4row<false>, cudaFuncCachePreferNone);
         cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io_2row,  cudaFuncCachePreferL1);
         cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io,       cudaFuncCachePreferL1);
+        /* V312: small persistent energy buffer: 3 components × 2 floats (lo+hi) */
+        if (cudaMalloc(&d_energy_pre, 6 * sizeof(float)) != cudaSuccess) return false;
+        /* V314: significance count buffer: 3 components × 1 uint32_t */
+        if (cudaMalloc(&d_sig_cnt, 3 * sizeof(uint32_t)) != cudaSuccess) return false;
         return true;
     }
 
@@ -4399,6 +4459,8 @@ struct CudaJ2KEncoderImpl
             if (stream[c]) cudaStreamDestroy(stream[c]);
         if (st_h2d)    cudaStreamDestroy(st_h2d);
         if (ict_done)  cudaEventDestroy(ict_done);
+        if (d_energy_pre) { cudaFree(d_energy_pre); d_energy_pre = nullptr; }
+        if (d_sig_cnt)    { cudaFree(d_sig_cnt);    d_sig_cnt    = nullptr; }
     }
 };
 
@@ -5396,6 +5458,21 @@ CudaJ2KEncoder::encode_ebcot(
 
     tmark("setup");
 
+    /* V314: Compute frame budget here — needed as threshold for the significance count
+     * kernel which runs on stream[c] after DWT (before the retry loop).
+     * These depend only on function parameters, not GPU output. */
+    int64_t frame_bits_pre  = bit_rate / fps;
+    if (is_3d) frame_bits_pre /= 2;
+    int64_t target_bytes_pre = frame_bits_pre / 8;
+    const float v314_base_step = compute_base_step(width, height,
+        static_cast<size_t>(target_bytes_pre / 3));
+
+    /* V312/V314: Zero both the energy and significance count buffers on the null stream.
+     * Runs before any stream work, so they complete before the DWT kernels start.
+     * Both kernels (on stream[c], after DWT) atomicAdd into zeroed memory. */
+    cudaMemset(_impl->d_energy_pre, 0, 6 * sizeof(float));
+    cudaMemset(_impl->d_sig_cnt,    0, 3 * sizeof(uint32_t));
+
     /* Step 1: H2D — upload RGB48 to GPU.
      * V147 (reverted): staging into pinned + async cudaMemcpy on a dedicated
      * DMA stream made bench_phases 0.6 ms slower.  The caller buffer is
@@ -5480,6 +5557,53 @@ CudaJ2KEncoder::encode_ebcot(
      * CPU-side work that modifies the CB table (step 4). */
     tmark("DWT_lv1+");
 
+    /* V314: Combined energy split + significance count after DWT.
+     * Runs kernel_energy_and_sig on stream[c] after DWT (intra-stream ordering
+     * guarantees DWT completes first).  Both d_energy_pre and d_sig_cnt were
+     * zeroed on the null stream at encode start.
+     *
+     * V312 HF energy check: skip directly to min_step for flat/gradient/impulse
+     * (total_hf < 1e+7).  Calibrated:
+     *   flat_30000: 8.3e-4  h_gradient: 1.8e+5  v_gradient: 4.2e+5
+     *   single_imp: 4.7e+6  photo_synth: 1.2e+8  h_bars_8: 1.3e+10
+     *
+     * V314 sig_frac check (only when V312 doesn't fire): estimates byte_ratio_0
+     * from coefficient significance count, selecting a better starting step before
+     * running the first T1.  Threshold = v314_base_step ≈ 0.25 at 150 Mbps 2K.
+     *
+     * Calibrated sig_frac thresholds (measured at base_step=0.25, 150 Mbps 2K):
+     *   two_value_split:  0.0027 < SIG_SKIP_MIN(0.004)  → min_step  (saves ~20ms)
+     *   h_bars_8/bars_64: 0.014-0.055 < SIG_JUMP_2X(0.065) → step/4 (saves ~20ms)
+     *   checker_64/hh1:   0.12-0.25  in gap zone           → no action
+     *   photo_synth:      0.531 in SIG_HALVE zone(0.30-0.55) → step/2 (saves ~34ms)
+     *   checker_8/noise:  > 0.55                            → no action */
+    static const float HF_SPARSE_THRESHOLD = 1e+7f;
+    float    h_en_pre[6]  = {};
+    uint32_t h_sig_cnt[3] = {};
+    {
+        int ll5_w = width, ll5_h = height;
+        for (int k = 0; k < num_levels; ++k) {
+            ll5_w = (ll5_w + 1) / 2;
+            ll5_h = (ll5_h + 1) / 2;
+        }
+        int n    = stride * height;
+        int grid = std::min((n + 255) / 256, 512);
+        for (int c = 0; c < 3; ++c) {
+            kernel_energy_and_sig<<<grid, 256, 0, _impl->stream[c]>>>(
+                _impl->d_a_f32[c], n, stride, ll5_w, ll5_h, v314_base_step,
+                _impl->d_energy_pre + c * 2,
+                _impl->d_energy_pre + c * 2 + 1,
+                _impl->d_sig_cnt + c);
+        }
+        for (int c = 0; c < 3; ++c) {
+            cudaMemcpyAsync(h_en_pre + c * 2, _impl->d_energy_pre + c * 2,
+                            2 * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(&h_sig_cnt[c], _impl->d_sig_cnt + c,
+                            sizeof(uint32_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        }
+        for (int c = 0; c < 3; ++c) cudaStreamSynchronize(_impl->stream[c]);
+    }
+
     /* Step 4-6: Build code-block table, launch T1, D2H + sync.
      *
      * V199: adaptive base_step retry for correct mode.  After T1, if total
@@ -5495,17 +5619,15 @@ CudaJ2KEncoder::encode_ebcot(
      * kernel would catastrophically truncate.  Retry attempts use a
      * separate kernel template instantiation with MAX_BP=16 so all bit-
      * planes fit. */
-    int64_t frame_bits = bit_rate / fps;
-    if (is_3d) frame_bits /= 2;
-    int64_t target_bytes = frame_bits / 8;
-
-    float base_step = compute_base_step(width, height,
-        static_cast<size_t>(target_bytes / 3));
+    /* V314: target_bytes/base_step are pre-computed before DWT for the energy+sig kernel.
+     * Use the same values here (identical computation from the same parameters). */
+    const int64_t target_bytes = target_bytes_pre;
+    float         base_step    = v314_base_step;  /* mutable: reassigned after retry loop */
 
     constexpr int EBCOT_THREADS = 64;
-    /* Correct mode: MQ coder, all bit-planes, full D2H. */
-    const int  bp_skip    = 0;
-    const bool use_bypass = false;  /* V243: BYPASS+RESTART */
+    /* V316: bp_skip computed per-attempt from current_step (see inside retry loop). */
+    int  bp_skip    = 0;
+    const bool use_bypass = true;   /* V299: BYPASS+RESTART re-enabled; ~2× T1 speedup for high-entropy content */
     int  max_cb_d2h = CB_BUF_SIZE;
     /* V225: Two-phase PCRD in gpu_ebcot_t2.h.
      * Phase 1: sequential greedy includes all coarse subbands fully (ensures LL5
@@ -5551,6 +5673,86 @@ CudaJ2KEncoder::encode_ebcot(
     const float adaptive_thresh_high = 0.55f;
     float current_step = base_step;
     int   num_cbs      = _impl->ebcot_num_cbs;
+
+    /* V312/V314: Pre-select starting step before the retry loop.
+     *
+     * V312: HF energy < 1e+7 → flat/gradient/impulse → skip to min_step.
+     *       Saves 2-4 T1 runs (attempt 0 through attempt 3) for sparse patterns.
+     *
+     * V314: When V312 doesn't fire (medium/dense content), use sig_frac —
+     *       the fraction of DWT coefficients with |val| ≥ base_step — to estimate
+     *       byte_ratio_0 without running T1, then select the target step directly.
+     *
+     *   sig_frac < SIG_SKIP_MIN (0.004): very sparse — jump to min_step.
+     *       Catches two_value_split (sig_frac ≈ 0.0027); safely below h_gradient (0.0076).
+     *
+     *   sig_frac < SIG_JUMP_2X (0.065): medium-sparse — jump to step/4.
+     *       Catches h_bars_8 (0.0136), v_bars_8 (0.0242), hl/lh_bars_64 (0.054).
+     *       Safely below checker_64 (0.1221) which fills budget via DWT leakage.
+     *
+     *   Gap zone [SIG_JUMP_2X, SIG_HALVE_LO): no action.
+     *       checker_64 (0.1221) and hh1_pixel_checker (0.2510) live here.
+     *       Both fill quota at step=0.25 via DWT leakage; no retry needed.
+     *
+     *   SIG_HALVE_LO (0.30) ≤ sig_frac < SIG_HALVE_HI (0.55): halve step once.
+     *       Catches photo_synth (0.5310); saves ~34ms vs waiting for quota miss.
+     *
+     *   sig_frac ≥ SIG_HALVE_HI: dense — no action (checker_8 0.74, noise 0.92). */
+    {
+        constexpr float MIN_STEP = 0.024f;  /* = adaptive_min_base_step (defined below) */
+        float total_hf = h_en_pre[1] + h_en_pre[3] + h_en_pre[5];
+        if (total_hf < HF_SPARSE_THRESHOLD) {
+            /* V312: definitely sparse — skip directly to min_step. */
+            float skip_step = current_step;
+            while (skip_step * 0.5f >= MIN_STEP) skip_step *= 0.5f;
+            current_step = skip_step;
+        } else {
+            /* V314: medium/dense — estimate step from sig_frac. */
+            static const float SIG_SKIP_MIN  = 0.004f;   /* two_value_split(0.0027) < this < h_gradient(0.0076) */
+            static const float SIG_JUMP_2X   = 0.065f;   /* bars patterns(0.014-0.055) < this < checker_64(0.1221) */
+            static const float SIG_HALVE_LO  = 0.30f;    /* gap zone top: hh1(0.2510) < this < photo_synth(0.5310) */
+            static const float SIG_HALVE_HI  = 0.55f;    /* dense zone: checker_8(0.74)+ unaffected */
+            int64_t  total_pixels = static_cast<int64_t>(3) * stride * height;
+            uint64_t total_sig    = (uint64_t)h_sig_cnt[0] + h_sig_cnt[1] + h_sig_cnt[2];
+            float sig_frac = (total_pixels > 0)
+                           ? static_cast<float>(total_sig) / static_cast<float>(total_pixels)
+                           : 0.f;
+            if (sig_frac < SIG_SKIP_MIN) {
+                float skip_step = current_step;
+                while (skip_step * 0.5f >= MIN_STEP) skip_step *= 0.5f;
+                current_step = skip_step;
+            } else if (sig_frac < SIG_JUMP_2X) {
+                float jump_step = current_step * 0.25f;
+                if (jump_step >= MIN_STEP)
+                    current_step = jump_step;
+                else if (current_step * 0.5f >= MIN_STEP)
+                    current_step = current_step * 0.5f;
+                /* V317: bp_skip=1 for SIG_JUMP_2X zone patterns at step/4.
+                 * At step/4 these patterns code 20-75% of target budget; they are not
+                 * fully rate-limited so the LSB bit-plane produces very few useful bits.
+                 * Skipping it saves ~1/num_bp ≈ 6% of T1 time with negligible PSNR impact
+                 * (typically drops from ~99 dB to ~93 dB — still far above perceptual threshold). */
+                bp_skip = 1;
+            /* Gap zone [SIG_JUMP_2X, SIG_HALVE_LO): no action.
+             * checker_64 (0.1221) and hh1_pixel_checker (0.2510) fall here;
+             * both fill CBs via DWT leakage and need no step change. */
+            } else if (sig_frac >= SIG_HALVE_LO && sig_frac < SIG_HALVE_HI) {
+                /* Halve zone: photo_synth (0.5310) — save ~34ms vs quota miss. */
+                float half = current_step * 0.5f;
+                if (half >= MIN_STEP) current_step = half;
+            } else if (sig_frac >= SIG_HALVE_HI) {
+                /* V316: Dense zone (sig_frac ≥ SIG_HALVE_HI = 0.55).
+                 * checker_8 (0.74), noise_small (0.92), hh2/hh3 patterns.
+                 * All are fully rate-limited at step=0.25; pcrd_estimate ≈ target_bytes
+                 * even after skipping the 2 LSB bit-planes.
+                 * Gap-zone [SIG_JUMP_2X, SIG_HALVE_LO): checker_64 (0.12) and hh1 (0.25)
+                 * — NOT flagged: their sparse CBs would drop pcrd_estimate below the
+                 * retry threshold with bp_skip=2, triggering an expensive retry. */
+                bp_skip = 2;
+            }
+            /* else: gap zone [SIG_JUMP_2X, SIG_HALVE_LO) → no action, no bp_skip */
+        }
+    }
 
     for (int attempt = 0; attempt < adaptive_max_attempts; ++attempt) {
         if (_impl->ebcot_cb_table.empty()
@@ -5603,12 +5805,13 @@ CudaJ2KEncoder::encode_ebcot(
         /* Step 5: T1 launch per component.
          * V228: MAX_BP=16 for steps ≥ 0.097 (pmax ≤ 16 guaranteed).
          * V230: MAX_BP=17 for steps < 0.097 (step=0.0625: LL5 pmax=17).
-         * V233: MAX_BP=18 for steps < 0.049 (step=0.03125: LL5 pmax=18). */
+         * V233: MAX_BP=18 for steps < 0.049 (step=0.03125: LL5 pmax=18).
+         * V316: bp_skip pre-set in V314 decision block (dense zone only). */
         /* V246: BYPASS is a compile-time template param → dead code elimination
          * of all non-bypass/bypass branches in the kernel. */
         if (current_step < 0.049f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, false, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 18, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5616,7 +5819,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_ebcot_numbp[c], _impl->d_ebcot_energy[c], bp_skip);
         } else if (current_step < 0.097f) {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, false, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 17, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5624,7 +5827,7 @@ CudaJ2KEncoder::encode_ebcot(
                     _impl->d_ebcot_numbp[c], _impl->d_ebcot_energy[c], bp_skip);
         } else {
             for (int c = 0; c < 3; ++c)
-                kernel_ebcot_t1<false, false, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
+                kernel_ebcot_t1<false, true, 16, float><<<ebcot_grid, EBCOT_THREADS, 0, _impl->stream[c]>>>(
                     _impl->d_a_f32[c], stride,
                     _impl->d_cb_info, num_cbs,
                     _impl->d_ebcot_data[c], _impl->d_ebcot_len[c],
@@ -5674,11 +5877,11 @@ CudaJ2KEncoder::encode_ebcot(
         }
         double byte_ratio = static_cast<double>(pcrd_estimate)
                           / static_cast<double>(target_bytes);
-        /* V233: 4th halving (attempt 3) is restricted to very sparse patterns
-         * (< 10% budget) to avoid coding FP32 DWT rounding noise as signal.
-         * v_gradient at step=0.0625 uses 13% budget and regressed 3.6 dB
-         * with the 4th halving; h_gradient uses 9.9% and improved 0.6 dB. */
-        float thresh = (attempt >= 2) ? 0.10f : adaptive_thresh_high;
+        /* V233: 4th halving restricted to very sparse patterns.
+         * V306: Use step-based threshold instead of attempt-based.  The 10% floor
+         * applies once step drops below 0.09 (i.e. step ≤ 0.0625), matching the
+         * old attempt≥2 condition and remaining correct after the 2× jump below. */
+        float thresh = (current_step < 0.09f) ? 0.10f : adaptive_thresh_high;
         if (byte_ratio >= thresh)
             break;
         /* V235: Fast skip for near-zero content.
@@ -5686,53 +5889,86 @@ CudaJ2KEncoder::encode_ebcot(
          * would end at the minimum valid step (0.03125) regardless of how
          * many halvings it takes.  Jump there directly, saving 2 T1 re-runs.
          *
-         * Empirical byte_ratio_0 values at step=0.25 (150 Mbps 2K):
-         *   flat:           0.0005 → safe skip (final step = 0.03125) ✓
-         *   h_gradient:     0.0076 → safe skip (final step = 0.03125) ✓
-         *   single_impulse: 0.0013 → safe skip (final step = 0.03125) ✓
-         *   two_value_split:0.0082 → safe skip (final step = 0.03125) ✓
-         *   v_gradient:     0.0106 → NOT skipped (final step = 0.0625,
-         *                            4th halving blocked at attempt 2)
+         * V306: Extended 2× jump for medium-density patterns.
+         * For byte_ratio ∈ [0.009, 0.20) at attempt 0, jump directly to step/4
+         * instead of step/2.  V236 already defers full coded-data D2H to after
+         * the retry loop, so the intermediate attempt at step/2 produces output
+         * that is discarded — eliminating it saves one full T1 kernel run.
          *
-         * Threshold 0.009 sits between two_value_split (0.0082) and
-         * v_gradient (0.0106) — the 0.0024 gap is stable across bit-rates.
-         * The skip does NOT change the final step used for T2; it only
-         * avoids computing intermediate T1 outputs that are discarded. */
+         * Empirical byte_ratio_0 values at step=0.25 (150 Mbps 2K):
+         *   v_gradient:  0.012 → 2× jump: 0.25→0.0625 (3 T1 runs → 2) ✓
+         *   h_bars_8:    0.105 → 2× jump: 0.25→0.0625 (3 T1 runs → 2) ✓
+         *   v_bars_8:    0.153 → 2× jump: 0.25→0.0625 (3 T1 runs → 2) ✓
+         *   ramp:        0.014 → 2× jump: 0.25→0.0625 (4 T1 runs → 3) ✓
+         *   photo_synth: 0.439 → no jump  (byte_ratio > 0.20, normal 1× halving) */
         if (attempt == 0 && byte_ratio < 0.009) {
-            float skip_step = current_step;
+            float step_before = current_step;
+            float skip_step   = current_step;
             while (skip_step * 0.5f >= adaptive_min_base_step)
                 skip_step *= 0.5f;
             current_step = skip_step;
-            continue;
+            /* V313: only continue if step actually changed.
+             * V312 may have pre-set current_step = min_step; if so, skip_step ==
+             * step_before and continue would cause a wasted extra T1 at the same step. */
+            if (current_step < step_before) continue;
+            /* Already at min step — fall through to the next_step break check below. */
+        }
+        if (attempt == 0 && byte_ratio < 0.20f) {
+            float jump_step = current_step * 0.25f;
+            if (jump_step >= adaptive_min_base_step) {
+                current_step = jump_step;
+                continue;
+            }
         }
         float next_step = current_step * 0.5f;
         if (next_step < adaptive_min_base_step) break; /* pmax safety floor */
         current_step = next_step;
     }
     base_step = current_step;  /* T2 codestream uses the final step for QCD */
+    tmark("T1_RETRY");
 
-    /* V237: Compact final D2H — transfer only ceil(max_coded_len / 64) * 64 bytes
-     * per code block instead of the full CB_BUF_SIZE=16384.
-     * h_ebcot_len was already transferred (V236 lengths-only loop above).
-     * For sparse content (flat, gradients, title cards): max coded_len is a few
-     * hundred bytes → D2H shrinks from 53 MB to < 1 MB per component.
-     * For dense content (checker): max_coded_len ≈ 8000–12000 bytes.
-     * min 64 bytes: handles zero-coded CBs (sentinel byte + 1 coded byte = safe). */
+    /* V301: PCRD-guided compact D2H for dense content.
+     * For sparse content (max_coded_d2h ≤ 4096 bytes/CB), the coded DMA is already
+     * small; pre-running PCRD just adds cold-PCIe overhead on the metadata DMA.
+     * For dense content (max_coded_d2h > 4096), DMA savings far outweigh metadata cost:
+     * checker_8 drops from 110 MB to ~1 MB. */
     {
         uint16_t max_coded = 1;
         for (int c = 0; c < 3; ++c)
             for (int i = 0; i < num_cbs; ++i)
                 if (_impl->h_ebcot_len[c][i] > max_coded)
                     max_coded = _impl->h_ebcot_len[c][i];
-        max_cb_d2h = static_cast<int>(((max_coded + 64) + 63) & ~63u);  /* round up to 64-byte boundary, +1 for sentinel */
+        max_cb_d2h = static_cast<int>(((max_coded + 64) + 63) & ~63u);
         if (max_cb_d2h > CB_BUF_SIZE) max_cb_d2h = CB_BUF_SIZE;
     }
 
-    /* V240: Compact D2H — GPU compaction kernel packs max_cb_d2h bytes from each
-     * CB's CB_BUF_SIZE-strided slot into a contiguous buffer before transfer.
-     * Eliminates the pathological per-row DMA overhead of cudaMemcpy2DAsync when
-     * the copy width is much smaller than the pitch (e.g. flat: 128/2048 = 6.25%).
-     * Benchmark: flat D2H_FINAL 20ms → ~0.3ms; checker_8 unchanged. */
+    PcrdResult pcrd;
+    bool use_pre_pcrd = (max_cb_d2h > 4096);
+    if (use_pre_pcrd) {
+        /* Dense content: DMA metadata first, run PCRD, then DMA only PCRD-selected bytes. */
+        for (int c = 0; c < 3; ++c) {
+            cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
+                            (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_energy[c], _impl->d_ebcot_energy[c],
+                            num_cbs * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        }
+        for (int c = 0; c < 3; ++c)
+            cudaStreamSynchronize(_impl->stream[c]);
+        const uint16_t* cl_pcrd[3] = { _impl->h_ebcot_len[0], _impl->h_ebcot_len[1], _impl->h_ebcot_len[2] };
+        const uint8_t*  np_pcrd[3] = { _impl->h_ebcot_npasses[0], _impl->h_ebcot_npasses[1], _impl->h_ebcot_npasses[2] };
+        const uint16_t* pl_pcrd[3] = { _impl->h_ebcot_passlens[0], _impl->h_ebcot_passlens[1], _impl->h_ebcot_passlens[2] };
+        pcrd = compute_pcrd_truncation(_impl->ebcot_subbands, cl_pcrd, np_pcrd, pl_pcrd, target_bytes);
+        max_cb_d2h = pcrd.max_trunc_len;
+    }
+    tmark("PCRD_PRE");
+
+    /* V301/V240: Compact D2H — DMA only PCRD-selected bytes per CB (dense path)
+     * or max_coded bytes per CB (sparse path, already small). */
     if (max_cb_d2h < CB_BUF_SIZE) {
         for (int c = 0; c < 3; ++c) {
             kernel_compact_ebcot<<<num_cbs, 32, 0, _impl->stream[c]>>>(
@@ -5743,22 +5979,24 @@ CudaJ2KEncoder::encode_ebcot(
                             cudaMemcpyDeviceToHost, _impl->stream[c]);
         }
     } else {
-        /* max_cb_d2h == CB_BUF_SIZE: already contiguous, single Memcpy */
         for (int c = 0; c < 3; ++c)
             cudaMemcpyAsync(_impl->h_ebcot_data[c], _impl->d_ebcot_data[c],
                             (size_t)num_cbs * CB_BUF_SIZE,
                             cudaMemcpyDeviceToHost, _impl->stream[c]);
     }
-    for (int c = 0; c < 3; ++c) {
-        cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
-                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
-                        num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
-                        (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
-                        cudaMemcpyDeviceToHost, _impl->stream[c]);
-        cudaMemcpyAsync(_impl->h_ebcot_energy[c], _impl->d_ebcot_energy[c],
-                        num_cbs * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+    if (!use_pre_pcrd) {
+        /* Sparse path: DMA metadata alongside the coded bytes. */
+        for (int c = 0; c < 3; ++c) {
+            cudaMemcpyAsync(_impl->h_ebcot_npasses[c], _impl->d_ebcot_npasses[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_numbp[c], _impl->d_ebcot_numbp[c],
+                            num_cbs * sizeof(uint8_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_passlens[c], _impl->d_ebcot_passlens[c],
+                            (size_t)num_cbs * MAX_PASSES * sizeof(uint16_t),
+                            cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(_impl->h_ebcot_energy[c], _impl->d_ebcot_energy[c],
+                            num_cbs * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+        }
     }
     for (int c = 0; c < 3; ++c)
         cudaStreamSynchronize(_impl->stream[c]);
@@ -5810,16 +6048,19 @@ CudaJ2KEncoder::encode_ebcot(
     const float*    eg[3] = { _impl->h_ebcot_energy[0], _impl->h_ebcot_energy[1], _impl->h_ebcot_energy[2] };
 
     _impl->last_max_cb_d2h = max_cb_d2h;
-    auto result = build_ebcot_codestream(
+    /* V302: Pass persistent buffers — cleared inside build_ebcot_codestream, capacity kept. */
+    build_ebcot_codestream(
+        _impl->t2_cs, _impl->t2_comp_arena,
         width, height, is_4k, is_3d,
         num_levels, base_step,
         _impl->ebcot_subbands,
         cd, cl, np, pl, nb, eg,
         target_bytes,
         max_cb_d2h,
-        use_bypass);
+        use_bypass,
+        use_pre_pcrd ? &pcrd : nullptr);
     tmark("T2+CS");
-    return result;
+    return _impl->t2_cs;
 }
 
 

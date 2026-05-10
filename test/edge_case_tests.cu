@@ -108,7 +108,10 @@ static J2KInfo parse_j2k(const std::vector<uint8_t>& data)
             ++r.num_tiles;
         } else if (m == 0x93) { /* SOD */
             r.has_sod = true;
-            /* Don't break; multiple SOT/SOD for multi-tile */
+            /* Stop scanning: tile bitstream follows SOD and may contain any byte
+             * values (BYPASS segments are not marker-free). Scanning further would
+             * risk confusing raw coded bytes with J2K markers. */
+            break;
         }
 
         /* Skip marker body */

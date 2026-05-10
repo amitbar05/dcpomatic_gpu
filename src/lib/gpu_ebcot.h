@@ -669,7 +669,7 @@ __device__ __forceinline__ float dwt_load<float>(const float* p) { return __ldg(
  * register pressure and enabling better ILP.  Previously use_bypass was a
  * runtime bool parameter; now BYPASS is a template constant. */
 template<bool FAST4, bool BYPASS = false, int MAX_BP = (FAST4 ? 4 : 10), typename DWT_T = float>
-__global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
+__global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
     const DWT_T* __restrict__ d_dwt,    /* DWT output coefficients (d_a[c]) */
     int dwt_stride,                      /* row stride of DWT array (= image width) */
     const CodeBlockInfo* __restrict__ d_cb_info,  /* code-block metadata */
@@ -725,18 +725,42 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
 
     float inv_step = __frcp_rn(cbi.quant_step);  /* fast reciprocal */
 
-    /* Pass 1: compute sign_bits[], max_mag, energy_sum (for PCRD) */
+    /* V311: mag_bp_flat uses absolute bit-position indexing (bp=0=LSB).
+     * Declared here (before the combined pass) so the single d_dwt scan can populate it.
+     * V315: CHUNK_BP = MAX_BP (template param) instead of MAX_BPLANES (18).
+     *   num_bp is capped to MAX_BP (line below), so one chunk always covers all bit-planes.
+     *   Reduces LMEM from 3104 → 2848 bytes for MAX_BP=16 (step ≥ 0.097), saving
+     *   2×32×4=256 bytes.  MAX_BP=17/18 variants save 128/0 bytes respectively. */
+    constexpr int CHUNK_BP = MAX_BP;
+    uint32_t mag_bp_flat[CHUNK_BP * CB_DIM];
+
+    /* V311: Combined pass — zero-init mag_bp_flat, then single d_dwt scan to
+     * compute sign_bits[], max_mag, energy_sum, AND populate mag_bp_flat[bp][c]
+     * (absolute bit-position indexing, bp=0=LSB). Eliminates the separate chunk
+     * scan (Pass 2), halving d_dwt DRAM reads. The coding loop reads
+     * mag_bp_flat[bp * CB_DIM + c] where bp = chunk_top - ci (same absolute value). */
+    for (int bp = 0; bp < MAX_BP; bp++)
+        for (int c = 0; c < CB_DIM; c++)
+            mag_bp_flat[bp * CB_DIM + c] = 0;
+
     int max_mag = 0;
     float energy_sum = 0.0f;
     for (int r = 0; r < cbh; r++) {
         uint32_t sb = 0;
+        uint32_t rmask = 1u << r;
         const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
         for (int c = 0; c < cbw; c++) {
             float val = dwt_load(row_ptr + c);
-            int q = __float2int_rd(fabsf(val) * inv_step)  /* V211 */;
+            int q = __float2int_rd(fabsf(val) * inv_step);
             if (val < 0.0f) sb |= (1u << c);
-            max_mag |= q;  /* bitwise OR — captures all bits for num_bp */
-            energy_sum += val * val;  /* V287: per-CB energy for PCRD distortion model */
+            max_mag |= q;
+            energy_sum += val * val;
+            if (q != 0) {
+                for (int bp = 0; bp < MAX_BP; bp++) {
+                    if ((q >> bp) & 1)
+                        mag_bp_flat[bp * CB_DIM + c] |= rmask;
+                }
+            }
         }
         sign_bits[r] = sb;
     }
@@ -758,33 +782,6 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
         return;
     }
 
-    /* V176: Unified pre-build path for both FAST4=true and FAST4=false.
-     * Build mag_bp_flat[MAX_BP * CB_DIM] in one d_dwt scan (eliminates per-bp d_dwt
-     * re-reads of the V171/FAST4=false approach). Both modes use the same pre-built
-     * array indexed by bp_idx in the coding passes.
-     * FAST4=true: MAX_BP=4 → 512 bytes; FAST4=false: MAX_BP=7 → 896 bytes.
-     * Benchmark shows FAST4=true (pre-build) is 2.5× faster than FAST4=false (per-bp
-     * recompute) at equal bit-plane count — the speed gain is from the single d_dwt scan
-     * and bp_idx-indexed array access, not from bit-plane count reduction. */
-    uint32_t mag_bp_flat[MAX_BP * CB_DIM];
-
-    /* V176: Pre-build all bit-planes in one d_dwt scan (unified for both modes). */
-    for (int bp_idx = 0; bp_idx < num_bp; bp_idx++)
-        for (int c = 0; c < cbw; c++)
-            mag_bp_flat[bp_idx * CB_DIM + c] = 0;
-    for (int r = 0; r < cbh; r++) {
-        uint32_t rmask = 1u << r;
-        const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
-        for (int c = 0; c < cbw; c++) {
-            int q = __float2int_rd(fabsf(dwt_load(row_ptr + c)) * inv_step)  /* V211 */;
-            if (q == 0) continue;
-            for (int bp_idx = 0; bp_idx < num_bp; bp_idx++) {
-                if ((q >> (num_bp - 1 - bp_idx)) & 1)
-                    mag_bp_flat[bp_idx * CB_DIM + c] |= rmask;
-            }
-        }
-    }
-
     /* 3. Initialize MQ coder */
     uint8_t* out_buf = d_coded_data + (size_t)cb_idx * CB_BUF_SIZE;
     out_buf[0] = 0;  /* sentinel for MQ byte stuffing */
@@ -795,7 +792,7 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
     int total_passes = 0;
     uint16_t* pass_lens = d_pass_lengths + (size_t)cb_idx * MAX_PASSES;
 
-    /* 4. Bit-plane coding loop.
+    /* 4. Bit-plane coding loop — chunked.
      * Per JPEG2000 standard: first bit-plane has only cleanup pass (CUP).
      * Subsequent bit-planes: SPP → MRP → CUP.
      *
@@ -810,304 +807,306 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      * Padded sigma convention: real row r -> sigma_pad[r+1], real col c -> bit (c+1).
      * Macro SIGP(sigma_pad, r, c) reads significance without bounds checks. */
 
-    /* V176: col_mag_arr eliminated — all passes use mag_bp_flat[bp_idx * CB_DIM + c]. */
-
-    /* Track whether any coefficient is significant yet (for early pass skipping) */
     int any_significant = 0;
 
-    /* V156: cap bp_skip so we always code at least 1 bit-plane.
-     * V143 failure root cause: when num_bp=1 and bp_skip=1, effective_num_bp=0
-     * produced an inconsistent codestream (z=pmax but np>0) that OpenJPEG rejected.
-     * Guard: actual_bp_skip = min(bp_skip, num_bp - 1) → effective_num_bp >= 1. */
+    /* V156: cap bp_skip so we always code at least 1 bit-plane. */
     int actual_bp_skip = (bp_skip > 0) ? (bp_skip < num_bp ? bp_skip : num_bp - 1) : 0;
 
-    for (int bp = num_bp - 1; bp >= 0; bp--) {
-        /* V222: CB buffer overflow guard. Leave 768 bytes headroom for the final
-         * bitplane (SPP+MRP+CUP+flush ≤ 700 bytes).  With CB_BUF_SIZE=16384 this
-         * allows up to 15616 bytes, enough for 13 bitplanes × ~700 bytes/bp. */
-        if (static_cast<int>(mq.bp - mq.start) >= CB_BUF_SIZE - 768) break;
-        bool first_bp = (bp == num_bp - 1);
-        /* V172: bp_idx for FAST4 mag_bp_flat indexing (MSB plane = bp_idx 0) */
-        const int bp_idx = num_bp - 1 - bp;
+    for (int chunk_top = num_bp - 1; chunk_top >= 0; chunk_top -= CHUNK_BP) {
+        /* Build mag_bp_flat for bit-planes [chunk_top .. chunk_bot] (MSB to LSB). */
+        int chunk_bot = chunk_top - CHUNK_BP + 1;
+        if (chunk_bot < 0) chunk_bot = 0;
+        int chunk_size = chunk_top - chunk_bot + 1;
 
-        /* V243: BYPASS flag — J2K Part 1 C.3.8, verified against OpenJPEG t1.c line 2103:
-         *   type = ((bpno_plus_one <= numbps-4) && (passtype < 2) && LAZY) ? RAW : MQ
-         * passtype 0=SPP, 1=MRP are bypassed; passtype 2=CUP is ALWAYS MQ.
-         * Bypass starts at the 5th bit-plane from MSB (bp < num_bp-4).
-         * First 10 passes (1+3+3+3) are all MQ; then alternating bypass(SPP+MRP) + MQ(CUP). */
-        bool bp_bypass = (BYPASS && bp < num_bp - 4);
+        /* Process passes for each bit-plane in this chunk (MSB first).
+         * V311: mag_bp_flat already built in combined pass above (absolute bp indexing). */
+        for (int ci = 0; ci < chunk_size; ci++) {
+            int bp = chunk_top - ci;
 
-        for (int r2 = 0; r2 < CB_DIM; r2++) coded_bits[r2] = 0;
+            /* V222: CB buffer overflow guard. */
+            if (static_cast<int>(mq.bp - mq.start) >= CB_BUF_SIZE - 768) goto t1_done;
+            bool first_bp = (bp == num_bp - 1);
 
-        /* --- Significance Propagation Pass (SPP) — skip for first bit-plane --- */
-        if (!first_bp) {
-        if (bp_bypass) {
-            /* V245: Bypass SPP — raw significance + raw sign bits.
-             * ISO 15444-1 C.3.8: in bypass mode the sign is encoded as the raw
-             * actual_sign bit (no XOR with sign prediction).  OpenJPEG's
-             * dec_sigpass_raw reads it directly without any XOR.  Using XOR here
-             * (V247 attempt) caused gradient patterns to regress from 88→41 dB. */
-            BypassCoder bc;
-            bc.bp = mq.bp + 1;  bc.accum = 0;  bc.cnt = 0;
-            if (any_significant) {
-            for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
-                int stripe_end = min(stripe_y + STRIPE_H, cbh);
-                int stripe_len = stripe_end - stripe_y;
-                /* V245: all-significant column skip (same optimisation as MQ SPP V159). */
-                uint64_t spp_all_sig = sigma_pad[stripe_y + 1] & sigma_pad[stripe_y + 2]
-                                     & sigma_pad[stripe_y + 3] & sigma_pad[stripe_y + 4];
-                uint32_t spp_sig[STRIPE_H] = {0, 0, 0, 0};
-                for (int ri = 0; ri < stripe_len; ri++)
-                    spp_sig[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1);
-                for (int c = 0; c < cbw; c++) {
-                    uint64_t cmask_pad = 1ull << (c + 1);
-                    uint32_t cmask = 1u << c;
-                    if (spp_all_sig & cmask_pad) continue;  /* all rows significant */
-                    uint32_t col_mag = mag_bp_flat[bp_idx * CB_DIM + c];
-                    for (int r = stripe_y; r < stripe_end; r++) {
-                        if (spp_sig[r - stripe_y] & cmask) continue;
-                        if (!has_sig_neighbor(sigma_pad, r, c)) continue;
-                        int bit = (col_mag >> r) & 1;
-                        if (bit) {
-                            int sign = (sign_bits[r] >> c) & 1;
-                            bypass_write_bits(&bc, (uint8_t)((2u | (unsigned)sign)), 2); /* sig=1, raw sign */
-                            sigma_pad[r + 1] |= cmask_pad;
-                            any_significant = 1;
-                        } else {
-                            bypass_write(&bc, 0);
-                        }
-                        coded_bits[r] |= cmask;
-                    }
-                }
-            }
-            }
-            bypass_flush(&bc);
-            mq.bp = bc.bp - 1;
-        } else {
-            /* MQ SPP */
-            if (any_significant) {
-            for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
-                int stripe_end = min(stripe_y + STRIPE_H, cbh);
-                int stripe_len = stripe_end - stripe_y;
+            /* V243: BYPASS flag — J2K Part 1 C.3.8, verified against OpenJPEG t1.c line 2103:
+             *   type = ((bpno_plus_one <= numbps-4) && (passtype < 2) && LAZY) ? RAW : MQ
+             * passtype 0=SPP, 1=MRP are bypassed; passtype 2=CUP is ALWAYS MQ.
+             * Bypass starts at the 5th bit-plane from MSB (bp < num_bp-4).
+             * First 10 passes (1+3+3+3) are all MQ; then alternating bypass(SPP+MRP) + MQ(CUP). */
+            bool bp_bypass = (BYPASS && bp < num_bp - 4);
 
-                /* V159: SPP fast-skip: AND of all stripe rows — bit set = all 4 rows are significant. */
-                uint64_t spp_all_sig = sigma_pad[stripe_y + 1] & sigma_pad[stripe_y + 2]
-                                     & sigma_pad[stripe_y + 3] & sigma_pad[stripe_y + 4];
+            for (int r2 = 0; r2 < CB_DIM; r2++) coded_bits[r2] = 0;
 
-                /* V160: Per-row significance mask for row-level SPP skip. */
-                uint32_t spp_sig[STRIPE_H] = {0, 0, 0, 0};
-                for (int ri = 0; ri < stripe_len; ri++)
-                    spp_sig[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1);
-
-                for (int c = 0; c < cbw; c++) {
-                    uint64_t cmask_pad = 1ull << (c + 1);
-                    uint32_t cmask = 1u << c;
-                    if (spp_all_sig & cmask_pad) continue;
-                    uint32_t col_mag = mag_bp_flat[bp_idx * CB_DIM + c];
-                    for (int r = stripe_y; r < stripe_end; r++) {
-                        if (spp_sig[r - stripe_y] & cmask) continue;
-                        /* V168: fused neighbor-check + ZC context — halves sigma_pad LMEM reads */
-                        int zc = t1_zc_if_neighbor(sigma_pad, r, c, cbi.subband_type);
-                        if (zc < 0) continue;
-
-                        int bit = (col_mag >> r) & 1;
-                        mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
-
-                        if (bit) {
-                            sigma_pad[r + 1] |= cmask_pad;
-                            int sc_ctx, xor_bit;
-                            t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
-                            mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
-                        }
-                        coded_bits[r] |= cmask;
-                    }
-                }
-            }
-            } /* end any_significant */
-            if (BYPASS) mq_flush(&mq);
-        } /* end MQ SPP */
-        pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
-        if (!bp_bypass && BYPASS) mq_restart(&mq, mq.bp + 1);
-        } /* end SPP */
-
-        /* --- Magnitude Refinement Pass (MRP) --- */
-        if (!first_bp) {
-        if (any_significant) {
-        if (bp_bypass) {
-            /* V165: Bypass MRP — write raw refinement bits directly. No MQ, no context. */
-            BypassCoder bc;
-            bc.bp = mq.bp + 1;  bc.accum = 0;  bc.cnt = 0;
-            for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
-                int stripe_end = min(stripe_y + STRIPE_H, cbh);
-                int stripe_len_mrp = stripe_end - stripe_y;
-                uint32_t mrp_proc[STRIPE_H] = {0, 0, 0, 0};
-                for (int ri = 0; ri < stripe_len_mrp; ri++)
-                    mrp_proc[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1) & ~coded_bits[stripe_y + ri];
-                /* V245: bit-scan over active MRP columns; pack row-bits per column
-                 * into bypass_write_bits to replace up to STRIPE_H individual writes
-                 * with one fused call (1–4 bits per column per stripe). */
-                uint32_t mrp_active = mrp_proc[0] | mrp_proc[1]
-                                    | mrp_proc[2] | mrp_proc[3];
-                while (mrp_active) {
-                    int c = __ffs(mrp_active) - 1;
-                    mrp_active &= mrp_active - 1u;
-                    uint32_t cmask = 1u << c;
-                    uint32_t col_mag = mag_bp_flat[bp_idx * CB_DIM + c];
-                    /* Gather bits for this column's active rows MSB-first,
-                     * then emit in one bypass_write_bits call. */
-                    uint8_t bits = 0; int nbits = 0;
-                    for (int r = stripe_y; r < stripe_end; r++) {
-                        if (!(mrp_proc[r - stripe_y] & cmask)) continue;
-                        bits = static_cast<uint8_t>((bits << 1) | ((col_mag >> r) & 1));
-                        firstref_bits[r] &= ~(1u << c);
-                        nbits++;
-                    }
-                    bypass_write_bits(&bc, bits, nbits);
-                }
-            }
-            bypass_flush(&bc);
-            mq.bp = bc.bp - 1;  /* advance mq.bp to last written byte */
-        } else {
-            /* MQ MRP */
-            for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
-                int stripe_end = min(stripe_y + STRIPE_H, cbh);
-                int stripe_len_mrp = stripe_end - stripe_y;
-
-                /* V160: Precompute per-row "should process" mask for MRP. */
-                uint32_t mrp_proc[STRIPE_H] = {0, 0, 0, 0};
-                for (int ri = 0; ri < stripe_len_mrp; ri++)
-                    mrp_proc[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1) & ~coded_bits[stripe_y + ri];
-                uint32_t mrp_colmask = mrp_proc[0] | mrp_proc[1] | mrp_proc[2] | mrp_proc[3];
-
-                for (int c = 0; c < cbw; c++) {
-                    uint32_t cmask = 1u << c;
-                    if (!(mrp_colmask & cmask)) continue;
-                    uint32_t col_mag = mag_bp_flat[bp_idx * CB_DIM + c];
-                    for (int r = stripe_y; r < stripe_end; r++) {
-                        if (!(mrp_proc[r - stripe_y] & cmask)) continue;
-                        int bit = (col_mag >> r) & 1;
-                        int mr = t1_mr_context_fast(sigma_pad, firstref_bits, r, c);
-                        mq_encode(&mq, T1_CTXNO_MR + mr, bit);
-                        firstref_bits[r] &= ~(1u << c);
-                    }
-                }
-            }
-        }
-        } /* end any_significant guard */
-        /* V243: flush+restart MQ after non-bypass MRP. */
-        if (!bp_bypass && BYPASS) { mq_flush(&mq); }
-        pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
-        if (!bp_bypass && BYPASS) { mq_restart(&mq, mq.bp + 1); }
-        } /* end MRP */
-
-        /* --- Cleanup Pass (CUP) — always MQ, even in bypass bit-planes.
-         * V243: ISO 15444-1 C.3.8 / OpenJPEG t1.c: CUP (passtype=2) is never bypass.
-         * When coming from bypass SPP+MRP, restart MQ before encoding. */
-        if (bp_bypass && BYPASS) {
-            mq_restart(&mq, mq.bp + 1);  /* start fresh MQ segment after bypass MRP */
-        }
-        {
-            /* MQ CUP */
-            for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
-                int stripe_end = min(stripe_y + STRIPE_H, cbh);
-                int stripe_len_cup = stripe_end - stripe_y;
-
-                /* V158: Per-stripe fast_not_zero precompute for AGG run-length bypass. */
-                uint64_t s0 = sigma_pad[stripe_y];
-                uint64_t s1 = sigma_pad[stripe_y + 1];
-                uint64_t s2 = sigma_pad[stripe_y + 2];
-                uint64_t s3 = sigma_pad[stripe_y + 3];
-                uint64_t s4 = sigma_pad[stripe_y + 4];
-                uint64_t sig_any = s0 | s1 | s2 | s3 | s4;
-                uint64_t hn_pre  = sig_any | (sig_any << 1) | (sig_any >> 1);
-                uint32_t coded_or = coded_bits[stripe_y] | coded_bits[stripe_y + 1]
-                                  | coded_bits[stripe_y + 2] | coded_bits[stripe_y + 3];
-                uint64_t fast_not_zero = hn_pre | ((uint64_t)coded_or << 1);
-
-                /* V160: Per-row skip mask for CUP inner row loop. */
-                uint32_t cup_skip[STRIPE_H] = {0, 0, 0, 0};
-                for (int ri = 0; ri < stripe_len_cup; ri++)
-                    cup_skip[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1) | coded_bits[stripe_y + ri];
-
-                for (int c = 0; c < cbw; c++) {
-                    uint64_t cmask_pad = 1ull << (c + 1);
-                    uint32_t cmask = 1u << c;
-                    int all_zero;
-
-                    if (fast_not_zero & cmask_pad) {
-                        all_zero = 0;
-                    } else {
-                        all_zero = (stripe_len_cup == 4) ? 1 : 0;
-                        /* V168: when !any_significant, sigma_pad is all-zero → has_sig_neighbor
-                         * always false, cup_skip always zero — skip inner loop entirely. */
-                        if (all_zero && any_significant) {
-                            for (int r = stripe_y; r < stripe_end; r++) {
-                                if (cup_skip[r - stripe_y] & cmask) { all_zero = 0; break; }
-                                if (has_sig_neighbor(sigma_pad, r, c)) { all_zero = 0; break; }
-                            }
-                        }
-                    }
-
-                    uint32_t col_mag = mag_bp_flat[bp_idx * CB_DIM + c];
-
-                    if (all_zero) {
-                        uint32_t stripe_bits = (col_mag >> stripe_y) & 0xFu;
-                        int any_sig = (stripe_bits != 0);
-                        mq_encode(&mq, T1_CTXNO_AGG, any_sig);
-                        if (!any_sig) continue;
-                        int run_len = __ffs(stripe_bits) - 1;
-                        mq_encode(&mq, T1_CTXNO_UNI, (run_len >> 1) & 1);
-                        mq_encode(&mq, T1_CTXNO_UNI, run_len & 1);
-                        int r = stripe_y + run_len;
-                        sigma_pad[r + 1] |= cmask_pad;
-                        any_significant = 1;
-                        int sc_ctx, xor_bit;
-                        t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
-                        mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
-                        coded_bits[r] |= cmask;
-                        for (r = stripe_y + run_len + 1; r < stripe_end; r++) {
-                            int ri = r - stripe_y;
-                            if (cup_skip[ri] & cmask) continue;
+            /* --- Significance Propagation Pass (SPP) — skip for first bit-plane --- */
+            if (!first_bp) {
+            if (bp_bypass) {
+                /* V245: Bypass SPP — raw significance + raw sign bits.
+                 * ISO 15444-1 C.3.8: in bypass mode the sign is encoded as the raw
+                 * actual_sign bit (no XOR with sign prediction).  OpenJPEG's
+                 * dec_sigpass_raw reads it directly without any XOR.  Using XOR here
+                 * (V247 attempt) caused gradient patterns to regress from 88→41 dB. */
+                BypassCoder bc;
+                bc.bp = mq.bp + 1;  bc.accum = 0;  bc.cnt = 0;
+                if (any_significant) {
+                for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
+                    int stripe_end = min(stripe_y + STRIPE_H, cbh);
+                    int stripe_len = stripe_end - stripe_y;
+                    /* V245: all-significant column skip (same optimisation as MQ SPP V159). */
+                    uint64_t spp_all_sig = sigma_pad[stripe_y + 1] & sigma_pad[stripe_y + 2]
+                                         & sigma_pad[stripe_y + 3] & sigma_pad[stripe_y + 4];
+                    uint32_t spp_sig[STRIPE_H] = {0, 0, 0, 0};
+                    for (int ri = 0; ri < stripe_len; ri++)
+                        spp_sig[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1);
+                    for (int c = 0; c < cbw; c++) {
+                        uint64_t cmask_pad = 1ull << (c + 1);
+                        uint32_t cmask = 1u << c;
+                        if (spp_all_sig & cmask_pad) continue;  /* all rows significant */
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
+                        for (int r = stripe_y; r < stripe_end; r++) {
+                            if (spp_sig[r - stripe_y] & cmask) continue;
+                            if (!has_sig_neighbor(sigma_pad, r, c)) continue;
                             int bit = (col_mag >> r) & 1;
-                            int zc2 = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
-                            mq_encode(&mq, T1_CTXNO_ZC + zc2, bit);
                             if (bit) {
+                                int sign = (sign_bits[r] >> c) & 1;
+                                bypass_write_bits(&bc, (uint8_t)((2u | (unsigned)sign)), 2); /* sig=1, raw sign */
                                 sigma_pad[r + 1] |= cmask_pad;
                                 any_significant = 1;
+                            } else {
+                                bypass_write(&bc, 0);
+                            }
+                            coded_bits[r] |= cmask;
+                        }
+                    }
+                }
+                }
+                bypass_flush(&bc);
+                mq.bp = bc.bp - 1;
+            } else {
+                /* MQ SPP */
+                if (any_significant) {
+                for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
+                    int stripe_end = min(stripe_y + STRIPE_H, cbh);
+                    int stripe_len = stripe_end - stripe_y;
+
+                    /* V159: SPP fast-skip: AND of all stripe rows — bit set = all 4 rows are significant. */
+                    uint64_t spp_all_sig = sigma_pad[stripe_y + 1] & sigma_pad[stripe_y + 2]
+                                         & sigma_pad[stripe_y + 3] & sigma_pad[stripe_y + 4];
+
+                    /* V160: Per-row significance mask for row-level SPP skip. */
+                    uint32_t spp_sig[STRIPE_H] = {0, 0, 0, 0};
+                    for (int ri = 0; ri < stripe_len; ri++)
+                        spp_sig[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1);
+
+                    for (int c = 0; c < cbw; c++) {
+                        uint64_t cmask_pad = 1ull << (c + 1);
+                        uint32_t cmask = 1u << c;
+                        if (spp_all_sig & cmask_pad) continue;
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
+                        for (int r = stripe_y; r < stripe_end; r++) {
+                            if (spp_sig[r - stripe_y] & cmask) continue;
+                            /* V168: fused neighbor-check + ZC context — halves sigma_pad LMEM reads */
+                            int zc = t1_zc_if_neighbor(sigma_pad, r, c, cbi.subband_type);
+                            if (zc < 0) continue;
+
+                            int bit = (col_mag >> r) & 1;
+                            mq_encode(&mq, T1_CTXNO_ZC + zc, bit);
+
+                            if (bit) {
+                                sigma_pad[r + 1] |= cmask_pad;
+                                int sc_ctx, xor_bit;
                                 t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
                                 mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
                             }
                             coded_bits[r] |= cmask;
                         }
-                    } else {
-#pragma unroll
+                    }
+                }
+                } /* end any_significant */
+                if (BYPASS) mq_flush(&mq);
+            } /* end MQ SPP */
+            pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
+            if (!bp_bypass && BYPASS) mq_restart(&mq, mq.bp + 1);
+            } /* end SPP */
+
+            /* --- Magnitude Refinement Pass (MRP) --- */
+            if (!first_bp) {
+            if (any_significant) {
+            if (bp_bypass) {
+                /* V165: Bypass MRP — write raw refinement bits directly. No MQ, no context. */
+                BypassCoder bc;
+                bc.bp = mq.bp + 1;  bc.accum = 0;  bc.cnt = 0;
+                for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
+                    int stripe_end = min(stripe_y + STRIPE_H, cbh);
+                    int stripe_len_mrp = stripe_end - stripe_y;
+                    uint32_t mrp_proc[STRIPE_H] = {0, 0, 0, 0};
+                    for (int ri = 0; ri < stripe_len_mrp; ri++)
+                        mrp_proc[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1) & ~coded_bits[stripe_y + ri];
+                    /* V245: bit-scan over active MRP columns; pack row-bits per column
+                     * into bypass_write_bits to replace up to STRIPE_H individual writes
+                     * with one fused call (1–4 bits per column per stripe). */
+                    uint32_t mrp_active = mrp_proc[0] | mrp_proc[1]
+                                        | mrp_proc[2] | mrp_proc[3];
+                    while (mrp_active) {
+                        int c = __ffs(mrp_active) - 1;
+                        mrp_active &= mrp_active - 1u;
+                        uint32_t cmask = 1u << c;
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
+                        /* Gather bits for this column's active rows MSB-first,
+                         * then emit in one bypass_write_bits call. */
+                        uint8_t bits = 0; int nbits = 0;
                         for (int r = stripe_y; r < stripe_end; r++) {
-                            int ri = r - stripe_y;
-                            if (cup_skip[ri] & cmask) continue;
+                            if (!(mrp_proc[r - stripe_y] & cmask)) continue;
+                            bits = static_cast<uint8_t>((bits << 1) | ((col_mag >> r) & 1));
+                            firstref_bits[r] &= ~(1u << c);
+                            nbits++;
+                        }
+                        bypass_write_bits(&bc, bits, nbits);
+                    }
+                }
+                bypass_flush(&bc);
+                mq.bp = bc.bp - 1;  /* advance mq.bp to last written byte */
+            } else {
+                /* MQ MRP */
+                for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
+                    int stripe_end = min(stripe_y + STRIPE_H, cbh);
+                    int stripe_len_mrp = stripe_end - stripe_y;
+
+                    /* V160: Precompute per-row "should process" mask for MRP. */
+                    uint32_t mrp_proc[STRIPE_H] = {0, 0, 0, 0};
+                    for (int ri = 0; ri < stripe_len_mrp; ri++)
+                        mrp_proc[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1) & ~coded_bits[stripe_y + ri];
+                    uint32_t mrp_colmask = mrp_proc[0] | mrp_proc[1] | mrp_proc[2] | mrp_proc[3];
+
+                    for (int c = 0; c < cbw; c++) {
+                        uint32_t cmask = 1u << c;
+                        if (!(mrp_colmask & cmask)) continue;
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
+                        for (int r = stripe_y; r < stripe_end; r++) {
+                            if (!(mrp_proc[r - stripe_y] & cmask)) continue;
                             int bit = (col_mag >> r) & 1;
-                            int zc2 = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
-                            mq_encode(&mq, T1_CTXNO_ZC + zc2, bit);
-                            if (bit) {
-                                sigma_pad[r + 1] |= cmask_pad;
-                                any_significant = 1;
-                                int sc_ctx2, xor_bit2;
-                                t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx2, &xor_bit2);
-                                mq_encode(&mq, T1_CTXNO_SC + sc_ctx2, ((sign_bits[r] >> c) & 1) ^ xor_bit2);
-                            }
-                            coded_bits[r] |= cmask;
+                            int mr = t1_mr_context_fast(sigma_pad, firstref_bits, r, c);
+                            mq_encode(&mq, T1_CTXNO_MR + mr, bit);
+                            firstref_bits[r] &= ~(1u << c);
                         }
                     }
                 }
             }
-        } /* end MQ CUP */
-        /* V243: CUP always terminates with MQ flush for TERMALL; restart for next bit-plane. */
-        if (BYPASS) { mq_flush(&mq); }
-        pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
-        if (BYPASS) { mq_restart(&mq, mq.bp + 1); }
+            } /* end any_significant guard */
+            /* V243: flush+restart MQ after non-bypass MRP. */
+            if (!bp_bypass && BYPASS) { mq_flush(&mq); }
+            pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
+            if (!bp_bypass && BYPASS) { mq_restart(&mq, mq.bp + 1); }
+            } /* end MRP */
 
-        /* V156: exit after coding the last wanted bit-plane. */
-        if (actual_bp_skip > 0 && bp == actual_bp_skip) break;
-    }
+            /* --- Cleanup Pass (CUP) — always MQ, even in bypass bit-planes.
+             * V243: ISO 15444-1 C.3.8 / OpenJPEG t1.c: CUP (passtype=2) is never bypass.
+             * When coming from bypass SPP+MRP, restart MQ before encoding. */
+            if (bp_bypass && BYPASS) {
+                mq_restart(&mq, mq.bp + 1);  /* start fresh MQ segment after bypass MRP */
+            }
+            {
+                /* MQ CUP */
+                for (int stripe_y = 0; stripe_y < cbh; stripe_y += STRIPE_H) {
+                    int stripe_end = min(stripe_y + STRIPE_H, cbh);
+                    int stripe_len_cup = stripe_end - stripe_y;
+
+                    /* V158: Per-stripe fast_not_zero precompute for AGG run-length bypass. */
+                    uint64_t s0 = sigma_pad[stripe_y];
+                    uint64_t s1 = sigma_pad[stripe_y + 1];
+                    uint64_t s2 = sigma_pad[stripe_y + 2];
+                    uint64_t s3 = sigma_pad[stripe_y + 3];
+                    uint64_t s4 = sigma_pad[stripe_y + 4];
+                    uint64_t sig_any = s0 | s1 | s2 | s3 | s4;
+                    uint64_t hn_pre  = sig_any | (sig_any << 1) | (sig_any >> 1);
+                    uint32_t coded_or = coded_bits[stripe_y] | coded_bits[stripe_y + 1]
+                                      | coded_bits[stripe_y + 2] | coded_bits[stripe_y + 3];
+                    uint64_t fast_not_zero = hn_pre | ((uint64_t)coded_or << 1);
+
+                    /* V160: Per-row skip mask for CUP inner row loop. */
+                    uint32_t cup_skip[STRIPE_H] = {0, 0, 0, 0};
+                    for (int ri = 0; ri < stripe_len_cup; ri++)
+                        cup_skip[ri] = (uint32_t)(sigma_pad[stripe_y + 1 + ri] >> 1) | coded_bits[stripe_y + ri];
+
+                    for (int c = 0; c < cbw; c++) {
+                        uint64_t cmask_pad = 1ull << (c + 1);
+                        uint32_t cmask = 1u << c;
+                        int all_zero;
+
+                        if (fast_not_zero & cmask_pad) {
+                            all_zero = 0;
+                        } else {
+                            all_zero = (stripe_len_cup == 4) ? 1 : 0;
+                            /* V168: when !any_significant, sigma_pad is all-zero → has_sig_neighbor
+                             * always false, cup_skip always zero — skip inner loop entirely. */
+                            if (all_zero && any_significant) {
+                                for (int r = stripe_y; r < stripe_end; r++) {
+                                    if (cup_skip[r - stripe_y] & cmask) { all_zero = 0; break; }
+                                    if (has_sig_neighbor(sigma_pad, r, c)) { all_zero = 0; break; }
+                                }
+                            }
+                        }
+
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
+
+                        if (all_zero) {
+                            uint32_t stripe_bits = (col_mag >> stripe_y) & 0xFu;
+                            int any_sig = (stripe_bits != 0);
+                            mq_encode(&mq, T1_CTXNO_AGG, any_sig);
+                            if (!any_sig) continue;
+                            int run_len = __ffs(stripe_bits) - 1;
+                            mq_encode(&mq, T1_CTXNO_UNI, (run_len >> 1) & 1);
+                            mq_encode(&mq, T1_CTXNO_UNI, run_len & 1);
+                            int r = stripe_y + run_len;
+                            sigma_pad[r + 1] |= cmask_pad;
+                            any_significant = 1;
+                            int sc_ctx, xor_bit;
+                            t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
+                            mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
+                            coded_bits[r] |= cmask;
+                            for (r = stripe_y + run_len + 1; r < stripe_end; r++) {
+                                int ri = r - stripe_y;
+                                if (cup_skip[ri] & cmask) continue;
+                                int bit = (col_mag >> r) & 1;
+                                int zc2 = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
+                                mq_encode(&mq, T1_CTXNO_ZC + zc2, bit);
+                                if (bit) {
+                                    sigma_pad[r + 1] |= cmask_pad;
+                                    any_significant = 1;
+                                    t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx, &xor_bit);
+                                    mq_encode(&mq, T1_CTXNO_SC + sc_ctx, ((sign_bits[r] >> c) & 1) ^ xor_bit);
+                                }
+                                coded_bits[r] |= cmask;
+                            }
+                        } else {
+#pragma unroll
+                            for (int r = stripe_y; r < stripe_end; r++) {
+                                int ri = r - stripe_y;
+                                if (cup_skip[ri] & cmask) continue;
+                                int bit = (col_mag >> r) & 1;
+                                int zc2 = t1_zero_context_fast(sigma_pad, r, c, cbi.subband_type);
+                                mq_encode(&mq, T1_CTXNO_ZC + zc2, bit);
+                                if (bit) {
+                                    sigma_pad[r + 1] |= cmask_pad;
+                                    any_significant = 1;
+                                    int sc_ctx2, xor_bit2;
+                                    t1_sign_context_fast(sigma_pad, sign_bits, r, c, cbw, cbh, &sc_ctx2, &xor_bit2);
+                                    mq_encode(&mq, T1_CTXNO_SC + sc_ctx2, ((sign_bits[r] >> c) & 1) ^ xor_bit2);
+                                }
+                                coded_bits[r] |= cmask;
+                            }
+                        }
+                    }
+                }
+            } /* end MQ CUP */
+            /* V243: CUP always terminates with MQ flush for TERMALL; restart for next bit-plane. */
+            if (BYPASS) { mq_flush(&mq); }
+            pass_lens[total_passes++] = static_cast<uint16_t>(mq.bp - mq.start + 1);
+            if (BYPASS) { mq_restart(&mq, mq.bp + 1); }
+
+            /* V156: exit after coding the last wanted bit-plane. */
+            if (actual_bp_skip > 0 && bp == actual_bp_skip) goto t1_done;
+        } /* end per-bit-plane inner loop */
+    } /* end chunk outer loop */
+    t1_done:;
 
     /* 5. Final flush.
      * V242 BYPASS+RESTART: every pass already flushed in the loop — no final flush needed.
