@@ -5789,11 +5789,16 @@ CudaJ2KEncoder::encode_ebcot(
          *   ramp:        0.014 → 2× jump: 0.25→0.0625 (4 T1 runs → 3) ✓
          *   photo_synth: 0.439 → no jump  (byte_ratio > 0.20, normal 1× halving) */
         if (attempt == 0 && byte_ratio < 0.009) {
-            float skip_step = current_step;
+            float step_before = current_step;
+            float skip_step   = current_step;
             while (skip_step * 0.5f >= adaptive_min_base_step)
                 skip_step *= 0.5f;
             current_step = skip_step;
-            continue;
+            /* V313: only continue if step actually changed.
+             * V312 may have pre-set current_step = min_step; if so, skip_step ==
+             * step_before and continue would cause a wasted extra T1 at the same step. */
+            if (current_step < step_before) continue;
+            /* Already at min step — fall through to the next_step break check below. */
         }
         if (attempt == 0 && byte_ratio < 0.20f) {
             float jump_step = current_step * 0.25f;
@@ -5807,6 +5812,7 @@ CudaJ2KEncoder::encode_ebcot(
         current_step = next_step;
     }
     base_step = current_step;  /* T2 codestream uses the final step for QCD */
+    tmark("T1_RETRY");
 
     /* V301: PCRD-guided compact D2H for dense content.
      * For sparse content (max_coded_d2h ≤ 4096 bytes/CB), the coded DMA is already
