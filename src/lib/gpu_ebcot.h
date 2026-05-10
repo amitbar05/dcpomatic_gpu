@@ -669,7 +669,7 @@ __device__ __forceinline__ float dwt_load<float>(const float* p) { return __ldg(
  * register pressure and enabling better ILP.  Previously use_bypass was a
  * runtime bool parameter; now BYPASS is a template constant. */
 template<bool FAST4, bool BYPASS = false, int MAX_BP = (FAST4 ? 4 : 10), typename DWT_T = float>
-__global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
+__global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
     const DWT_T* __restrict__ d_dwt,    /* DWT output coefficients (d_a[c]) */
     int dwt_stride,                      /* row stride of DWT array (= image width) */
     const CodeBlockInfo* __restrict__ d_cb_info,  /* code-block metadata */
