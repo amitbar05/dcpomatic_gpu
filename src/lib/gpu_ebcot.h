@@ -762,12 +762,16 @@ __global__ __launch_bounds__(64, 16) void kernel_ebcot_t1(
      * CHUNK_BP*CB_DIM*4. Build CHUNK_BP bit-planes per d_dwt scan instead of all
      * MAX_BP at once.
      * V307: CHUNK_BP raised from 4 to 8.
-     * V308: CHUNK_BP raised from 8 to 16. For checker_64/checker_8 (num_bp≈14),
-     * d_dwt scans drop from ceil(14/8)=2 to ceil(14/16)=1, halving DRAM reads again.
-     * For flat/gradient patterns (num_bp≤13), drops from 2 to 1 scan (same benefit).
-     * LMEM: 16*32*4=2048B chunk + 272B sigma_pad + 384B sign/ref/coded = 2704B/thread.
-     * Previous V307 (CHUNK_BP=8): 1024+656=1680B/thread, ceil(14/8)=2 d_dwt scans. */
-    constexpr int CHUNK_BP = 16;
+     * V308: CHUNK_BP raised from 8 to 16.
+     * V309: CHUNK_BP raised to MAX_BPLANES=18 — single d_dwt scan for ALL num_bp values.
+     * This eliminates chunk-scan overhead entirely: the outer chunk loop always runs once.
+     * LMEM: 18*32*4=2304B chunk + 272B sigma_pad + 384B sign/ref/coded = ~2960B/thread.
+     * The compiler sees a fixed chunk_size=num_bp (bounded by the template MAX_BP) and
+     * may reduce register count vs CHUNK_BP=16 (where the chunk loop runs 2× for MAX_BP=17/18),
+     * potentially improving occupancy above the current 56%.
+     * Key benefit vs V308: retry T1 runs at step=0.0625 (MAX_BP=17) and step=0.03125
+     * (MAX_BP=18) also become single-scan — V308 still needed 2 scans for those. */
+    constexpr int CHUNK_BP = MAX_BPLANES;
     uint32_t mag_bp_flat[CHUNK_BP * CB_DIM];
 
     /* 3. Initialize MQ coder */
