@@ -725,18 +725,39 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
 
     float inv_step = __frcp_rn(cbi.quant_step);  /* fast reciprocal */
 
-    /* Pass 1: compute sign_bits[], max_mag, energy_sum (for PCRD) */
+    /* V311: mag_bp_flat uses absolute bit-position indexing (bp=0=LSB).
+     * Declared here (before the combined pass) so the single d_dwt scan can populate it.
+     * CHUNK_BP=MAX_BPLANES=18 covers all possible num_bp values in one scan. */
+    constexpr int CHUNK_BP = MAX_BPLANES;
+    uint32_t mag_bp_flat[CHUNK_BP * CB_DIM];
+
+    /* V311: Combined pass — zero-init mag_bp_flat, then single d_dwt scan to
+     * compute sign_bits[], max_mag, energy_sum, AND populate mag_bp_flat[bp][c]
+     * (absolute bit-position indexing, bp=0=LSB). Eliminates the separate chunk
+     * scan (Pass 2), halving d_dwt DRAM reads. The coding loop reads
+     * mag_bp_flat[bp * CB_DIM + c] where bp = chunk_top - ci (same absolute value). */
+    for (int bp = 0; bp < MAX_BP; bp++)
+        for (int c = 0; c < CB_DIM; c++)
+            mag_bp_flat[bp * CB_DIM + c] = 0;
+
     int max_mag = 0;
     float energy_sum = 0.0f;
     for (int r = 0; r < cbh; r++) {
         uint32_t sb = 0;
+        uint32_t rmask = 1u << r;
         const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
         for (int c = 0; c < cbw; c++) {
             float val = dwt_load(row_ptr + c);
-            int q = __float2int_rd(fabsf(val) * inv_step)  /* V211 */;
+            int q = __float2int_rd(fabsf(val) * inv_step);
             if (val < 0.0f) sb |= (1u << c);
-            max_mag |= q;  /* bitwise OR — captures all bits for num_bp */
-            energy_sum += val * val;  /* V287: per-CB energy for PCRD distortion model */
+            max_mag |= q;
+            energy_sum += val * val;
+            if (q != 0) {
+                for (int bp = 0; bp < MAX_BP; bp++) {
+                    if ((q >> bp) & 1)
+                        mag_bp_flat[bp * CB_DIM + c] |= rmask;
+                }
+            }
         }
         sign_bits[r] = sb;
     }
@@ -757,22 +778,6 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
         d_num_bp[cb_idx] = 0;
         return;
     }
-
-    /* V303: CHUNK_BP chunked mag_bp_flat — reduce LMEM from MAX_BP*CB_DIM*4 to
-     * CHUNK_BP*CB_DIM*4. Build CHUNK_BP bit-planes per d_dwt scan instead of all
-     * MAX_BP at once.
-     * V307: CHUNK_BP raised from 4 to 8.
-     * V308: CHUNK_BP raised from 8 to 16.
-     * V309: CHUNK_BP raised to MAX_BPLANES=18 — single d_dwt scan for ALL num_bp values.
-     * This eliminates chunk-scan overhead entirely: the outer chunk loop always runs once.
-     * LMEM: 18*32*4=2304B chunk + 272B sigma_pad + 384B sign/ref/coded = ~2960B/thread.
-     * The compiler sees a fixed chunk_size=num_bp (bounded by the template MAX_BP) and
-     * may reduce register count vs CHUNK_BP=16 (where the chunk loop runs 2× for MAX_BP=17/18),
-     * potentially improving occupancy above the current 56%.
-     * Key benefit vs V308: retry T1 runs at step=0.0625 (MAX_BP=17) and step=0.03125
-     * (MAX_BP=18) also become single-scan — V308 still needed 2 scans for those. */
-    constexpr int CHUNK_BP = MAX_BPLANES;
-    uint32_t mag_bp_flat[CHUNK_BP * CB_DIM];
 
     /* 3. Initialize MQ coder */
     uint8_t* out_buf = d_coded_data + (size_t)cb_idx * CB_BUF_SIZE;
@@ -810,24 +815,8 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
         if (chunk_bot < 0) chunk_bot = 0;
         int chunk_size = chunk_top - chunk_bot + 1;
 
-        for (int ci = 0; ci < chunk_size; ci++)
-            for (int c = 0; c < CB_DIM; c++)
-                mag_bp_flat[ci * CB_DIM + c] = 0;
-
-        for (int r = 0; r < cbh; r++) {
-            uint32_t rmask = 1u << r;
-            const DWT_T* row_ptr = d_dwt + (cbi.y0 + r) * dwt_stride + cbi.x0;
-            for (int c = 0; c < cbw; c++) {
-                int q = __float2int_rd(fabsf(dwt_load(row_ptr + c)) * inv_step)  /* V211 */;
-                if (q == 0) continue;
-                for (int ci = 0; ci < chunk_size; ci++) {
-                    if ((q >> (chunk_top - ci)) & 1)
-                        mag_bp_flat[ci * CB_DIM + c] |= rmask;
-                }
-            }
-        }
-
-        /* Process passes for each bit-plane in this chunk (MSB first). */
+        /* Process passes for each bit-plane in this chunk (MSB first).
+         * V311: mag_bp_flat already built in combined pass above (absolute bp indexing). */
         for (int ci = 0; ci < chunk_size; ci++) {
             int bp = chunk_top - ci;
 
@@ -868,7 +857,7 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
                         uint64_t cmask_pad = 1ull << (c + 1);
                         uint32_t cmask = 1u << c;
                         if (spp_all_sig & cmask_pad) continue;  /* all rows significant */
-                        uint32_t col_mag = mag_bp_flat[ci * CB_DIM + c];
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
                         for (int r = stripe_y; r < stripe_end; r++) {
                             if (spp_sig[r - stripe_y] & cmask) continue;
                             if (!has_sig_neighbor(sigma_pad, r, c)) continue;
@@ -908,7 +897,7 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
                         uint64_t cmask_pad = 1ull << (c + 1);
                         uint32_t cmask = 1u << c;
                         if (spp_all_sig & cmask_pad) continue;
-                        uint32_t col_mag = mag_bp_flat[ci * CB_DIM + c];
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
                         for (int r = stripe_y; r < stripe_end; r++) {
                             if (spp_sig[r - stripe_y] & cmask) continue;
                             /* V168: fused neighbor-check + ZC context — halves sigma_pad LMEM reads */
@@ -957,7 +946,7 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
                         int c = __ffs(mrp_active) - 1;
                         mrp_active &= mrp_active - 1u;
                         uint32_t cmask = 1u << c;
-                        uint32_t col_mag = mag_bp_flat[ci * CB_DIM + c];
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
                         /* Gather bits for this column's active rows MSB-first,
                          * then emit in one bypass_write_bits call. */
                         uint8_t bits = 0; int nbits = 0;
@@ -987,7 +976,7 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
                     for (int c = 0; c < cbw; c++) {
                         uint32_t cmask = 1u << c;
                         if (!(mrp_colmask & cmask)) continue;
-                        uint32_t col_mag = mag_bp_flat[ci * CB_DIM + c];
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
                         for (int r = stripe_y; r < stripe_end; r++) {
                             if (!(mrp_proc[r - stripe_y] & cmask)) continue;
                             int bit = (col_mag >> r) & 1;
@@ -1053,7 +1042,7 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
                             }
                         }
 
-                        uint32_t col_mag = mag_bp_flat[ci * CB_DIM + c];
+                        uint32_t col_mag = mag_bp_flat[bp * CB_DIM + c];
 
                         if (all_zero) {
                             uint32_t stripe_bits = (col_mag >> stripe_y) & 0xFu;
