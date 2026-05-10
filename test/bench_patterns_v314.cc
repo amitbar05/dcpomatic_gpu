@@ -87,5 +87,9 @@ int main() {
         unsigned s=(unsigned)(x*17u+y*31u); s=s*1664525u+1013904223u;
         return uint16_t(30000+((s>>17)&0x3FF)-512);
     });
+    bench(enc, "hh2_checker",      [](int x,int y){ return uint16_t((((x/2)+(y/2))&1)?50000:10000); });
+    bench(enc, "hh3_checker",      [](int x,int y){ return uint16_t((((x/4)+(y/4))&1)?50000:10000); });
+    bench(enc, "ramp_small_range", [](int x,int){ return uint16_t(30000+(x%256)); });
+    bench(enc, "single_impulse",   [](int x,int y){ return uint16_t((x==W/2&&y==H/2)?60000:0); });
     return 0;
 }

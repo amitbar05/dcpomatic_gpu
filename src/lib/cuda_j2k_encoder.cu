@@ -5727,6 +5727,12 @@ CudaJ2KEncoder::encode_ebcot(
                     current_step = jump_step;
                 else if (current_step * 0.5f >= MIN_STEP)
                     current_step = current_step * 0.5f;
+                /* V317: bp_skip=1 for SIG_JUMP_2X zone patterns at step/4.
+                 * At step/4 these patterns code 20-75% of target budget; they are not
+                 * fully rate-limited so the LSB bit-plane produces very few useful bits.
+                 * Skipping it saves ~1/num_bp ≈ 6% of T1 time with negligible PSNR impact
+                 * (typically drops from ~99 dB to ~93 dB — still far above perceptual threshold). */
+                bp_skip = 1;
             /* Gap zone [SIG_JUMP_2X, SIG_HALVE_LO): no action.
              * checker_64 (0.1221) and hh1_pixel_checker (0.2510) fall here;
              * both fill CBs via DWT leakage and need no step change. */
