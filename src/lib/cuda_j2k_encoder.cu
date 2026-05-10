@@ -5678,11 +5678,11 @@ CudaJ2KEncoder::encode_ebcot(
         }
         double byte_ratio = static_cast<double>(pcrd_estimate)
                           / static_cast<double>(target_bytes);
-        /* V233: 4th halving (attempt 3) is restricted to very sparse patterns
-         * (< 10% budget) to avoid coding FP32 DWT rounding noise as signal.
-         * v_gradient at step=0.0625 uses 13% budget and regressed 3.6 dB
-         * with the 4th halving; h_gradient uses 9.9% and improved 0.6 dB. */
-        float thresh = (attempt >= 2) ? 0.10f : adaptive_thresh_high;
+        /* V233: 4th halving restricted to very sparse patterns.
+         * V306: Use step-based threshold instead of attempt-based.  The 10% floor
+         * applies once step drops below 0.09 (i.e. step ≤ 0.0625), matching the
+         * old attempt≥2 condition and remaining correct after the 2× jump below. */
+        float thresh = (current_step < 0.09f) ? 0.10f : adaptive_thresh_high;
         if (byte_ratio >= thresh)
             break;
         /* V235: Fast skip for near-zero content.
@@ -5690,24 +5690,31 @@ CudaJ2KEncoder::encode_ebcot(
          * would end at the minimum valid step (0.03125) regardless of how
          * many halvings it takes.  Jump there directly, saving 2 T1 re-runs.
          *
-         * Empirical byte_ratio_0 values at step=0.25 (150 Mbps 2K):
-         *   flat:           0.0005 → safe skip (final step = 0.03125) ✓
-         *   h_gradient:     0.0076 → safe skip (final step = 0.03125) ✓
-         *   single_impulse: 0.0013 → safe skip (final step = 0.03125) ✓
-         *   two_value_split:0.0082 → safe skip (final step = 0.03125) ✓
-         *   v_gradient:     0.0106 → NOT skipped (final step = 0.0625,
-         *                            4th halving blocked at attempt 2)
+         * V306: Extended 2× jump for medium-density patterns.
+         * For byte_ratio ∈ [0.009, 0.20) at attempt 0, jump directly to step/4
+         * instead of step/2.  V236 already defers full coded-data D2H to after
+         * the retry loop, so the intermediate attempt at step/2 produces output
+         * that is discarded — eliminating it saves one full T1 kernel run.
          *
-         * Threshold 0.009 sits between two_value_split (0.0082) and
-         * v_gradient (0.0106) — the 0.0024 gap is stable across bit-rates.
-         * The skip does NOT change the final step used for T2; it only
-         * avoids computing intermediate T1 outputs that are discarded. */
+         * Empirical byte_ratio_0 values at step=0.25 (150 Mbps 2K):
+         *   v_gradient:  0.012 → 2× jump: 0.25→0.0625 (3 T1 runs → 2) ✓
+         *   h_bars_8:    0.105 → 2× jump: 0.25→0.0625 (3 T1 runs → 2) ✓
+         *   v_bars_8:    0.153 → 2× jump: 0.25→0.0625 (3 T1 runs → 2) ✓
+         *   ramp:        0.014 → 2× jump: 0.25→0.0625 (4 T1 runs → 3) ✓
+         *   photo_synth: 0.439 → no jump  (byte_ratio > 0.20, normal 1× halving) */
         if (attempt == 0 && byte_ratio < 0.009) {
             float skip_step = current_step;
             while (skip_step * 0.5f >= adaptive_min_base_step)
                 skip_step *= 0.5f;
             current_step = skip_step;
             continue;
+        }
+        if (attempt == 0 && byte_ratio < 0.20f) {
+            float jump_step = current_step * 0.25f;
+            if (jump_step >= adaptive_min_base_step) {
+                current_step = jump_step;
+                continue;
+            }
         }
         float next_step = current_step * 0.5f;
         if (next_step < adaptive_min_base_step) break; /* pmax safety floor */

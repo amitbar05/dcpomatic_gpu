@@ -392,7 +392,6 @@ inline PcrdResult compute_pcrd_truncation(
                 t1_per_sb_c[c][sb] += coded_len[c][cb_start + i];
         }
     }
-
     const size_t per_comp_target = (target_bytes > 0)
         ? static_cast<size_t>(target_bytes / 3) : SIZE_MAX;
 
@@ -435,20 +434,21 @@ inline PcrdResult compute_pcrd_truncation(
                                      && global_total_target != SIZE_MAX)
         ? global_total_target - total_phase1_bytes : (size_t)SIZE_MAX;
 
-    std::vector<PcrdEntry> all_entries;
+    /* V305: build per-component entry lists in parallel across 3 CPU threads */
+    std::vector<PcrdEntry> entries_c[3];
     {
-        size_t total_p2_cbs = 0;
+        size_t p2_cbs_c[3] = {};
         for (int c = 0; c < 3; ++c)
             for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb)
-                total_p2_cbs += static_cast<size_t>(subbands[sb].ncbx) * subbands[sb].ncby;
-        all_entries.reserve(total_p2_cbs * 6);
+                p2_cbs_c[c] += static_cast<size_t>(subbands[sb].ncbx) * subbands[sb].ncby;
+        for (int c = 0; c < 3; ++c)
+            entries_c[c].reserve(p2_cbs_c[c] * 6);
     }
 
-    std::vector<HullSeg> hull_stack;
-    hull_stack.reserve(MAX_PASSES);
-
-    for (int c = 0; c < 3; ++c) {
-        if (pcrd_start_c[c] >= subbands.size()) continue;
+    auto build_comp = [&](int c) {
+        if (pcrd_start_c[c] >= subbands.size()) return;
+        std::vector<HullSeg> hs;
+        hs.reserve(MAX_PASSES);
         for (size_t sb = pcrd_start_c[c]; sb < subbands.size(); ++sb) {
             if (t1_per_sb_c[c][sb] == 0) continue;
             float step = std::max(subbands[sb].step, 0.001f);
@@ -475,13 +475,12 @@ inline PcrdResult compute_pcrd_truncation(
                     float base = step2 * static_cast<float>(cbw * cbh) * (1.0f + density);
                     const uint16_t* pl = pass_lengths[c]
                         + static_cast<size_t>(cb_idx) * MAX_PASSES;
-                    hull_stack.clear();
+                    hs.clear();
                     uint16_t prev_cum = 0;
-                    /* V302: hoist decay/scale outside pass loop — one exp2f per CB vs two per pass */
                     float decay = (sb_type == SUBBAND_HH) ? 0.68f
                                 : (sb_type == SUBBAND_LL) ? 0.67f : 0.69f;
                     float scale = std::exp2f(-decay);
-                    float Dcur  = base;  /* base * scale^p, starts at p=0 */
+                    float Dcur  = base;
                     for (int p = 0; p < np; ++p) {
                         uint16_t cum = pl[p];
                         if (cum > cb_len) cum = cb_len;
@@ -491,27 +490,40 @@ inline PcrdResult compute_pcrd_truncation(
                         Dcur = Dnext;
                         if (dr <= 0) { prev_cum = cum; continue; }
                         HullSeg seg{dd / (float)dr, dd, p, p, cum, (uint16_t)dr};
-                        while (!hull_stack.empty()
-                               && hull_stack.back().slope <= seg.slope) {
-                            const HullSeg& top = hull_stack.back();
+                        while (!hs.empty() && hs.back().slope <= seg.slope) {
+                            const HullSeg& top = hs.back();
                             seg.delta_d += top.delta_d;
                             seg.delta_r = (uint16_t)((int)seg.delta_r + top.delta_r);
                             seg.p_from  = top.p_from;
                             seg.slope   = seg.delta_d / (float)seg.delta_r;
-                            hull_stack.pop_back();
+                            hs.pop_back();
                         }
-                        hull_stack.push_back(seg);
+                        hs.push_back(seg);
                         prev_cum = cum;
                         if (cum >= cb_len) break;
                     }
-                    for (const auto& seg : hull_stack)
-                        all_entries.push_back({seg.slope, cb_idx,
+                    for (const auto& seg : hs)
+                        entries_c[c].push_back({seg.slope, cb_idx,
                             (uint8_t)c, (uint8_t)seg.p_from, (uint8_t)seg.p_to, 0,
                             seg.cum_len, seg.delta_r});
                 }
             }
         }
+    };
+
+    auto f0 = std::async(std::launch::async, build_comp, 0);
+    auto f1 = std::async(std::launch::async, build_comp, 1);
+    build_comp(2);
+    f0.get(); f1.get();
+
+    std::vector<PcrdEntry> all_entries;
+    {
+        size_t total = 0;
+        for (int c = 0; c < 3; ++c) total += entries_c[c].size();
+        all_entries.reserve(total);
     }
+    for (int c = 0; c < 3; ++c)
+        all_entries.insert(all_entries.end(), entries_c[c].begin(), entries_c[c].end());
 
     std::sort(all_entries.begin(), all_entries.end(),
               [](const PcrdEntry& a, const PcrdEntry& b){ return a.slope > b.slope; });
