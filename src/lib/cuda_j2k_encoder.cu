@@ -4026,33 +4026,54 @@ kernel_ict_fwd_f32out(
 }
 
 
-/* V312: DWT energy split kernel.
- * Computes sum(val²) separately for the LL5 region (top-left ll5_w × ll5_h)
- * and the high-frequency remainder. HF energy ≈ 0 for smooth/sparse patterns
- * (flat, gradient), large for noisy/dense patterns (checker, photo).
- * Called after DWT and before the retry loop to predict whether attempt 0 T1
- * can be skipped. Reads all of d_a_f32 (~9MB/component) in one pass. */
-__global__ void kernel_dwt_energy_split(
-    const float* __restrict__ d_a, int stride, int height,
-    int ll5_w, int ll5_h, float* d_en_lo, float* d_en_hi)
+/* V314: Combined DWT energy split + significance count kernel.
+ * Replaces V312's kernel_dwt_energy_split; adds coefficient significance counting
+ * at threshold=base_step in the same pass to avoid a second scan of d_a_f32.
+ *
+ * Energy outputs (per component, accumulated via atomicAdd):
+ *   d_en_lo: sum(val²) for the LL5 region (top-left ll5_w × ll5_h)
+ *   d_en_hi: sum(val²) for all HF subbands (remainder)
+ *
+ * Significance output:
+ *   d_sig_cnt: count of coefficients with |val| >= threshold.
+ *   sig_frac = (total sig across all 3 components) / (3 × width × height) estimates
+ *   byte_ratio_0 without running T1.  Used to pre-select the starting step:
+ *     sig_frac < SIG_SKIP_MIN(0.004)  → jump to min_step (saves attempt-0 T1)
+ *     sig_frac < SIG_JUMP_2X(0.065)   → jump step/4 (bars patterns)
+ *      *  gap zone [0.065, 0.30): checker_64, hh1 — no action (DWT leakage fills CBs)
+ *     SIG_HALVE_LO(0.30) ≤ frac < SIG_HALVE_HI(0.55) → halve (photo_synth) */
+__global__ void kernel_energy_and_sig(
+    const float* __restrict__ d_a, int n, int stride,
+    int ll5_w, int ll5_h, float threshold,
+    float* d_en_lo, float* d_en_hi, uint32_t* d_sig_cnt)
 {
     __shared__ float s_lo[256], s_hi[256];
+    __shared__ uint32_t s_sig[256];
     int tid = threadIdx.x;
     float lo = 0.f, hi = 0.f;
-    int n = height * stride;
+    uint32_t sig = 0;
     for (int i = blockIdx.x * 256 + tid; i < n; i += gridDim.x * 256) {
         int y = i / stride, x = i % stride;
         float v = d_a[i];
         float e = v * v;
-        if (y < ll5_h && x < ll5_w) lo += e;
-        else hi += e;
+        if (y < ll5_h && x < ll5_w) lo += e; else hi += e;
+        if (fabsf(v) >= threshold) ++sig;
     }
-    s_lo[tid] = lo; s_hi[tid] = hi; __syncthreads();
+    s_lo[tid] = lo; s_hi[tid] = hi; s_sig[tid] = sig;
+    __syncthreads();
     for (int s = 128; s > 0; s >>= 1) {
-        if (tid < s) { s_lo[tid] += s_lo[tid + s]; s_hi[tid] += s_hi[tid + s]; }
+        if (tid < s) {
+            s_lo[tid] += s_lo[tid + s];
+            s_hi[tid] += s_hi[tid + s];
+            s_sig[tid] += s_sig[tid + s];
+        }
         __syncthreads();
     }
-    if (tid == 0) { atomicAdd(d_en_lo, s_lo[0]); atomicAdd(d_en_hi, s_hi[0]); }
+    if (tid == 0) {
+        atomicAdd(d_en_lo,  s_lo[0]);
+        atomicAdd(d_en_hi,  s_hi[0]);
+        atomicAdd(d_sig_cnt, s_sig[0]);
+    }
 }
 
 /* ===== Encoder Implementation ===== */
@@ -4164,6 +4185,7 @@ struct CudaJ2KEncoderImpl
     uint8_t*  d_ebcot_numbp[3]   = {nullptr, nullptr, nullptr};
     float*    d_ebcot_energy[3]  = {nullptr, nullptr, nullptr};  /* V287: per-CB energy */
     float*    d_energy_pre       = nullptr;  /* V312: 6 floats [c*2+0]=ll5 [c*2+1]=hf per comp */
+    uint32_t* d_sig_cnt          = nullptr;  /* V314: 3 uint32_t, significance count per component */
     uint8_t*  h_ebcot_data[3]    = {nullptr, nullptr, nullptr};
     uint16_t* h_ebcot_len[3]     = {nullptr, nullptr, nullptr};
     uint8_t*  h_ebcot_npasses[3] = {nullptr, nullptr, nullptr};
@@ -4223,6 +4245,8 @@ struct CudaJ2KEncoderImpl
         cudaFuncSetCacheConfig(kernel_fused_horz_dwt_half_io,       cudaFuncCachePreferL1);
         /* V312: small persistent energy buffer: 3 components × 2 floats (lo+hi) */
         if (cudaMalloc(&d_energy_pre, 6 * sizeof(float)) != cudaSuccess) return false;
+        /* V314: significance count buffer: 3 components × 1 uint32_t */
+        if (cudaMalloc(&d_sig_cnt, 3 * sizeof(uint32_t)) != cudaSuccess) return false;
         return true;
     }
 
@@ -4436,6 +4460,7 @@ struct CudaJ2KEncoderImpl
         if (st_h2d)    cudaStreamDestroy(st_h2d);
         if (ict_done)  cudaEventDestroy(ict_done);
         if (d_energy_pre) { cudaFree(d_energy_pre); d_energy_pre = nullptr; }
+        if (d_sig_cnt)    { cudaFree(d_sig_cnt);    d_sig_cnt    = nullptr; }
     }
 };
 
@@ -5433,10 +5458,20 @@ CudaJ2KEncoder::encode_ebcot(
 
     tmark("setup");
 
-    /* V312: Zero the energy accumulation buffer on the null stream.
-     * Runs before any stream work, so it completes before the DWT kernels start.
-     * The energy kernels (on stream[c], after DWT) then atomicAdd into zeroed memory. */
+    /* V314: Compute frame budget here — needed as threshold for the significance count
+     * kernel which runs on stream[c] after DWT (before the retry loop).
+     * These depend only on function parameters, not GPU output. */
+    int64_t frame_bits_pre  = bit_rate / fps;
+    if (is_3d) frame_bits_pre /= 2;
+    int64_t target_bytes_pre = frame_bits_pre / 8;
+    const float v314_base_step = compute_base_step(width, height,
+        static_cast<size_t>(target_bytes_pre / 3));
+
+    /* V312/V314: Zero both the energy and significance count buffers on the null stream.
+     * Runs before any stream work, so they complete before the DWT kernels start.
+     * Both kernels (on stream[c], after DWT) atomicAdd into zeroed memory. */
     cudaMemset(_impl->d_energy_pre, 0, 6 * sizeof(float));
+    cudaMemset(_impl->d_sig_cnt,    0, 3 * sizeof(uint32_t));
 
     /* Step 1: H2D — upload RGB48 to GPU.
      * V147 (reverted): staging into pinned + async cudaMemcpy on a dedicated
@@ -5522,38 +5557,49 @@ CudaJ2KEncoder::encode_ebcot(
      * CPU-side work that modifies the CB table (step 4). */
     tmark("DWT_lv1+");
 
-    /* V312: Energy split after DWT.
-     * Computes LL5 and HF energy for each component (launched on stream[c]
-     * after DWT, so intra-stream ordering guarantees DWT completes first).
-     * d_energy_pre was zeroed via cudaMemset (null stream) at encode start.
+    /* V314: Combined energy split + significance count after DWT.
+     * Runs kernel_energy_and_sig on stream[c] after DWT (intra-stream ordering
+     * guarantees DWT completes first).  Both d_energy_pre and d_sig_cnt were
+     * zeroed on the null stream at encode start.
      *
-     * If HF energy < HF_SPARSE_THRESHOLD, the content is smooth/sparse and
-     * attempt 0 T1 at the initial coarse step is predictably near-zero.
-     * We skip directly to the minimum valid step, saving 1-2 T1 kernel runs.
-     *
-     * Calibrated threshold (2K, 150 Mbps):
+     * V312 HF energy check: skip directly to min_step for flat/gradient/impulse
+     * (total_hf < 1e+7).  Calibrated:
      *   flat_30000: 8.3e-4  h_gradient: 1.8e+5  v_gradient: 4.2e+5
      *   single_imp: 4.7e+6  photo_synth: 1.2e+8  h_bars_8: 1.3e+10
-     * Threshold 1e+7 correctly classifies flat/gradient/impulse as sparse
-     * while photo_synth and denser patterns are left untouched. */
+     *
+     * V314 sig_frac check (only when V312 doesn't fire): estimates byte_ratio_0
+     * from coefficient significance count, selecting a better starting step before
+     * running the first T1.  Threshold = v314_base_step ≈ 0.25 at 150 Mbps 2K.
+     *
+     * Calibrated sig_frac thresholds (measured at base_step=0.25, 150 Mbps 2K):
+     *   two_value_split:  0.0027 < SIG_SKIP_MIN(0.004)  → min_step  (saves ~20ms)
+     *   h_bars_8/bars_64: 0.014-0.055 < SIG_JUMP_2X(0.065) → step/4 (saves ~20ms)
+     *   checker_64/hh1:   0.12-0.25  in gap zone           → no action
+     *   photo_synth:      0.531 in SIG_HALVE zone(0.30-0.55) → step/2 (saves ~34ms)
+     *   checker_8/noise:  > 0.55                            → no action */
     static const float HF_SPARSE_THRESHOLD = 1e+7f;
-    float h_en_pre[6] = {};
+    float    h_en_pre[6]  = {};
+    uint32_t h_sig_cnt[3] = {};
     {
         int ll5_w = width, ll5_h = height;
         for (int k = 0; k < num_levels; ++k) {
             ll5_w = (ll5_w + 1) / 2;
             ll5_h = (ll5_h + 1) / 2;
         }
-        int grid = std::min((width * height + 255) / 256, 512);
+        int n    = stride * height;
+        int grid = std::min((n + 255) / 256, 512);
         for (int c = 0; c < 3; ++c) {
-            kernel_dwt_energy_split<<<grid, 256, 0, _impl->stream[c]>>>(
-                _impl->d_a_f32[c], stride, height, ll5_w, ll5_h,
+            kernel_energy_and_sig<<<grid, 256, 0, _impl->stream[c]>>>(
+                _impl->d_a_f32[c], n, stride, ll5_w, ll5_h, v314_base_step,
                 _impl->d_energy_pre + c * 2,
-                _impl->d_energy_pre + c * 2 + 1);
+                _impl->d_energy_pre + c * 2 + 1,
+                _impl->d_sig_cnt + c);
         }
         for (int c = 0; c < 3; ++c) {
             cudaMemcpyAsync(h_en_pre + c * 2, _impl->d_energy_pre + c * 2,
                             2 * sizeof(float), cudaMemcpyDeviceToHost, _impl->stream[c]);
+            cudaMemcpyAsync(&h_sig_cnt[c], _impl->d_sig_cnt + c,
+                            sizeof(uint32_t), cudaMemcpyDeviceToHost, _impl->stream[c]);
         }
         for (int c = 0; c < 3; ++c) cudaStreamSynchronize(_impl->stream[c]);
     }
@@ -5573,12 +5619,10 @@ CudaJ2KEncoder::encode_ebcot(
      * kernel would catastrophically truncate.  Retry attempts use a
      * separate kernel template instantiation with MAX_BP=16 so all bit-
      * planes fit. */
-    int64_t frame_bits = bit_rate / fps;
-    if (is_3d) frame_bits /= 2;
-    int64_t target_bytes = frame_bits / 8;
-
-    float base_step = compute_base_step(width, height,
-        static_cast<size_t>(target_bytes / 3));
+    /* V314: target_bytes/base_step are pre-computed before DWT for the energy+sig kernel.
+     * Use the same values here (identical computation from the same parameters). */
+    const int64_t target_bytes = target_bytes_pre;
+    float         base_step    = v314_base_step;  /* mutable: reassigned after retry loop */
 
     constexpr int EBCOT_THREADS = 64;
     /* Correct mode: MQ coder, all bit-planes, full D2H. */
@@ -5630,15 +5674,67 @@ CudaJ2KEncoder::encode_ebcot(
     float current_step = base_step;
     int   num_cbs      = _impl->ebcot_num_cbs;
 
-    /* V312: If HF energy is very low (flat/gradient/impulse content), skip directly
-     * to the minimum valid step — avoids wasting attempt 0 T1 at the coarse step.
-     * Threshold 1e+7 sits below photo_synth (1.2e+8) so dense patterns are unaffected. */
+    /* V312/V314: Pre-select starting step before the retry loop.
+     *
+     * V312: HF energy < 1e+7 → flat/gradient/impulse → skip to min_step.
+     *       Saves 2-4 T1 runs (attempt 0 through attempt 3) for sparse patterns.
+     *
+     * V314: When V312 doesn't fire (medium/dense content), use sig_frac —
+     *       the fraction of DWT coefficients with |val| ≥ base_step — to estimate
+     *       byte_ratio_0 without running T1, then select the target step directly.
+     *
+     *   sig_frac < SIG_SKIP_MIN (0.004): very sparse — jump to min_step.
+     *       Catches two_value_split (sig_frac ≈ 0.0027); safely below h_gradient (0.0076).
+     *
+     *   sig_frac < SIG_JUMP_2X (0.065): medium-sparse — jump to step/4.
+     *       Catches h_bars_8 (0.0136), v_bars_8 (0.0242), hl/lh_bars_64 (0.054).
+     *       Safely below checker_64 (0.1221) which fills budget via DWT leakage.
+     *
+     *   Gap zone [SIG_JUMP_2X, SIG_HALVE_LO): no action.
+     *       checker_64 (0.1221) and hh1_pixel_checker (0.2510) live here.
+     *       Both fill quota at step=0.25 via DWT leakage; no retry needed.
+     *
+     *   SIG_HALVE_LO (0.30) ≤ sig_frac < SIG_HALVE_HI (0.55): halve step once.
+     *       Catches photo_synth (0.5310); saves ~34ms vs waiting for quota miss.
+     *
+     *   sig_frac ≥ SIG_HALVE_HI: dense — no action (checker_8 0.74, noise 0.92). */
     {
+        constexpr float MIN_STEP = 0.024f;  /* = adaptive_min_base_step (defined below) */
         float total_hf = h_en_pre[1] + h_en_pre[3] + h_en_pre[5];
         if (total_hf < HF_SPARSE_THRESHOLD) {
+            /* V312: definitely sparse — skip directly to min_step. */
             float skip_step = current_step;
-            while (skip_step * 0.5f >= adaptive_min_base_step) skip_step *= 0.5f;
+            while (skip_step * 0.5f >= MIN_STEP) skip_step *= 0.5f;
             current_step = skip_step;
+        } else {
+            /* V314: medium/dense — estimate step from sig_frac. */
+            static const float SIG_SKIP_MIN  = 0.004f;   /* two_value_split(0.0027) < this < h_gradient(0.0076) */
+            static const float SIG_JUMP_2X   = 0.065f;   /* bars patterns(0.014-0.055) < this < checker_64(0.1221) */
+            static const float SIG_HALVE_LO  = 0.30f;    /* gap zone top: hh1(0.2510) < this < photo_synth(0.5310) */
+            static const float SIG_HALVE_HI  = 0.55f;    /* dense zone: checker_8(0.74)+ unaffected */
+            int64_t  total_pixels = static_cast<int64_t>(3) * stride * height;
+            uint64_t total_sig    = (uint64_t)h_sig_cnt[0] + h_sig_cnt[1] + h_sig_cnt[2];
+            float sig_frac = (total_pixels > 0)
+                           ? static_cast<float>(total_sig) / static_cast<float>(total_pixels)
+                           : 0.f;
+            if (sig_frac < SIG_SKIP_MIN) {
+                float skip_step = current_step;
+                while (skip_step * 0.5f >= MIN_STEP) skip_step *= 0.5f;
+                current_step = skip_step;
+            } else if (sig_frac < SIG_JUMP_2X) {
+                float jump_step = current_step * 0.25f;
+                if (jump_step >= MIN_STEP)
+                    current_step = jump_step;
+                else if (current_step * 0.5f >= MIN_STEP)
+                    current_step = current_step * 0.5f;
+            /* Gap zone [SIG_JUMP_2X, SIG_HALVE_LO): no action.
+             * checker_64 (0.1221) and hh1_pixel_checker (0.2510) fall here;
+             * both fill CBs via DWT leakage and need no step change. */
+            } else if (sig_frac >= SIG_HALVE_LO && sig_frac < SIG_HALVE_HI) {
+                /* Halve zone: photo_synth (0.5310) — save ~34ms vs quota miss. */
+                float half = current_step * 0.5f;
+                if (half >= MIN_STEP) current_step = half;
+            }
         }
     }
 
