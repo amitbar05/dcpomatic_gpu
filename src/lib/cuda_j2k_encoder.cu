@@ -5625,8 +5625,8 @@ CudaJ2KEncoder::encode_ebcot(
     float         base_step    = v314_base_step;  /* mutable: reassigned after retry loop */
 
     constexpr int EBCOT_THREADS = 64;
-    /* Correct mode: MQ coder, all bit-planes, full D2H. */
-    const int  bp_skip    = 0;
+    /* V316: bp_skip computed per-attempt from current_step (see inside retry loop). */
+    int  bp_skip    = 0;
     const bool use_bypass = true;   /* V299: BYPASS+RESTART re-enabled; ~2× T1 speedup for high-entropy content */
     int  max_cb_d2h = CB_BUF_SIZE;
     /* V225: Two-phase PCRD in gpu_ebcot_t2.h.
@@ -5734,7 +5734,17 @@ CudaJ2KEncoder::encode_ebcot(
                 /* Halve zone: photo_synth (0.5310) — save ~34ms vs quota miss. */
                 float half = current_step * 0.5f;
                 if (half >= MIN_STEP) current_step = half;
+            } else if (sig_frac >= SIG_HALVE_HI) {
+                /* V316: Dense zone (sig_frac ≥ SIG_HALVE_HI = 0.55).
+                 * checker_8 (0.74), noise_small (0.92), hh2/hh3 patterns.
+                 * All are fully rate-limited at step=0.25; pcrd_estimate ≈ target_bytes
+                 * even after skipping the 2 LSB bit-planes.
+                 * Gap-zone [SIG_JUMP_2X, SIG_HALVE_LO): checker_64 (0.12) and hh1 (0.25)
+                 * — NOT flagged: their sparse CBs would drop pcrd_estimate below the
+                 * retry threshold with bp_skip=2, triggering an expensive retry. */
+                bp_skip = 2;
             }
+            /* else: gap zone [SIG_JUMP_2X, SIG_HALVE_LO) → no action, no bp_skip */
         }
     }
 
@@ -5789,7 +5799,8 @@ CudaJ2KEncoder::encode_ebcot(
         /* Step 5: T1 launch per component.
          * V228: MAX_BP=16 for steps ≥ 0.097 (pmax ≤ 16 guaranteed).
          * V230: MAX_BP=17 for steps < 0.097 (step=0.0625: LL5 pmax=17).
-         * V233: MAX_BP=18 for steps < 0.049 (step=0.03125: LL5 pmax=18). */
+         * V233: MAX_BP=18 for steps < 0.049 (step=0.03125: LL5 pmax=18).
+         * V316: bp_skip pre-set in V314 decision block (dense zone only). */
         /* V246: BYPASS is a compile-time template param → dead code elimination
          * of all non-bypass/bypass branches in the kernel. */
         if (current_step < 0.049f) {
