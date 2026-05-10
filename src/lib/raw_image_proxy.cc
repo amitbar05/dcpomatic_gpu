@@ -19,6 +19,7 @@
 */
 
 
+#include "dcpomatic_assert.h"
 #include "raw_image_proxy.h"
 #include "image.h"
 #include <dcp/util.h>
@@ -47,7 +48,7 @@ using boost::optional;
 RawImageProxy::RawImageProxy(shared_ptr<const Image> image)
 	: _image (image)
 {
-
+	DCPOMATIC_ASSERT(image);
 }
 
 
