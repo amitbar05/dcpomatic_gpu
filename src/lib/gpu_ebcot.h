@@ -727,8 +727,11 @@ __global__ __launch_bounds__(64, 19) void kernel_ebcot_t1(
 
     /* V311: mag_bp_flat uses absolute bit-position indexing (bp=0=LSB).
      * Declared here (before the combined pass) so the single d_dwt scan can populate it.
-     * CHUNK_BP=MAX_BPLANES=18 covers all possible num_bp values in one scan. */
-    constexpr int CHUNK_BP = MAX_BPLANES;
+     * V315: CHUNK_BP = MAX_BP (template param) instead of MAX_BPLANES (18).
+     *   num_bp is capped to MAX_BP (line below), so one chunk always covers all bit-planes.
+     *   Reduces LMEM from 3104 → 2848 bytes for MAX_BP=16 (step ≥ 0.097), saving
+     *   2×32×4=256 bytes.  MAX_BP=17/18 variants save 128/0 bytes respectively. */
+    constexpr int CHUNK_BP = MAX_BP;
     uint32_t mag_bp_flat[CHUNK_BP * CB_DIM];
 
     /* V311: Combined pass — zero-init mag_bp_flat, then single d_dwt scan to
