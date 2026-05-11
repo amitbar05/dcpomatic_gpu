@@ -599,6 +599,7 @@ supported_by.Add (wxT ("Jessica Han"));
 supported_by.Add (wxT ("Mark Hanrahan"));
 supported_by.Add (wxT ("Niels-Erik Constantin Hansen"));
 supported_by.Add (wxT ("Richard Hansen"));
+supported_by.Add (wxT ("Paul Hara"));
 supported_by.Add (wxT ("Jozef Hardos"));
 supported_by.Add (wxT ("Filmschuur Harlem"));
 supported_by.Add (wxT ("Jens Harms"));
