@@ -591,6 +591,7 @@ ReelWriter::create_reel_sound(shared_ptr<dcp::Reel> reel, list<ReferencedReelAss
 }
 
 
+/** @param ensure_closed_captions List of DCPTextTracks that we need to make sure exist in this reel */
 void
 ReelWriter::create_reel_text(
 	shared_ptr<dcp::Reel> reel,
@@ -630,17 +631,30 @@ ReelWriter::create_reel_text(
 		}
 	}
 
-	for (auto const& i: _closed_caption_assets) {
-		auto a = maybe_add_text<dcp::ReelInteropTextAsset, dcp::ReelSMPTETextAsset, dcp::ReelTextAsset>(
-			i.second, dcp::TextType::CLOSED_CAPTION, duration, reel, _reel_index, _reel_count, _content_summary, refs, film(), _period, output_dcp, _text_only
+	for (auto iter = ensure_closed_captions.begin(); iter != ensure_closed_captions.end(); ) {
+		/* Find any asset we wrote for this track */
+		auto written_asset = _closed_caption_assets.find(*iter);
+
+		/* Try to make a reel asset out of either written_asset or one of the referenced assets */
+		auto asset = maybe_add_text<dcp::ReelInteropTextAsset, dcp::ReelSMPTETextAsset, dcp::ReelTextAsset>(
+			written_asset == _closed_caption_assets.end() ? shared_ptr<dcp::TextAsset>() : written_asset->second,
+			dcp::TextType::CLOSED_CAPTION, duration, reel, _reel_index, _reel_count, _content_summary, refs, film(), _period, output_dcp, _text_only
 			);
-		DCPOMATIC_ASSERT(a);
-		a->set_annotation_text(i.first.name);
-		if (i.first.language) {
-			a->set_language(i.first.language.get());
+
+		/* Fill in some details for the reel asset if we know them */
+		if (asset && written_asset != _closed_caption_assets.end()) {
+			asset->set_annotation_text(written_asset->first.name);
+			if (written_asset->first.language) {
+				asset->set_language(written_asset->first.language.get());
+			}
 		}
 
-		ensure_closed_captions.erase(i.first);
+		if (asset) {
+			/* We made a reel asset for this track, so we don't need to worry about it any more */
+			iter = ensure_closed_captions.erase(iter);
+		} else {
+			++iter;
+		}
 	}
 
 	/* Make empty tracks for anything we've been asked to ensure but that we haven't added */
