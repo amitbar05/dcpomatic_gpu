@@ -67,40 +67,40 @@ BOOST_AUTO_TEST_CASE(audio_mapping_test)
 
 
 static void
-guess_check(boost::filesystem::path filename, int output_channel)
+guess_check(boost::filesystem::path filename, dcp::Channel output_channel)
 {
-	AudioMapping m(1, 8);
+	AudioMapping m(1, 12);
 	m.make_default(0, filename);
-	for (int i = 0; i < 8; ++i) {
+	for (int i = 0; i < 12; ++i) {
 		BOOST_TEST_INFO(fmt::format("{} channel {}", filename.string(), i));
-		BOOST_CHECK_CLOSE(m.get(0, i), i == output_channel ? 1 : 0, 0.01);
+		BOOST_CHECK_CLOSE(m.get(0, i), i == static_cast<int>(output_channel) ? 1 : 0, 0.01);
 	}
 }
 
 
 BOOST_AUTO_TEST_CASE(audio_mapping_guess_test)
 {
-	guess_check("stuff_L_nonsense.wav", 0);
-	guess_check("stuff_nonsense.wav", 2);
-	guess_check("fred_R.wav", 1);
-	guess_check("jim_C_sheila.aiff", 2);
-	guess_check("things_Lfe_and.wav", 3);
-	guess_check("weeee_Ls.aiff", 4);
-	guess_check("try_Rs-it.wav", 5);
+	guess_check("stuff_L_nonsense.wav", dcp::Channel::LEFT);
+	guess_check("stuff_nonsense.wav", dcp::Channel::CENTRE);
+	guess_check("fred_R.wav", dcp::Channel::RIGHT);
+	guess_check("jim_C_sheila.aiff", dcp::Channel::CENTRE);
+	guess_check("things_Lfe_and.wav", dcp::Channel::LFE);
+	guess_check("weeee_Ls.aiff", dcp::Channel::LS);
+	guess_check("try_Rs-it.wav", dcp::Channel::RS);
 
 	/* PT-style */
-	guess_check("things_LFE.wav", 3);
-	guess_check("ptish_Lsr_abc.wav", 6);
-	guess_check("ptish_Rsr_abc.wav", 7);
-	guess_check("more_Lss_s.wav", 4);
-	guess_check("other_Rss.aiff", 5);
+	guess_check("things_LFE.wav", dcp::Channel::LFE);
+	guess_check("ptish_Lsr_abc.wav", dcp::Channel::BSL);
+	guess_check("ptish_Rsr_abc.wav", dcp::Channel::BSR);
+	guess_check("more_Lss_s.wav", dcp::Channel::LS);
+	guess_check("other_Rss.aiff", dcp::Channel::RS);
 
 	/* Only the filename should be taken into account */
-	guess_check("-Lfe-/foo_L.wav", 0);
+	guess_check("-Lfe-/foo_L.wav", dcp::Channel::LEFT);
 
 	/* Dolby-style */
-	guess_check("jake-Lrs-good.wav", 6);
-	guess_check("elwood-Rrs-good.wav", 7);
+	guess_check("jake-Lrs-good.wav", dcp::Channel::BSL);
+	guess_check("elwood-Rrs-good.wav", dcp::Channel::BSR);
 }
 
 
