@@ -2205,11 +2205,34 @@ Film::speed_up_range(int dcp_frame_rate) const
 	return _playlist->speed_up_range(dcp_frame_rate);
 }
 
+
 void
-Film::copy_from(shared_ptr<const Film> film)
+Film::copy_from(shared_ptr<const Film> film, std::function<void (float)> set_progress)
 {
 	read_metadata(film->file(metadata_file));
+
+	auto old_assets = film->read_remembered_assets();
+	auto new_assets = std::vector<RememberedAsset>{};
+
+	/* Find source film's remembered assets that still exist and copy them to our new film */
+	for (auto path: dcp::filesystem::recursive_directory_iterator(*film->directory())) {
+		auto iter = std::find_if(old_assets.begin(), old_assets.end(), [path](RememberedAsset const& asset) {
+			return asset.filename() == path.path().filename();
+		});
+		if (iter != old_assets.end()) {
+			copy_in_bits(path, assets_path() / path.path().filename(), set_progress);
+			new_assets.push_back({path.path().filename(), iter->period(), iter->identifier()});
+		}
+	}
+
+	write_remembered_assets(new_assets);
+
+	/* To use the assets we also need the info files */
+	for (auto path: dcp::filesystem::directory_iterator(film->dir(info_dir))) {
+		dcp::filesystem::copy_file(path.path(), dir(info_dir) / path.path().filename());
+	}
 }
+
 
 bool
 Film::references_dcp_video() const

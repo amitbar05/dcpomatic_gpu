@@ -107,6 +107,7 @@ LIBDCP_DISABLE_WARNINGS
 #include <wx/cmdline.h>
 #include <wx/generic/aboutdlgg.h>
 #include <wx/preferences.h>
+#include <wx/progdlg.h>
 #include <wx/splash.h>
 #include <wx/stdpaths.h>
 #include <wx/wxhtml.h>
@@ -653,7 +654,10 @@ private:
 
 		if (dialog.ShowModal() == wxID_OK && dialog.check_path() && maybe_save_film<FilmChangedDuplicatingDialog>()) {
 			auto film = make_shared<Film>(dialog.path());
-			film->copy_from(_film);
+			wxProgressDialog progress(variant::wx::dcpomatic(), _("Duplicating film"));
+			film->copy_from(_film, [&progress](float value) {
+				progress.Update(value * 100);
+			});
 			film->set_name(dialog.path().filename().generic_string());
 			try {
 				film->write_metadata();
@@ -669,7 +673,10 @@ private:
 
 		if (dialog.ShowModal() == wxID_OK && dialog.check_path() && maybe_save_film<FilmChangedDuplicatingDialog>()) {
 			auto film = make_shared<Film>(dialog.path());
-			film->copy_from(_film);
+			wxProgressDialog progress(variant::wx::dcpomatic(), _("Duplicating film"));
+			film->copy_from(_film, [&progress](float value) {
+				progress.Update(value * 100);
+			});
 			film->set_name(dialog.path().filename().generic_string());
 			try {
 				film->write_metadata();

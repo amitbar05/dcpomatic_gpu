@@ -86,3 +86,24 @@ BOOST_AUTO_TEST_CASE(film_possible_reel_types_test2)
 	BOOST_CHECK_EQUAL(film->possible_reel_types().size(), 2U);
 }
 
+
+BOOST_AUTO_TEST_CASE(film_copy_remembered_assets_test)
+{
+	dcp::filesystem::remove_all("build/test/film_copy_remembered_assets_test2");
+
+	auto content = content_factory("test/data/flat_red.png")[0];
+	auto film = new_test_film("film_copy_remembered_assets_test", { content });
+	make_and_verify_dcp(film);
+
+	auto copy = make_shared<Film>(boost::filesystem::path("build/test/film_copy_remembered_assets_test2"));
+	copy->copy_from(film, [](float) {});
+
+	auto remembered = copy->read_remembered_assets();
+	BOOST_REQUIRE_EQUAL(remembered.size(), 1U);
+	auto path = find_asset(remembered, *copy->directory(), dcpomatic::DCPTimePeriod({}, dcpomatic::DCPTime::from_seconds(10)), film->video_identifier());
+	BOOST_CHECK(path.has_value());
+
+	for (auto path: dcp::filesystem::directory_iterator(film->dir("info"))) {
+		check_file(path.path(), copy->dir("info") / path.path().filename());
+	}
+}

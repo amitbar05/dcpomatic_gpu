@@ -122,7 +122,7 @@ public:
 	void write_template(boost::filesystem::path path) const;
 	std::shared_ptr<xmlpp::Document> metadata(bool with_content_paths = true) const;
 
-	void copy_from(std::shared_ptr<const Film> film);
+	void copy_from(std::shared_ptr<const Film> film, std::function<void (float)> set_progress);
 
 	std::string isdcf_name(bool if_created_now) const;
 	std::string dcp_name(bool if_created_now = false) const;
