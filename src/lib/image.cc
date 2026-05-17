@@ -612,17 +612,15 @@ Image::make_black()
 
 	case AV_PIX_FMT_UYVY422:
 	{
-		int const Y = sample_size(0).height;
-		int const X = line_size()[0];
-		uint8_t* p = data()[0];
-		for (int y = 0; y < Y; ++y) {
-			for (int x = 0; x < X / 4; ++x) {
-				*p++ = eight_bit_uv; // Cb
-				*p++ = 0;	     // Y0
-				*p++ = eight_bit_uv; // Cr
-				*p++ = 0;	     // Y1
-			}
-		}
+		fill_memory(
+			data()[0],
+			sample_size(0).height * line_size()[0],
+			/* Cb/Cr is eight_bit_uv, Y0/Y1 is 0 */
+			static_cast<uint64_t>(eight_bit_uv) |
+			(static_cast<uint64_t>(eight_bit_uv) << 16) |
+			(static_cast<uint64_t>(eight_bit_uv) << 32) |
+			(static_cast<uint64_t>(eight_bit_uv) << 48)
+		);
 		break;
 	}
 
