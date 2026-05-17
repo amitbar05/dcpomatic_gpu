@@ -13,16 +13,16 @@ msgstr ""
 "Project-Id-Version: libdcpomatic-wx\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-04-21 17:39+0200\n"
-"PO-Revision-Date: 2025-10-05 14:09+0800\n"
+"PO-Revision-Date: 2026-05-17 10:50+0800\n"
 "Last-Translator: Dian Li <xslidian@gmail.com>\n"
-"Language-Team: Chinese Simplified (Rov8 branch)\n"
+"Language-Team: Chinese Simplified (Hanyuan branch)\n"
 "Language: zh_CN\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 "
 "|| n%100>=20) ? 1 : 2);\n"
-"X-Generator: Poedit 3.7\n"
+"X-Generator: Poedit 3.9\n"
 "X-Poedit-SourceCharset: UTF-8\n"
 
 #: src/wx/player_information.cc:111
@@ -109,9 +109,9 @@ msgid "%s already exists as a file, so you cannot use it for a film."
 msgstr "%s 文件已经存在，所以不能用它创建工程。"
 
 #: src/wx/audio_dialog.cc:175
-#, fuzzy, c-format
+#, c-format
 msgid "%s audio"
-msgstr "%s 音频 - %s"
+msgstr "%s 音频"
 
 #: src/wx/audio_dialog.cc:171 src/wx/audio_dialog.cc:173
 #, c-format
@@ -124,12 +124,11 @@ msgid "%s test email"
 msgstr "%s发送测试邮件"
 
 #: src/wx/about_dialog.cc:95
-#, fuzzy
 msgid ""
 "(C) 2012-2026 Carl Hetherington, Terrence Meiczinger\n"
 "Aaron Boxer"
 msgstr ""
-"(C) 2012-2025 Carl Hetherington, Terrence Meiczinger\n"
+"(C) 2012-2026 Carl Hetherington, Terrence Meiczinger\n"
 "Aaron Boxer"
 
 #: src/wx/full_config_dialog.cc:1227 src/wx/player_config_dialog.cc:131
@@ -559,9 +558,8 @@ msgid "Allow mapping to all audio channels"
 msgstr "允许映射到所有音频通道"
 
 #: src/wx/full_config_dialog.cc:1079
-#, fuzzy
 msgid "Allow use of MPEG2 Interop"
-msgstr "允许使用SMPTE Bv2.0"
+msgstr "允许使用MPEG2 Interop"
 
 #: src/wx/full_config_dialog.cc:1077
 msgid "Allow use of SMPTE Bv2.0"
@@ -826,9 +824,8 @@ msgid "Check for updates on startup"
 msgstr "启动时检查软件更新"
 
 #: src/wx/content_menu.cc:116
-#, fuzzy
 msgid "Choose CPL"
-msgstr "选择CPL…"
+msgstr "选择CPL"
 
 #: src/wx/content_panel.cc:677
 msgid "Choose a DCP folder"
@@ -1038,9 +1035,8 @@ msgid "Could not read certificate file."
 msgstr "无法读取证书文件。"
 
 #: src/wx/certificate_chain_editor.cc:195
-#, fuzzy
 msgid "Could not read certificate file.  Make sure it is in PEM format."
-msgstr "无法读取证书文件。"
+msgstr "无法读取证书文件。确保它是 PEM 格式。"
 
 #: src/wx/qube_certificate_panel.cc:55
 msgid "Could not read certificates from Qube server."
@@ -1140,9 +1136,8 @@ msgid "Debug: audio analysis"
 msgstr "调试: 音频分析"
 
 #: src/wx/full_config_dialog.cc:1322
-#, fuzzy
 msgid "Debug: butler"
-msgstr "调试: 播放器"
+msgstr "调试: 管家(butler)"
 
 #: src/wx/full_config_dialog.cc:1314 src/wx/kdm_config_dialog.cc:142
 msgid "Debug: email sending"
@@ -1361,33 +1356,28 @@ msgid "Encoding Servers"
 msgstr "编码服务器"
 
 #: src/wx/encryption_settings_dialog.cc:33
-#, fuzzy
 msgid "Encrypt picture"
-msgstr "加密"
+msgstr "加密图像"
 
 #: src/wx/encryption_settings_dialog.cc:34
-#, fuzzy
 msgid "Encrypt sound"
-msgstr "加密"
+msgstr "加密声音"
 
 #: src/wx/encryption_settings_dialog.cc:35
-#, fuzzy
 msgid "Encrypt text"
-msgstr "加密"
+msgstr "加密文本"
 
 #: src/wx/dcp_panel.cc:106 src/wx/spl_entry_dialog.cc:51
 msgid "Encrypted"
 msgstr "加密"
 
 #: src/wx/encryption_settings_dialog.cc:31
-#, fuzzy
 msgid "Encryption settings"
-msgstr "导出所有KDM加密设置…"
+msgstr "加密设置"
 
 #: src/wx/dcp_panel.cc:107
-#, fuzzy
 msgid "Encryption settings..."
-msgstr "导出所有KDM加密设置…"
+msgstr "加密设置..."
 
 #: src/wx/text_view.cc:68
 msgid "End"
@@ -1508,29 +1498,24 @@ msgid "Finding the colours in these subtitles..."
 msgstr "查找这些字幕中的颜色..."
 
 #: src/wx/markers.cc:39
-#, fuzzy
 msgid "First frame of end credits (FFEC)"
-msgstr "片尾的第一帧"
+msgstr "片尾字幕的第一帧(FFEC)"
 
 #: src/wx/markers.cc:37
-#, fuzzy
 msgid "First frame of intermission (FFOI)"
-msgstr "幕间休息第一帧"
+msgstr "幕间休息的第一帧 (FFOI)"
 
 #: src/wx/markers.cc:41
-#, fuzzy
 msgid "First frame of moving credits (FFMC)"
-msgstr "动态字幕的第一帧"
+msgstr "滚动字幕的第一帧(FFMC)"
 
 #: src/wx/markers.cc:33
-#, fuzzy
 msgid "First frame of ratings band (FFOB)"
-msgstr "评级等级的第一帧"
+msgstr "评级的第一帧(FFOB)"
 
 #: src/wx/markers.cc:35
-#, fuzzy
 msgid "First frame of title credits (FFTC)"
-msgstr "标题字幕第一帧"
+msgstr "标题字幕第一帧(FFTC)"
 
 #: src/wx/short_kdm_output_panel.cc:115 src/wx/tall_kdm_output_panel.cc:84
 msgid "Folder / ZIP name format"
@@ -1953,29 +1938,24 @@ msgid "Language used for any sign language video track"
 msgstr "用于手语视频轨道的语言"
 
 #: src/wx/markers.cc:40
-#, fuzzy
 msgid "Last frame of end credits (LFEC)"
-msgstr "片尾字幕的最后一帧"
+msgstr "片尾字幕的最后一帧(LFEC)"
 
 #: src/wx/markers.cc:38
-#, fuzzy
 msgid "Last frame of intermission (LFOI)"
-msgstr "幕间休息的最后一帧"
+msgstr "幕间休息的最后一帧(LFOI)"
 
 #: src/wx/markers.cc:42
-#, fuzzy
 msgid "Last frame of moving credits (LFMC)"
-msgstr "动态字幕的最后一帧"
+msgstr "动态字幕的最后一帧(LFMC)"
 
 #: src/wx/markers.cc:34
-#, fuzzy
 msgid "Last frame of ratings band (LFOB)"
-msgstr "评级等级的最后一帧"
+msgstr "评级等级的最后一帧(LFOB)"
 
 #: src/wx/markers.cc:36
-#, fuzzy
 msgid "Last frame of title credits (LFTC)"
-msgstr "标题字幕的最后一帧"
+msgstr "标题字幕的最后一帧(LFTC)"
 
 #: src/wx/content_panel.cc:292
 msgid "Later"
@@ -2090,9 +2070,8 @@ msgid "MPEG2 Interop"
 msgstr "MPEG2 Interop"
 
 #: src/wx/export_subtitles_dialog.cc:48
-#, fuzzy
 msgid "MXF (SMPTE)"
-msgstr "SMPTE"
+msgstr "MXF (SMPTE)"
 
 #. TRANSLATORS: Main and Additional here are a choice for whether a set of subtitles is in the "main" language of the
 #. film or an "additional" language.
@@ -3719,9 +3698,9 @@ msgstr ""
 "(%duration) 不同。"
 
 #: src/wx/verify_dcp_result_panel.cc:423
-#, fuzzy, c-format
+#, c-format
 msgid "The sound asset %f has an invalid bit depth of %bit_depth."
-msgstr "声音资产 %f 的位深度 %bit_depth 无效。"
+msgstr "音频资产 %f 的位深 %bit_depth 无效。"
 
 #: src/wx/verify_dcp_result_panel.cc:420
 #, c-format
@@ -3786,9 +3765,8 @@ msgid "The video asset %f uses the invalid image size %size_in_pixels."
 msgstr "视频资产 %f 使用了无效的图像大小 %size_in_pixels。"
 
 #: src/wx/verify_dcp_result_panel.cc:369
-#, fuzzy
 msgid "The video asset is 4K which is not allowed for 3D video."
-msgstr "视频资产 %f 使用的帧速率 %frame_rate 对于3D视频无效。"
+msgstr "该视频素材为4K，不允许用于3D视频。"
 
 #: src/wx/verify_dcp_result_panel.cc:414
 msgid "There are more than 3 closed caption lines in at least one place."
@@ -3846,13 +3824,13 @@ msgid "This CPL contains no encrypted assets."
 msgstr "该CPL没有包含加密内容。"
 
 #: src/wx/verify_dcp_result_panel.cc:348
-#, fuzzy, c-format
+#, c-format
 msgid ""
 "This DCP refers to the asset %asset_id in another DCP (and perhaps others), "
 "so it is a \"version file\" (VF)"
 msgstr ""
-"此DCP引用了另一个DCP（可能还有其他DCP）中的资产 %asset_id，因此它是一个“版本"
-"文件”（VF）"
+"这个DCP引用了另一个DCP中的资产%asset_id（也可能是其他DCP中的资产），因此它是"
+"一个“版本文件”(VF)"
 
 #: src/wx/verify_dcp_result_panel.cc:354
 msgid "This DCP uses the Interop standard, but it should be made with SMPTE."
@@ -4257,18 +4235,16 @@ msgid "Verify"
 msgstr "验证"
 
 #: src/wx/content_menu.cc:425
-#, fuzzy
 msgid "Verify DCP"
-msgstr "验证"
+msgstr "验证DCP"
 
 #: src/wx/verify_dcp_dialog.cc:94
 msgid "Verify picture asset details"
 msgstr "验证图像资产详细信息"
 
 #: src/wx/content_menu.cc:107
-#, fuzzy
 msgid "Verify..."
-msgstr "验证"
+msgstr "验证..."
 
 #: src/wx/smpte_metadata_dialog.cc:109 src/wx/system_information_dialog.cc:67
 msgid "Version"
@@ -4385,9 +4361,8 @@ msgid "X"
 msgstr "X"
 
 #: src/wx/export_subtitles_dialog.cc:47
-#, fuzzy
 msgid "XML (Interop)"
-msgstr "Interop"
+msgstr "XML (Interop)"
 
 #: src/wx/text_panel.cc:93
 msgid "Y"

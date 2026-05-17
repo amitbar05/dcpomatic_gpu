@@ -13,15 +13,15 @@ msgstr ""
 "Project-Id-Version: DCPOMATIC\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-04-12 11:50+0200\n"
-"PO-Revision-Date: 2025-10-05 13:41+0800\n"
+"PO-Revision-Date: 2026-05-17 10:46+0800\n"
 "Last-Translator: Dian Li <xslidian@gmail.com>\n"
-"Language-Team: Chinese Simplified (Rov8 branch)\n"
+"Language-Team: Chinese Simplified (Hanyuan branch)\n"
 "Language: zh_CN\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
-"X-Generator: Poedit 3.7\n"
+"X-Generator: Poedit 3.9\n"
 "X-Poedit-SourceCharset: UTF-8\n"
 
 #: src/tools/dcpomatic_kdm.cc:491
@@ -37,7 +37,7 @@ msgstr "%d 导出KDMs 到 %s"
 #: src/tools/dcpomatic_combiner.cc:177
 #, c-format
 msgid "%s already exists as a file, so you cannot use it for a DCP."
-msgstr "%s文件已存在，您不可以将它用于DCP。"
+msgstr "%s是一个文件且已经存在，因此您不可以将它用于DCP。"
 
 #: src/tools/dcpomatic_disk.cc:518 src/tools/dcpomatic_kdm.cc:944
 #: src/tools/dcpomatic_player.cc:1426
@@ -157,11 +157,11 @@ msgstr "查看(&V)"
 
 #: src/tools/dcpomatic_verifier.cc:107
 msgid "(encrypted, have KDM)"
-msgstr ""
+msgstr "（已加密，有KDM）"
 
 #: src/tools/dcpomatic_verifier.cc:109
 msgid "(encrypted, no KDM)"
-msgstr ""
+msgstr "（已加密，无KDM）"
 
 #: src/tools/dcpomatic_playlist.cc:324
 msgid "<b>Playlist:</b>"
@@ -194,9 +194,8 @@ msgid "Add &KDM..."
 msgstr "添加 &KDM..."
 
 #: src/tools/dcpomatic_verifier.cc:187
-#, fuzzy
 msgid "Add KDM..."
-msgstr "添加 &KDM..."
+msgstr "添加 KDM..."
 
 #: src/tools/dcpomatic_playlist.cc:80
 msgid "Add content"
@@ -294,11 +293,11 @@ msgstr "注释文本"
 msgid ""
 "Are you sure you want to restore preferences to their defaults?  This cannot "
 "be undone."
-msgstr "确定要恢复默认设置？ 该操作不能撤销。"
+msgstr "确定恢复默认偏好设置？ 该操作不能撤销。"
 
 #: src/tools/dcpomatic_player.cc:709
 msgid "Audio graph..."
-msgstr ""
+msgstr "音频图..."
 
 #: src/tools/dcpomatic.cc:878
 #, c-format
@@ -329,7 +328,7 @@ msgstr "检查更新"
 
 #: src/tools/dcpomatic_verifier.cc:375
 msgid "Checking KDM"
-msgstr ""
+msgstr "检查KDM"
 
 #: src/tools/dcpomatic_combiner.cc:68 src/tools/dcpomatic_disk.cc:84
 msgid "Choose a DCP folder"
@@ -376,7 +375,7 @@ msgstr "无法创建目录来存储影片。"
 msgid ""
 "Could not decrypt the DKDM.  Perhaps it was not created with the correct "
 "certificate."
-msgstr "不能解开DKDM。 也许它不是用选定的证书所加密的。"
+msgstr "无法解密DKDM。 也许它不是用选定证书所加密的。"
 
 #: src/tools/dcpomatic.cc:661 src/tools/dcpomatic.cc:678
 msgid "Could not duplicate project."
@@ -506,11 +505,11 @@ msgstr "无法启动播放器，你可能需要从dcpomatic.com下载。"
 #, c-format
 msgid ""
 "Could not write to config file at %s.  Your changes have not been saved."
-msgstr "不能保存设置%s。设置没有被保存。"
+msgstr "不能保存设置到文件%s。你的修改没有被保存。"
 
 #: src/tools/dcpomatic_player.cc:1136
 msgid "Could not write to config file.  Your changes have not been saved."
-msgstr "不能保存设置到文件。更改没有被保存。"
+msgstr "不能保存设置到文件。你的修改没有被保存。"
 
 #: src/tools/dcpomatic_kdm.cc:239
 msgid "Create KDMs"
@@ -655,18 +654,16 @@ msgid "Entry point"
 msgstr "入口点"
 
 #: src/tools/dcpomatic_verifier.cc:152
-#, fuzzy
 msgid "Examining DCPs"
-msgstr "正在组合DCP"
+msgstr "正在检查DCPs"
 
 #: src/tools/dcpomatic.cc:1446
 msgid "Export preferences..."
 msgstr "导出首选项设置..."
 
 #: src/tools/dcpomatic.cc:1418
-#, fuzzy
 msgid "Export subtitles...\tShift-Ctrl-E"
-msgstr "导出字幕..."
+msgstr "导出字幕...\tShift-Ctrl-E"
 
 #: src/tools/dcpomatic.cc:1417
 msgid "Export video file...\tCtrl-E"
@@ -683,7 +680,7 @@ msgstr "眼"
 #: src/tools/dcpomatic.cc:1041 src/tools/dcpomatic_kdm.cc:362
 #, c-format
 msgid "File %s already exists.  Do you want to overwrite it?"
-msgstr "已存在文件 %s ，是否覆盖？"
+msgstr "已存在文件 %s ，你是否想要覆盖？"
 
 #. TRANSLATORS: this is the heading for a dialog box, which tells the user that the current
 #. project (Film) has been changed since it was last saved.
@@ -698,7 +695,7 @@ msgstr "查找磁盘"
 #: src/tools/dcpomatic_kdm.cc:357
 #, c-format
 msgid "Folder %s already exists.  Do you want to overwrite it?"
-msgstr "已存在文件 %s 。是否覆盖？"
+msgstr "已存在文件夹 %s 。你是否想要覆盖？"
 
 #: src/tools/dcpomatic_server.cc:169
 msgid "Frames per second"
@@ -958,9 +955,8 @@ msgid "Select DCP to open as OV"
 msgstr "选择DCP作为OV打开"
 
 #: src/tools/dcpomatic_verifier.cc:165 src/tools/dcpomatic_verifier.cc:167
-#, fuzzy
 msgid "Select DCP(s)"
-msgstr "选择KDM"
+msgstr "选择DCP(s)"
 
 #: src/tools/dcpomatic_kdm.cc:821
 msgid "Select DKDM File"
@@ -1228,7 +1224,7 @@ msgstr "向上"
 
 #: src/tools/dcpomatic.cc:1455
 msgid "User manual..."
-msgstr ""
+msgstr "用户手册..."
 
 #: src/tools/dcpomatic_verifier.cc:208
 msgid "Verify"

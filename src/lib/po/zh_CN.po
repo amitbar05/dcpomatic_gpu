@@ -13,15 +13,15 @@ msgstr ""
 "Project-Id-Version: LIBDCPOMATIC\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-04-19 23:03+0200\n"
-"PO-Revision-Date: 2025-10-05 13:31+0800\n"
+"PO-Revision-Date: 2026-05-17 10:45+0800\n"
 "Last-Translator: Dian Li <xslidian@gmail.com>\n"
-"Language-Team: Chinese Simplified (Rov8 branch)\n"
+"Language-Team: Chinese Simplified (Hanyuan branch)\n"
 "Language: zh_CN\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
-"X-Generator: Poedit 3.7\n"
+"X-Generator: Poedit 3.9\n"
 "X-Poedit-SourceCharset: UTF-8\n"
 
 #: src/lib/video_content.cc:515
@@ -207,7 +207,7 @@ msgid "; {} remaining; finishing at {}{}"
 msgstr "; 剩余 {} ; 完成于 {}{}"
 
 #: src/lib/analytics.cc:58
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "<h2>You have made {} DCPs with {}!</h2><img width=\"150\" height=\"193\" "
 "src=\"memory:me.jpg\" align=\"center\"><font size=\"+1\"><p>Hello. I'm Carl "
@@ -429,7 +429,7 @@ msgstr "中置"
 #: src/lib/exceptions.cc:196
 #, c++-format
 msgid "CPL {} not found"
-msgstr ""
+msgstr "未找到CPL {}"
 
 #: src/lib/job.cc:657
 msgid "Cancelled"
@@ -461,6 +461,8 @@ msgid ""
 "Check the server settings in the TMS tab of preferences, or un-tick \"Upload "
 "DCP to TMS after creation\" if you do not want to upload your DCP."
 msgstr ""
+"在首选项的TMS页面中检查服务器设置，或者您不想要上传DCP的话，则取消选中“制作"
+"DCP后上传到TMS）复选框"
 
 #: src/lib/transcode_job.cc:106
 msgid "Check their new settings, then try again."
@@ -682,9 +684,8 @@ msgid "Copying DCPs to {}"
 msgstr "复制DCP到 {}"
 
 #: src/lib/reel_writer.cc:194
-#, fuzzy
 msgid "Copying existing asset"
-msgstr "检查现有的图像数据"
+msgstr "正在拷贝已经存在的资产"
 
 #: src/lib/copy_to_drive_job.cc:58
 #, c++-format
@@ -811,9 +812,9 @@ msgid "DCP sample rate"
 msgstr "DCP 采样率"
 
 #: src/lib/frame_rate_change.cc:93
-#, fuzzy, c++-format
+#, c++-format
 msgid "DCP will contain 1 out of every {} frames of the content.\n"
-msgstr "将使用隔帧打包DCP。\n"
+msgstr "DCP 将包含内容中每 {} 帧中的 1 帧。\n"
 
 #: src/lib/frame_rate_change.cc:103
 #, c-format
@@ -904,9 +905,8 @@ msgstr "下载失败 ({} error {})"
 #. TRANSLATORS: this is an abbreviation for "end credits", shown next to the pair of markers
 #. "FFEC" and "LFEC" ({First, Last} Frame of End Credits)
 #: src/lib/layout_markers.cc:145
-#, fuzzy
 msgid "EC"
-msgstr "中置"
+msgstr "片尾字幕"
 
 #: src/lib/frame_rate_change.cc:95
 msgid "Each content frame will be doubled in the DCP.\n"
@@ -1128,7 +1128,7 @@ msgstr "IEC61966-2-4"
 #. "FFOI" and "LFOI" ({First, Last} Frame of Intermission)
 #: src/lib/layout_markers.cc:142
 msgid "IN"
-msgstr ""
+msgstr "幕间休息"
 
 #: src/lib/hints.cc:198
 msgid "If you do use 25fps you should change your DCP standard to SMPTE."
@@ -1231,9 +1231,8 @@ msgstr "左环绕"
 #. TRANSLATORS: this is an abbreviation for "moving credits", shown next to the pair of markers
 #. "FFMC" and "LFMC" ({First, Last} Frame of Moving Credits)
 #: src/lib/layout_markers.cc:148
-#, fuzzy
 msgid "MC"
-msgstr "中置"
+msgstr "滚动字幕"
 
 #: src/lib/mid_side_decoder.cc:39
 msgid "Mid-side decoder"
@@ -1279,12 +1278,11 @@ msgstr "动态隔行补偿"
 
 #: src/lib/dcp_content.cc:212
 msgid "No ASSETMAP or ASSETMAP.xml file found: is this a DCP?"
-msgstr ""
+msgstr "未找到ASSETMAP或ASSETMAP.xml文件，这是一个DCP吗？"
 
 #: src/lib/dcp_examiner.cc:115
-#, fuzzy
 msgid "No CPLs found in DCP"
-msgstr "DCP中没有找到CPL文件。"
+msgstr "DCP中没有找到CPL文件"
 
 #: src/lib/dcp_decoder.cc:114
 msgid "No CPLs found in DCP."
@@ -1362,15 +1360,15 @@ msgstr "小波降噪"
 
 #: src/lib/colour_conversion.cc:293
 msgid "P3 D60 (~6000K)"
-msgstr ""
+msgstr "P3 D60 (~6000K)"
 
 #: src/lib/colour_conversion.cc:292
 msgid "P3 D65 (~6500K)"
-msgstr ""
+msgstr "P3 D65 (~6500K)"
 
 #: src/lib/colour_conversion.cc:291
 msgid "P3 DCI (~6300K)"
-msgstr ""
+msgstr "P3 DCI (~6300K)"
 
 #: src/lib/util.cc:1111
 #, c++-format
@@ -1412,9 +1410,8 @@ msgstr "右声道"
 #. TRANSLATORS: this is an abbreviation for "ratings band", shown next to the pair of markers
 #. "FFOB" and "LFOB" ({First, Last} Frame of Band)
 #: src/lib/layout_markers.cc:136
-#, fuzzy
 msgid "RB"
-msgstr "右声道"
+msgstr "评级"
 
 #: src/lib/ffmpeg_content.cc:644
 msgid "RGB / sRGB (IEC61966-2-1)"
@@ -1503,9 +1500,8 @@ msgid "SMPTE ST 2084 for 10, 12, 14 and 16 bit systems"
 msgstr "SMPTE ST 2084 10, 12, 14和16 bit"
 
 #: src/lib/ffmpeg_content.cc:660
-#, fuzzy
 msgid "SMPTE ST 2128, IPT-C2"
-msgstr "SMPTE ST 428-1"
+msgstr "SMPTE ST 2128, IPT-C2"
 
 #: src/lib/ffmpeg_content.cc:636
 msgid "SMPTE ST 428-1"
@@ -1589,14 +1585,12 @@ msgstr ""
 "这些文件现在将被重新检查，因此您可能需要检查它们的设置。"
 
 #: src/lib/check_content_job.cc:94
-#, fuzzy
 msgid ""
 "Some files must be re-examined due to a bug fix in DCP-o-matic.  You may "
 "need to check their settings."
 msgstr ""
-"有些文件在添加到项目后发生了更改\n"
-"\n"
-"这些文件现在将被重新检查，因此您可能需要检查它们的设置。"
+"由于 DCP-o-matic 中的一个漏洞修复，某些文件必须重新检查。您可能需要检查它们的"
+"设置。"
 
 #: src/lib/hints.cc:622
 #, c++-format
@@ -1622,6 +1616,9 @@ msgid ""
 "in doubt, set everything (picture, sound and text) to be either encrypted or "
 "not."
 msgstr ""
+"你的一些内容是加密的，而有些则不是。虽然一些分销商（例如 Netflix）要求字幕不"
+"能加密（即使画面和声音可以加密），但其他分销商会对由此项目生成的 DCP 标记错"
+"误。如果不确定，请将所有内容（画面、声音和文字）设置为加密或不加密。"
 
 #: src/lib/make_dcp.cc:69
 msgid "Some of your content is missing"
@@ -1670,9 +1667,8 @@ msgstr "星期日"
 #. TRANSLATORS: this is an abbreviation for "title credits", shown next to the pair of markers
 #. "FFTC" and "LFTC" ({First, Last} Frame of Title Credits)
 #: src/lib/layout_markers.cc:139
-#, fuzzy
 msgid "TC"
-msgstr "中置"
+msgstr "标题字幕"
 
 #: src/lib/dcp_content_type.cc:60
 msgid "Teaser"
@@ -1987,11 +1983,11 @@ msgstr "YCOCG"
 
 #: src/lib/ffmpeg_content.cc:661
 msgid "YCgCo-R, even addition"
-msgstr ""
+msgstr "YCgCo-R，偶数叠加编码"
 
 #: src/lib/ffmpeg_content.cc:662
 msgid "YCgCo-R, odd addition"
-msgstr ""
+msgstr "YCgCo-R，奇数叠加编码"
 
 #: src/lib/filter.cc:98
 msgid "Yet Another Deinterlacing Filter"
@@ -2313,11 +2309,10 @@ msgstr "名字"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
 #: src/lib/dcp_content.cc:829
-#, fuzzy
 msgid ""
 "one of its closed caption reels has a non-zero entry point so it must be re-"
 "written."
-msgstr "它的一个隐藏字幕有一个非零的时间点，因此必须重写。"
+msgstr "它的一个隐藏字幕卷有一个非零的起始点，因此必须重写。"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
 #: src/lib/dcp_content.cc:823
