@@ -19,4 +19,9 @@
 */
 
 
+#include <cstddef>
+#include <cstdint>
+
+
 extern void* wrapped_av_malloc(size_t);
+extern void fill_memory(void* ptr, size_t bytes, uint64_t value);

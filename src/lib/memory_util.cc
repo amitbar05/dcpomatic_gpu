@@ -39,3 +39,43 @@ wrapped_av_malloc(size_t s)
 	return p;
 }
 
+
+void
+fill_memory(void* ptr, size_t bytes, uint64_t value)
+{
+	if (bytes == 0) {
+		return;
+	}
+
+	auto const start = std::min(bytes, sizeof(value) - reinterpret_cast<uintptr_t>(ptr) % sizeof(value));
+	auto start_ptr = reinterpret_cast<uint8_t*>(ptr);
+	if (start < 8) {
+		for (auto i = 0UL; i < start; ++i) {
+			*start_ptr++ = value & 0xff;
+			value = (value >> 8) | ((value & 0xff) << 56);
+		}
+
+		bytes -= start;
+		if (bytes == 0) {
+			return;
+		}
+	}
+
+	auto const main = (bytes - (bytes % sizeof(value))) / 8;
+	auto main_ptr = reinterpret_cast<uint64_t*>(start_ptr);
+	for (auto i = 0UL; i < main; ++i) {
+		*main_ptr++ = value;
+	}
+
+	bytes -= main * 8;
+	if (bytes == 0) {
+		return;
+	}
+
+	auto end_ptr = reinterpret_cast<uint8_t*>(main_ptr);
+	for (auto i = 0UL; i < bytes; ++i) {
+		*end_ptr++ = value & 0xff;
+		value = (value >> 8) | ((value & 0xff) << 56);
+	}
+}
+
