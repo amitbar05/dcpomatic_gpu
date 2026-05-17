@@ -113,6 +113,7 @@ using namespace dcpomatic;
 static constexpr char metadata_file[] = "metadata.xml";
 static constexpr char ui_state_file[] = "ui.xml";
 static constexpr char assets_file[] = "assets.xml";
+static constexpr char info_dir[] = "info";
 
 
 /* 5 -> 6
@@ -289,7 +290,7 @@ boost::filesystem::path
 Film::info_file(DCPTimePeriod period) const
 {
 	boost::filesystem::path p;
-	p /= "info";
+	p /= info_dir;
 	p /= video_identifier() + "_" + fmt::to_string(period.from.get()) + "_" + fmt::to_string(period.to.get());
 	return file(p);
 }
@@ -1440,7 +1441,7 @@ Film::cpls() const
 	for (auto const& item: dcp::filesystem::directory_iterator(dir)) {
 		if (
 			dcp::filesystem::is_directory(item) &&
-			item.path().filename() != "j2c" && item.path().filename() != "video" && item.path().filename() != "info" && item.path().filename() != "analysis"
+			item.path().filename() != "j2c" && item.path().filename() != "video" && item.path().filename() != info_dir && item.path().filename() != "analysis"
 			) {
 
 			try {
