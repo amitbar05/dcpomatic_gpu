@@ -27,6 +27,7 @@
 #include "dir_picker_ctrl.h"
 #endif
 #include "lib/config.h"
+#include <dcp/filesystem.h>
 #include <dcp/warnings.h>
 LIBDCP_DISABLE_WARNINGS
 #include <wx/stdpaths.h>
@@ -139,7 +140,7 @@ FilmNameLocationDialog::template_name () const
 bool
 FilmNameLocationDialog::check_path ()
 {
-	if (boost::filesystem::is_directory(path()) && !boost::filesystem::is_empty(path())) {
+	if (dcp::filesystem::is_directory(path()) && !dcp::filesystem::is_empty(path())) {
 		if (!confirm_dialog (
 			    this,
 			    wxString::Format(
@@ -149,7 +150,7 @@ FilmNameLocationDialog::check_path ()
 			    )) {
 			return false;
 		}
-	} else if (boost::filesystem::is_regular_file(path())) {
+	} else if (dcp::filesystem::is_regular_file(path())) {
 		error_dialog (
 			this,
 			wxString::Format(_("%s already exists as a file, so you cannot use it for a film."), std_to_wx(path().string()))
