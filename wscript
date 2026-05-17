@@ -766,6 +766,7 @@ def build(bld):
     bld.recurse('src')
     bld.recurse('graphics')
     bld.recurse('web')
+    bld.recurse('benchmark')
 
     if not bld.env.DISABLE_TESTS:
         bld.recurse('test')
