@@ -30,11 +30,11 @@ LIBDCP_ENABLE_WARNINGS
 
 
 void *
-wrapped_av_malloc (size_t s)
+wrapped_av_malloc(size_t s)
 {
-	auto p = av_malloc (s);
+	auto p = av_malloc(s);
 	if (!p) {
-		throw std::bad_alloc ();
+		throw std::bad_alloc();
 	}
 	return p;
 }

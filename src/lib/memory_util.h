@@ -19,4 +19,4 @@
 */
 
 
-extern void* wrapped_av_malloc (size_t);
+extern void* wrapped_av_malloc(size_t);
