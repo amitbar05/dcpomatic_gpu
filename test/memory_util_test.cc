@@ -37,7 +37,7 @@ BOOST_AUTO_TEST_CASE(fill_memory_test1)
 {
 	int constexpr size = 256;
 	auto memory = wrapped_av_malloc(size);
-	BOOST_REQUIRE_EQUAL(reinterpret_cast<uintptr_t>(memory) % 8, 0);
+	BOOST_REQUIRE_EQUAL(reinterpret_cast<uintptr_t>(memory) % 8, 0U);
 
 	fill_memory(memory, size, 0x1928374654abdfea);
 	check(memory, size, 0x1928374654abdfea);
@@ -50,7 +50,7 @@ BOOST_AUTO_TEST_CASE(fill_memory_test2)
 	int constexpr size = 259;
 
 	auto memory = wrapped_av_malloc(size);
-	BOOST_REQUIRE_EQUAL(reinterpret_cast<uintptr_t>(memory) % 8, 0);
+	BOOST_REQUIRE_EQUAL(reinterpret_cast<uintptr_t>(memory) % 8, 0U);
 
 	fill_memory(memory, size, 0x1928374654abdfea);
 	check(memory, size, 0x1928374654abdfea);
@@ -63,7 +63,7 @@ BOOST_AUTO_TEST_CASE(fill_memory_test3)
 	int constexpr size = 265;
 
 	auto memory = wrapped_av_malloc(size + 512);
-	BOOST_REQUIRE_EQUAL(reinterpret_cast<uintptr_t>(memory) % 8, 0);
+	BOOST_REQUIRE_EQUAL(reinterpret_cast<uintptr_t>(memory) % 8, 0U);
 	memory = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(memory) + 3);
 
 	fill_memory(memory, size, 0x1928374654abdfea);
