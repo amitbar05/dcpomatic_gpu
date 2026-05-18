@@ -25,6 +25,7 @@ extern "C" {
 #include <libavutil/avutil.h>
 }
 LIBDCP_ENABLE_WARNINGS
+#include <algorithm>
 #include <new>
 #include <stdexcept>
 
