@@ -7,3 +7,4 @@ def build(bld):
         obj.use = ['libdcpomatic2']
         obj.source = '%s_benchmark.cc' % benchmark
         obj.target = '%s_benchmark' % benchmark
+        obj.install_path = ''
