@@ -233,5 +233,10 @@ private:
 	 */
 	std::shared_ptr<const PlayerVideo> _last_image;
 
+	/** Last return value from RtAudio's getStreamTime: the current stream
+	 *  time in seconds.
+	 */
+	std::atomic<double> _stream_time;
+
 	boost::signals2::scoped_connection _config_changed_connection;
 };

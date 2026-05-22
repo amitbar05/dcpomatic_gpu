@@ -88,6 +88,7 @@ rtaudio_callback(void* out, void *, unsigned int frames, double, RtAudioStreamSt
 
 FilmViewer::FilmViewer(wxWindow* p, bool wake)
 	: _closed_captions_dialog(new ClosedCaptionsDialog(p, this))
+	, _stream_time(0)
 {
 #if wxCHECK_VERSION(3, 1, 0)
 	switch (Config::instance()->video_view_type()) {
@@ -696,7 +697,7 @@ FilmViewer::uncorrected_time() const
 	auto& audio = AudioBackend::instance()->rtaudio();
 
 	if (audio.isStreamRunning()) {
-		return DCPTime::from_seconds(audio.getStreamTime());
+		return DCPTime::from_seconds(_stream_time);
 	}
 
 	return _video_view->position();
@@ -712,8 +713,7 @@ FilmViewer::audio_time() const
 		return {};
 	}
 
-	return DCPTime::from_seconds(audio.getStreamTime()) -
-		DCPTime::from_frames(average_latency(), _film->audio_frame_rate());
+	return DCPTime::from_seconds(_stream_time) - DCPTime::from_frames(average_latency(), _film->audio_frame_rate());
 }
 
 
@@ -727,6 +727,10 @@ FilmViewer::time() const
 int
 FilmViewer::audio_callback(void* out_p, unsigned int frames)
 {
+	auto& audio = AudioBackend::instance()->rtaudio();
+
+	_stream_time = audio.getStreamTime();
+
 	while (true) {
 		auto t = _butler->get_audio(Butler::Behaviour::NON_BLOCKING, reinterpret_cast<float*>(out_p), frames);
 		if (!t || DCPTime(uncorrected_time() - *t) < one_video_frame()) {
@@ -735,8 +739,6 @@ FilmViewer::audio_callback(void* out_p, unsigned int frames)
 		}
 		/* The audio we just got was (very) late; drop it and get some more. */
 	}
-
-	auto& audio = AudioBackend::instance()->rtaudio();
 
 	if (auto lm = boost::mutex::scoped_lock(_latency_history_mutex, boost::try_to_lock)) {
 		_latency_history.push_back(audio.getStreamLatency());
