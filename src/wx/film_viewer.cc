@@ -738,8 +738,7 @@ FilmViewer::audio_callback(void* out_p, unsigned int frames)
 
 	auto& audio = AudioBackend::instance()->rtaudio();
 
-	boost::mutex::scoped_lock lm(_latency_history_mutex, boost::try_to_lock);
-	if (lm) {
+	if (auto lm = boost::mutex::scoped_lock(_latency_history_mutex, boost::try_to_lock)) {
 		_latency_history.push_back(audio.getStreamLatency());
 		if (_latency_history.size() > static_cast<size_t>(_latency_history_count)) {
 			_latency_history.pop_front();
