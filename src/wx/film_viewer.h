@@ -61,6 +61,9 @@ public:
 	FilmViewer(wxWindow* parent, bool wake);
 	~FilmViewer();
 
+	FilmViewer(FilmViewer const&) = delete;
+	FilmViewer& operator=(FilmViewer const&) = delete;
+
 	/** @return the window showing the film's video */
 	wxWindow* panel() const {
 		return _video_view->get();
