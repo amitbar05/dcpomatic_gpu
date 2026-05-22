@@ -237,6 +237,8 @@ private:
 	 *  time in seconds.
 	 */
 	std::atomic<double> _stream_time;
+	/** true if we need to call setStreamTime() with the current _stream_time */
+	std::atomic<bool> _stream_time_update_needed;
 
 	boost::signals2::scoped_connection _config_changed_connection;
 };

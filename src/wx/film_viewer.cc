@@ -89,6 +89,7 @@ rtaudio_callback(void* out, void *, unsigned int frames, double, RtAudioStreamSt
 FilmViewer::FilmViewer(wxWindow* p, bool wake)
 	: _closed_captions_dialog(new ClosedCaptionsDialog(p, this))
 	, _stream_time(0)
+	, _stream_time_update_needed(true)
 {
 #if wxCHECK_VERSION(3, 1, 0)
 	switch (Config::instance()->video_view_type()) {
@@ -354,7 +355,8 @@ FilmViewer::start_audio_stream_if_open()
 	auto& audio = AudioBackend::instance()->rtaudio();
 
 	if (audio.isStreamOpen()) {
-		audio.setStreamTime(_video_view->position().seconds());
+		_stream_time = _video_view->position().seconds();
+		_stream_time_update_needed = true;
 		auto error = AudioBackend::instance()->start_stream();
 		if (error) {
 			_audio_channels = 0;
@@ -729,7 +731,12 @@ FilmViewer::audio_callback(void* out_p, unsigned int frames)
 {
 	auto& audio = AudioBackend::instance()->rtaudio();
 
-	_stream_time = audio.getStreamTime();
+	if (_stream_time_update_needed) {
+		audio.setStreamTime(_stream_time);
+		_stream_time_update_needed = false;
+	} else {
+		_stream_time = audio.getStreamTime();
+	}
 
 	while (true) {
 		auto t = _butler->get_audio(Butler::Behaviour::NON_BLOCKING, reinterpret_cast<float*>(out_p), frames);
