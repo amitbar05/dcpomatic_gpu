@@ -149,11 +149,10 @@ ClosedCaptionsDialog::update()
 
 	if (!_current && !_tracks.empty()) {
 		/* We have no current one: get another */
-		auto butler = _butler.lock();
 		DCPOMATIC_ASSERT(_track->GetSelection() >= 0);
 		DCPOMATIC_ASSERT(_track->GetSelection() < int(_tracks.size()));
 		auto track = _tracks[_track->GetSelection()];
-		if (butler) {
+		if (auto butler = _butler.lock()) {
 			while (true) {
 				auto d = butler->get_closed_caption();
 				if (!d) {
