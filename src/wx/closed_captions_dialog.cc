@@ -189,7 +189,7 @@ ClosedCaptionsDialog::update()
 		_current_in_lines = true;
 	}
 
-	if (!_current && _tracks.empty()) {
+	if (!_current) {
 		for (int i = 0; i < MAX_CLOSED_CAPTION_LINES; ++i) {
 			_lines[i] = wxString();
 		}
@@ -201,6 +201,7 @@ ClosedCaptionsDialog::clear()
 {
 	_current = {};
 	_current_in_lines = false;
+	update();
 	Refresh();
 }
 
