@@ -62,5 +62,7 @@ image_benchmark()
 	};
 
 	make_part_black(AV_PIX_FMT_YUV420P, "AV_PIX_FMT_YUV420P");
+	make_part_black(AV_PIX_FMT_YUV422P10LE, "AV_PIX_FMT_YUV422P10LE");
+	make_part_black(AV_PIX_FMT_YUV444P10LE, "AV_PIX_FMT_YUV444P10LE");
 }
 
