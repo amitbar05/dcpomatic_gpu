@@ -21,19 +21,26 @@
 
 #include "lib/image.h"
 #include "lib/timer.h"
+#include "libavutil/pixfmt.h"
+
+
+using std::string;
 
 
 int main()
 {
 	auto constexpr TRIALS = 1024;
 
-	{
-		auto image = std::make_shared<Image>(AV_PIX_FMT_UYVY422, dcp::Size{ 3996, 2160 }, Image::Alignment::COMPACT);
-		PeriodTimer timer("Image::make_black AV_PIX_FMT_UYVY422");
+	auto make_black = [](AVPixelFormat fmt, string fmt_name) {
+		auto image = std::make_shared<Image>(fmt, dcp::Size{ 3996, 2160 }, Image::Alignment::COMPACT);
+		PeriodTimer timer("Image::make_black " + fmt_name);
 		for (auto i = 0; i < TRIALS; ++i) {
 			image->make_black();
 		}
-	}
+	};
+
+	make_black(AV_PIX_FMT_UYVY422, "AV_PIX_FMT_UYVY422");
+	make_black(AV_PIX_FMT_YUV422P9LE, "AV_PIX_FMT_YUV422P9LE");
 
 	return 0;
 }

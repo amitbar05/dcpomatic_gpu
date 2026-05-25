@@ -405,15 +405,15 @@ void
 Image::yuv_16_black(uint16_t v, bool alpha)
 {
 	memset(data()[0], 0, sample_size(0).height * stride()[0]);
+	uint64_t const uv = v | (v << 16) | (static_cast<uint64_t>(v) << 32) | (static_cast<uint64_t>(v) << 48);
 	for (int i = 1; i < 3; ++i) {
 		auto p = reinterpret_cast<int16_t*>(data()[i]);
 		int const lines = sample_size(i).height;
+		auto const comp_line_size = line_size()[i];
+		auto const comp_stride = stride()[i] / 2;
 		for (int y = 0; y < lines; ++y) {
-			/* We divide by 2 here because we are writing 2 bytes at a time */
-			for (int x = 0; x < line_size()[i] / 2; ++x) {
-				p[x] = v;
-			}
-			p += stride()[i] / 2;
+			fill_memory(p, comp_line_size, uv);
+			p += comp_stride;
 		}
 	}
 
