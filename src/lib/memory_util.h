@@ -26,3 +26,4 @@
 extern void* wrapped_av_malloc(size_t);
 extern void fill_memory(void* ptr, size_t bytes, uint64_t value);
 extern uint64_t copy_16_bit_words_to_64_bit(uint16_t v);
+extern uint64_t copy_bytes_to_64_bit(uint8_t v);

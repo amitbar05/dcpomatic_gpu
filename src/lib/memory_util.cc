@@ -87,3 +87,10 @@ copy_16_bit_words_to_64_bit(uint16_t v)
 	return static_cast<uint64_t>(v) | (static_cast<uint64_t>(v) << 16) | (static_cast<uint64_t>(v) << 32) | (static_cast<uint64_t>(v) << 48);
 }
 
+
+uint64_t
+copy_bytes_to_64_bit(uint8_t v)
+{
+	return static_cast<uint64_t>(v) | (static_cast<uint64_t>(v) << 8) | (static_cast<uint64_t>(v) << 16) | (static_cast<uint64_t>(v) << 24)
+	| (static_cast<uint64_t>(v) << 32) | (static_cast<uint64_t>(v) << 40) | (static_cast<uint64_t>(v) << 48) | (static_cast<uint64_t>(v) << 56);
+}

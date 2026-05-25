@@ -468,13 +468,12 @@ Image::make_part_black(int const start, int const width)
 	case AV_PIX_FMT_YUV420P:
 	{
 		y_part();
+		auto const uv = copy_bytes_to_64_bit(eight_bit_uv);
 		for (int i = 1; i < 3; ++i) {
 			auto p = data()[i];
 			int const h = sample_size(i).height;
 			for (int y = 0; y < h; ++y) {
-				for (int x = start / 2; x < (start + width) / 2; ++x) {
-					p[x] = eight_bit_uv;
-				}
+				fill_memory(p + start / 2, width / 2, uv);
 				p += stride()[i];
 			}
 		}

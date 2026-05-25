@@ -27,7 +27,18 @@
 using std::string;
 
 
+void image_benchmark();
+
+
 int main()
+{
+	image_benchmark();
+	return 0;
+}
+
+
+void
+image_benchmark()
 {
 	auto constexpr TRIALS = 1024;
 
@@ -42,6 +53,14 @@ int main()
 	make_black(AV_PIX_FMT_UYVY422, "AV_PIX_FMT_UYVY422");
 	make_black(AV_PIX_FMT_YUV422P9LE, "AV_PIX_FMT_YUV422P9LE");
 
-	return 0;
+	auto make_part_black = [](AVPixelFormat fmt, string fmt_name) {
+		auto image = std::make_shared<Image>(fmt, dcp::Size{ 3996, 2160 }, Image::Alignment::COMPACT);
+		PeriodTimer timer("Image::make_part_black " + fmt_name);
+		for (auto i = 0; i < TRIALS; ++i) {
+			image->make_part_black(9, 384);
+		}
+	};
+
+	make_part_black(AV_PIX_FMT_YUV420P, "AV_PIX_FMT_YUV420P");
 }
 
