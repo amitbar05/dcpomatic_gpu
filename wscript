@@ -78,7 +78,6 @@ def options(opt):
     opt.add_option('--warnings-are-errors', action='store_true', default=False, help='build with -Werror')
     opt.add_option('--wx-config',         help='path to wx-config')
     opt.add_option('--enable-asan',       action='store_true', help='build with asan')
-    opt.add_option('--disable-more-warnings', action='store_true', default=False, help='disable some warnings raised by Xcode 15 with the 2.16 branch')
     opt.add_option('--c++17', action='store_true', default=False, help='build with C++17 and libxml++-4.0')
     opt.add_option('--variant', help="build with variant")
 
@@ -136,15 +135,6 @@ def configure(conf):
                                        '-Wno-ignored-qualifiers',
                                        '-D_FILE_OFFSET_BITS=64',
                                        '-std=c++' + cpp_std])
-
-    if conf.options.disable_more_warnings:
-        # These are for Xcode 15.0.1 with the v2.16.x-era
-        # dependencies; maybe they aren't necessary when building
-        # v2.1{7,8}.x
-        conf.env.append_value('CXXFLAGS', ['-Wno-deprecated-builtins',
-                                           '-Wno-deprecated-declarations',
-                                           '-Wno-enum-constexpr-conversion',
-                                           '-Wno-deprecated-copy'])
 
     if conf.options.warnings_are_errors:
         conf.env.append_value('CXXFLAGS', '-Werror')
