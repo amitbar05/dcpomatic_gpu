@@ -80,3 +80,10 @@ fill_memory(void* ptr, size_t bytes, uint64_t value)
 	}
 }
 
+
+uint64_t
+copy_16_bit_words_to_64_bit(uint16_t v)
+{
+	return static_cast<uint64_t>(v) | (static_cast<uint64_t>(v) << 16) | (static_cast<uint64_t>(v) << 32) | (static_cast<uint64_t>(v) << 48);
+}
+

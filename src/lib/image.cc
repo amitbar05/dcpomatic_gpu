@@ -405,7 +405,7 @@ void
 Image::yuv_16_black(uint16_t v, bool alpha)
 {
 	memset(data()[0], 0, sample_size(0).height * stride()[0]);
-	uint64_t const uv = v | (v << 16) | (static_cast<uint64_t>(v) << 32) | (static_cast<uint64_t>(v) << 48);
+	auto const uv = copy_16_bit_words_to_64_bit(v);
 	for (int i = 1; i < 3; ++i) {
 		auto p = reinterpret_cast<int16_t*>(data()[i]);
 		int const lines = sample_size(i).height;
