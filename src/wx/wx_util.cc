@@ -627,7 +627,7 @@ bitmap_path(string name)
 {
 	boost::filesystem::path base;
 
-#ifdef DCPOMATIC_DEBUG
+#ifdef DCPOMATIC_DEVELOPER
 	/* Hack to allow Linux and OS X to find icons when running from the source tree */
 	char* path = getenv("DCPOMATIC_GRAPHICS");
 	if (path) {

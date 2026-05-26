@@ -80,6 +80,7 @@ def options(opt):
     opt.add_option('--enable-asan',       action='store_true', help='build with asan')
     opt.add_option('--c++17', action='store_true', default=False, help='build with C++17 and libxml++-4.0')
     opt.add_option('--variant', help="build with variant")
+    opt.add_option('--developer',         action='store_true', default=False, help='find resources (e.g. bitmaps) when running from the source tree')
 
 def configure(conf):
     conf.load('compiler_cxx')
@@ -175,6 +176,9 @@ def configure(conf):
 
     if conf.options.enable_grok:
         conf.env.append_value('CXXFLAGS', '-DDCPOMATIC_GROK')
+
+    if conf.options.developer:
+        conf.env.append_value('CXXFLAGS', '-DDCPOMATIC_DEVELOPER')
 
     if conf.options.use_lld:
         try:
