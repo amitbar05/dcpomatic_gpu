@@ -1,5 +1,5 @@
 def build(bld):
-    for benchmark in ['image']:
+    for benchmark in ['audio_buffers', 'image']:
         obj = bld(features='cxx cxxprogram')
         obj.uselib = 'DCP AVFORMAT AVFILTER SWSCALE LWEXT4 SUB SWRESAMPLE LEQM_NRT POSTPROC GLIB CURL ICU NETTLE CXML '
         obj.uselib += 'XMLPP BOOST_FILESYSTEM FONTCONFIG XMLSEC SSH SAMPLERATE BOOST_THREAD CAIROMM PANGOMM ZIP SQLITE3 '
