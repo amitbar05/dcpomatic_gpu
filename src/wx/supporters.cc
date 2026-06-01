@@ -673,6 +673,7 @@ supported_by.Add (wxT ("Ariel Montage Inc."));
 supported_by.Add (wxT ("Digital Filmz International Inc."));
 supported_by.Add (wxT ("Debergerac Productions, Inc."));
 supported_by.Add (wxT ("Jeroen Inc."));
+supported_by.Add (wxT ("Already Alive, Inc."));
 supported_by.Add (wxT ("Forrest Proctor Industries"));
 supported_by.Add (wxT ("Indyvideo"));
 supported_by.Add (wxT ("Innfoto"));
