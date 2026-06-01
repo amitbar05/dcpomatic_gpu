@@ -80,7 +80,7 @@ enum {
 class DCPPath
 {
 public:
-	explicit DCPPath(boost::filesystem::path path, vector<dcp::DecryptedKDM> const& kdms)
+	DCPPath(boost::filesystem::path path, vector<dcp::DecryptedKDM> const& kdms)
 		: _path(std::move(path))
 	{
 		check(kdms);
@@ -126,7 +126,7 @@ private:
 class DOMFrame : public wxFrame
 {
 public:
-	explicit DOMFrame(wxString const& title, bool start, vector<boost::filesystem::path> const& dcps_to_load)
+	DOMFrame(wxString const& title, bool start, vector<boost::filesystem::path> const& dcps_to_load)
 		: wxFrame(nullptr, -1, title)
 		/* Use a panel as the only child of the Frame so that we avoid
 		   the dark-grey background on Windows.
