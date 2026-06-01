@@ -148,19 +148,7 @@ public:
 		auto dcp_sizer = new wxBoxSizer(wxHORIZONTAL);
 		add_label_to_sizer(dcp_sizer, _overall_panel, _("DCPs"), true, 0, wxALIGN_CENTER_VERTICAL);
 
-		auto load_dcps = [this](vector<boost::filesystem::path> const& dcps) {
-			wxProgressDialog progress(variant::wx::dcpomatic(), _("Examining DCPs"));
-			vector<DCPPath> dcp_paths;
-			for (auto path: dcps) {
-				for (auto const& dcp: dcp::find_potential_dcps(path)) {
-					progress.Pulse();
-					dcp_paths.push_back(DCPPath(dcp, _kdms));
-				}
-			}
-			return dcp_paths;
-		};
-
-		auto add = [&load_dcps](wxWindow* parent) {
+		auto add = [this](wxWindow* parent) {
 #if wxCHECK_VERSION(3, 1, 4)
 			DirDialog dialog(parent, _("Select DCP(s)"), wxDD_MULTIPLE, "AddVerifierInputPath");
 #else
@@ -378,6 +366,19 @@ private:
 			progress.Pulse();
 		}
 		_dcps->refresh();
+	}
+
+	vector<DCPPath> load_dcps(vector<boost::filesystem::path> const& dcps)
+	{
+		wxProgressDialog progress(variant::wx::dcpomatic(), _("Examining DCPs"));
+		vector<DCPPath> dcp_paths;
+		for (auto path: dcps) {
+			for (auto const& dcp: dcp::find_potential_dcps(path)) {
+				progress.Pulse();
+				dcp_paths.push_back(DCPPath(dcp, _kdms));
+			}
+		}
+		return dcp_paths;
 	}
 
 	wxPanel* _overall_panel = nullptr;
