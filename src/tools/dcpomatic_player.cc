@@ -313,7 +313,7 @@ public:
 		UpdateChecker::instance()->StateChanged.connect(boost::bind(&DOMFrame::update_checker_state_changed, this));
 		setup_screen();
 
-		_stress.LoadDCP.connect(boost::bind(&DOMFrame::load_dcp, this, _1));
+		_stress.LoadDCP.connect(boost::bind(&DOMFrame::load_dcp, this, _1, boost::none));
 
 		setup_internal_player_server();
 		setup_http_server();
@@ -406,7 +406,7 @@ public:
 		Config::instance()->set_decode_reduction(reduction);
 	}
 
-	void load_dcp(boost::filesystem::path dir)
+	void load_dcp(boost::filesystem::path dir, optional<boost::filesystem::path> kdm = {})
 	{
 		DCPOMATIC_ASSERT(_film);
 
@@ -416,7 +416,7 @@ public:
 			_stress.set_suspended(true);
 
 			/* Handler to set things up once the DCP has been examined */
-			auto setup = [this](weak_ptr<Film> weak_film, weak_ptr<Job> weak_job, weak_ptr<Content> weak_content)
+			auto setup = [this, kdm](weak_ptr<Film> weak_film, weak_ptr<Job> weak_job, weak_ptr<Content> weak_content)
 			{
 				auto job = weak_job.lock();
 				if (!job || !job->finished_ok()) {
@@ -436,6 +436,9 @@ public:
 				film->add_content({content});
 				_stress.set_suspended(false);
 				reset_film(film);
+				if (kdm) {
+					add_kdms({*kdm});
+				}
 			};
 
 			auto dcp = make_shared<DCPContent>(dir);
@@ -617,6 +620,30 @@ public:
 				_last_http_server_update = now;
 			}
 		}
+	}
+
+	void add_kdms(vector<boost::filesystem::path> const& paths)
+	{
+		DCPOMATIC_ASSERT(_film);
+		auto dcp = std::dynamic_pointer_cast<DCPContent>(_film->content().front());
+		DCPOMATIC_ASSERT(dcp);
+		try {
+			dcp::ScopeGuard sg([this]() {
+				_viewer.set_coalesce_player_changes(false);
+			});
+			_viewer.set_coalesce_player_changes(true);
+			for (auto path: paths) {
+				dcp->add_kdm(dcp::EncryptedKDM(dcp::file_to_string(path)));
+				_kdms.push_back(path);
+			}
+			examine_content();
+		} catch (exception& e) {
+			error_dialog(this, wxString::Format(_("Could not load KDM.")), std_to_wx(e.what()));
+			return;
+		}
+
+		_info->triggered_update();
+		set_menu_sensitivity();
 	}
 
 private:
@@ -806,27 +833,8 @@ private:
 		FileDialog dialog(this, _("Select KDM"), char_to_wx("XML files|*.xml|All files|*.*"), wxFD_MULTIPLE, "AddKDMPath");
 
 		if (dialog.show()) {
-			DCPOMATIC_ASSERT(_film);
-			auto dcp = std::dynamic_pointer_cast<DCPContent>(_film->content().front());
-			DCPOMATIC_ASSERT(dcp);
-			try {
-				dcp::ScopeGuard sg([this]() {
-					_viewer.set_coalesce_player_changes(false);
-				});
-				_viewer.set_coalesce_player_changes(true);
-				for (auto path: dialog.paths()) {
-					dcp->add_kdm(dcp::EncryptedKDM(dcp::file_to_string(path)));
-					_kdms.push_back(path);
-				}
-				examine_content();
-			} catch (exception& e) {
-				error_dialog(this, wxString::Format(_("Could not load KDM.")), std_to_wx(e.what()));
-				return;
-			}
+			add_kdms(dialog.paths());
 		}
-
-		_info->triggered_update();
-		set_menu_sensitivity();
 	}
 
 	void file_save_frame()
@@ -1166,7 +1174,7 @@ private:
 	{
 		try {
 			auto server = new InternalPlayerServer();
-			server->LoadDCP.connect(boost::bind(&DOMFrame::load_dcp, this, _1));
+			server->LoadDCP.connect(boost::bind(&DOMFrame::load_dcp, this, _1, boost::none));
 			new thread(boost::bind(&InternalPlayerServer::run, server));
 		} catch (std::exception& e) {
 			/* This is not the end of the world; probably a failure to bind the server socket
@@ -1314,6 +1322,7 @@ static const wxCmdLineEntryDesc command_line_description[] = {
 	{ wxCMD_LINE_PARAM, 0, 0, "DCP to load or create", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_OPTION, "c", "config", "Directory containing config.xml", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_OPTION, "s", "stress", "File containing description of stress test", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
+	{ wxCMD_LINE_OPTION, "k", "kdm", "KDM to load", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_NONE, "", "", "", wxCmdLineParamType(0), 0 }
 };
 
@@ -1392,7 +1401,7 @@ private:
 
 			if (_dcp_to_load && dcp::filesystem::is_directory(*_dcp_to_load)) {
 				try {
-					_frame->load_dcp(*_dcp_to_load);
+					_frame->load_dcp(*_dcp_to_load, _kdm_to_load);
 				} catch (exception& e) {
 					error_dialog(nullptr, wxString::Format(_("Could not load DCP %s"), std_to_wx(_dcp_to_load->string())), std_to_wx(e.what()));
 				}
@@ -1452,6 +1461,10 @@ private:
 		wxString stress;
 		if (parser.Found(char_to_wx("s"), &stress)) {
 			_stress = wx_to_std(stress);
+		}
+		wxString kdm;
+		if (parser.Found(char_to_wx("k"), &kdm)) {
+			_kdm_to_load = boost::filesystem::path(wx_to_std(kdm));
 		}
 
 		return true;
@@ -1518,6 +1531,7 @@ private:
 
 	DOMFrame* _frame = nullptr;
 	boost::optional<boost::filesystem::path> _dcp_to_load;
+	boost::optional<boost::filesystem::path> _kdm_to_load;
 	boost::optional<string> _stress;
 };
 
