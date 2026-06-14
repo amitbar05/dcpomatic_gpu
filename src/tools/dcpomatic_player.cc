@@ -810,17 +810,15 @@ private:
 			auto dcp = std::dynamic_pointer_cast<DCPContent>(_film->content().front());
 			DCPOMATIC_ASSERT(dcp);
 			try {
-				if (dcp) {
-					dcp::ScopeGuard sg([this]() {
-						_viewer.set_coalesce_player_changes(false);
-					});
-					_viewer.set_coalesce_player_changes(true);
-					for (auto path: dialog.paths()) {
-						dcp->add_kdm(dcp::EncryptedKDM(dcp::file_to_string(path)));
-						_kdms.push_back(path);
-					}
-					examine_content();
+				dcp::ScopeGuard sg([this]() {
+					_viewer.set_coalesce_player_changes(false);
+				});
+				_viewer.set_coalesce_player_changes(true);
+				for (auto path: dialog.paths()) {
+					dcp->add_kdm(dcp::EncryptedKDM(dcp::file_to_string(path)));
+					_kdms.push_back(path);
 				}
+				examine_content();
 			} catch (exception& e) {
 				error_dialog(this, wxString::Format(_("Could not load KDM.")), std_to_wx(e.what()));
 				return;
