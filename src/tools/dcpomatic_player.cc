@@ -43,13 +43,11 @@
 #include "lib/config.h"
 #include "lib/constants.h"
 #include "lib/copy_dcp_details_to_film.h"
-#include "lib/cross.h"
 #include "lib/dcp_content.h"
 #include "lib/dcp_examiner.h"
 #include "lib/dcpomatic_log.h"
 #include "lib/dcpomatic_socket.h"
 #include "lib/examine_content_job.h"
-#include "lib/ffmpeg_content.h"
 #include "lib/file_log.h"
 #include "lib/film.h"
 #include "lib/font_config.h"
@@ -66,7 +64,6 @@
 #include "lib/player_video.h"
 #include "lib/ratio.h"
 #include "lib/scoped_temporary.h"
-#include "lib/server.h"
 #include "lib/text_content.h"
 #include "lib/update_checker.h"
 #include "lib/variant.h"
@@ -107,7 +104,6 @@ LIBDCP_ENABLE_WARNINGS
 using std::cout;
 using std::dynamic_pointer_cast;
 using std::exception;
-using std::list;
 using std::make_shared;
 using std::shared_ptr;
 using std::string;
