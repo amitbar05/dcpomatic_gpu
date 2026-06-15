@@ -20,17 +20,12 @@
 
 
 #include "cinema_list.h"
-#include "colour_conversion.h"
 #include "config.h"
 #include "constants.h"
 #include "cross.h"
-#include "dcp_content_type.h"
 #include "dkdm_recipient_list.h"
 #include "dkdm_wrapper.h"
 #include "film.h"
-#include "filter.h"
-#include "log.h"
-#include "ratio.h"
 #include "unzipper.h"
 #include "variant.h"
 #include "zipper.h"
@@ -44,17 +39,14 @@
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/thread.hpp>
-#include <cstdlib>
 #include <fstream>
 #include <iostream>
 
 #include "i18n.h"
 
 
-using std::cout;
 using std::dynamic_pointer_cast;
 using std::ifstream;
-using std::list;
 using std::make_shared;
 using std::max;
 using std::min;
