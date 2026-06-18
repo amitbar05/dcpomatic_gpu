@@ -9,7 +9,7 @@ msgstr ""
 "Project-Id-Version: \n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-02-15 21:03+0100\n"
-"PO-Revision-Date: 2026-04-25 20:27+0900\n"
+"PO-Revision-Date: 2026-06-05 20:21+0900\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "Language: ja_JP\n"
@@ -69,7 +69,7 @@ msgstr " (%.2f:1)"
 #. to say what day a job will finish.
 #: src/lib/job.cc:628
 msgid " on {}"
-msgstr ""
+msgstr "{}"
 
 #: src/lib/config.cc:1266
 msgid ""
@@ -534,9 +534,8 @@ msgid "Combine DCPs"
 msgstr "複数のDCPを結合"
 
 #: src/lib/writer.cc:522
-#, fuzzy
 msgid "Computing digests"
-msgstr "ダイジェストの計算"
+msgstr "処理進捗"
 
 #: src/lib/analytics.cc:56
 #, fuzzy

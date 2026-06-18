@@ -9,7 +9,7 @@ msgstr ""
 "Project-Id-Version: \n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-02-15 21:03+0100\n"
-"PO-Revision-Date: 2026-05-04 22:09+0900\n"
+"PO-Revision-Date: 2026-06-05 20:48+0900\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "Language: ja_JP\n"
@@ -140,7 +140,6 @@ msgid "-6dB"
 msgstr "-6dB"
 
 #: src/wx/export_video_file_dialog.cc:92
-#, fuzzy
 msgid "0 is best, 51 is worst"
 msgstr "最高:0、最低:51"
 
@@ -419,13 +418,12 @@ msgid "Add a DCP."
 msgstr "DCPを追加"
 
 #: src/wx/content_panel.cc:277
-#, fuzzy
 msgid ""
 "Add a folder of image files (which will be used as a moving image sequence) "
 "or a folder of sound files."
 msgstr ""
-"画像ファイルまたは音声ファイルを含むフォルダを追加してください。（画像ファイ"
-"ルは動画シーケンスとして使用されます）"
+"画像もしくは音声ファイルが含まれるフォルダを追加（画像ファイルは動画シーケン"
+"スとして使用されます）。"
 
 #: src/wx/full_language_tag_dialog.cc:69
 #, fuzzy
@@ -441,9 +439,8 @@ msgid "Add folder..."
 msgstr "フォルダを追加"
 
 #: src/wx/image_sequence_dialog.cc:31
-#, fuzzy
 msgid "Add image sequence"
-msgstr "画像シーケンスを追加"
+msgstr "シーケンスイメージ追加"
 
 #: src/wx/language_tag_dialog.cc:43
 msgid "Add language..."
@@ -481,10 +478,8 @@ msgid "Add variant"
 msgstr "バリエーションを追加"
 
 #: src/wx/content_panel.cc:273
-#, fuzzy
 msgid "Add video, image, sound or subtitle files to the film (Ctrl+A)."
-msgstr ""
-"プロジェクトに動画、画像、サウンド、または字幕ファイルを追加する (Ctrl+A)。"
+msgstr "プロジェクトに動画、画像、音声または字幕ファイルを追加する (Ctrl+A)。"
 
 #: src/wx/certificate_chain_editor.cc:89 src/wx/recipients_panel.cc:69
 #: src/wx/editable_list.h:145
@@ -602,9 +597,9 @@ msgid "Are you sure you want to cancel this job?"
 msgstr "この処理をキャンセルしてもよろしいですか?"
 
 #: src/wx/screens_panel.cc:359
-#, fuzzy, c-format
+#, c-format
 msgid "Are you sure you want to remove %d cinemas?"
-msgstr "%d の映画館を削除してもよろしいですか?"
+msgstr "映画館 「 %d 」 を削除してもよろしいですか?"
 
 #: src/wx/screens_panel.cc:482
 #, fuzzy, c-format
@@ -612,14 +607,14 @@ msgid "Are you sure you want to remove %d screens?"
 msgstr "%d 個の画面を削除してもよろしいですか?"
 
 #: src/wx/screens_panel.cc:355
-#, fuzzy, c-format
+#, c-format
 msgid "Are you sure you want to remove the cinema '%s'?"
-msgstr "映画館 '%s' を削除してもよろしいですか？"
+msgstr "映画館 「 %s 」 を削除してもよろしいですか？"
 
 #: src/wx/screens_panel.cc:478
-#, fuzzy, c-format
+#, c-format
 msgid "Are you sure you want to remove the screen '%s'?"
-msgstr "画面 '%s' を削除してもよろしいですか?"
+msgstr "スクリーン 「 %s 」 を削除してもよろしいですか?"
 
 #: src/wx/confirm_kdm_email_dialog.cc:36
 #, fuzzy
@@ -850,7 +845,7 @@ msgstr "ファイルを選択"
 
 #: src/wx/content_panel.cc:617
 msgid "Choose a file or files"
-msgstr "ファイルを選択してください"
+msgstr "ファイルを選択"
 
 #: src/wx/content_menu.cc:383 src/wx/content_panel.cc:634
 msgid "Choose a folder"
@@ -1576,8 +1571,8 @@ msgid ""
 "Frame %frame (timecode %timecode) in asset %f has an instantaneous bit rate "
 "that is close to the limit of 250Mbit/s."
 msgstr ""
-"%f 内の %frame フレーム（タイムコード %timecode）の瞬間ビットレートは250Mbit/"
-"s の制限値に近い値です。"
+"%f 内の %frame フレーム（タイムコード  %timecode）の瞬間ビットレートは"
+"250Mbit/s の制限値に近い値です。"
 
 #: src/wx/verify_dcp_result_panel.cc:312
 #, c-format
@@ -1585,8 +1580,8 @@ msgid ""
 "Frame %frame (timecode %timecode) in asset %f has an instantaneous bit rate "
 "that is over the limit of 250Mbit/s."
 msgstr ""
-"%f 内の %frame フレーム（タイムコード %timecode）の瞬間ビットレートは250Mbit/"
-"s の制限値を超えています。"
+"%f 内の %frame フレーム（タイムコード  %timecode ）の瞬間ビットレートは"
+"250Mbit/s の制限値を超えています。"
 
 #: src/wx/verify_dcp_result_panel.cc:651
 #, c-format
@@ -3164,7 +3159,7 @@ msgstr "音声レベルのグラフを表示..."
 #: src/wx/screens_panel.cc:740
 #, c-format
 msgid "Show only %d checked"
-msgstr "チェックした %d のみを表示"
+msgstr "チェックした %d 件のみを表示"
 
 #: src/wx/screens_panel.cc:66 src/wx/screens_panel.cc:738
 msgid "Show only checked"
