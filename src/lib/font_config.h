@@ -42,6 +42,7 @@ private:
 	~FontConfig();
 
 	FcConfig* _config = nullptr;
+	int _index = 0;
 	std::map<dcpomatic::Font::Content, std::string, FontComparator> _available_fonts;
 
 	std::vector<boost::filesystem::path> _temp_files;

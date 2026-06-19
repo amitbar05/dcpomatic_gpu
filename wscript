@@ -352,6 +352,8 @@ def configure(conf):
     conf.check_cfg(package='pangomm-' + conf.env.PANGOMM_API, args='--cflags --libs', uselib_store='PANGOMM', mandatory=True)
     conf.check_cfg(package='cairomm-' + conf.env.CAIROMM_API, args='--cflags --libs', uselib_store='CAIROMM', mandatory=True)
     conf.check_cfg(package='leqm_nrt', args='--cflags --libs', uselib_store='LEQM_NRT', mandatory=True)
+    conf.check_cfg(package='libttf-1.0', args='--cflags --libs', uselib_store='TTF', mandatory=True)
+
     if conf.options.static_cxml:
         conf.check_cfg(package='libcxml', args='libcxml >= 0.17.0 --cflags', uselib_store='CXML', mandatory=True)
         conf.env.STLIB_CXML = ['cxml']

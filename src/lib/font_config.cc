@@ -25,6 +25,8 @@
 #include "font_config.h"
 #include "util.h"
 #include <dcp/filesystem.h>
+#include <ttf/font.h>
+#include <ttf/name_table.h>
 #include <fontconfig/fontconfig.h>
 #include <boost/filesystem.hpp>
 #include <boost/optional.hpp>
@@ -64,20 +66,24 @@ FontConfig::make_font_available(shared_ptr<dcpomatic::Font> font)
 		return existing->second;
 	}
 
-	boost::filesystem::path font_file = default_font_file();
+	optional<ttf::Font> ttf_font;
 	if (font->file()) {
-		font_file = *font->file();
+		ttf_font = ttf::Font(*font->file());
 	} else if (font->data()) {
-		/* This font only exists in memory (so far) but FontConfig doesn't have an API to add a font
-		 * from a memory buffer (AFAICS).
-		 * https://gitlab.freedesktop.org/fontconfig/fontconfig/-/issues/12
-		 * As a workaround, write the font data to a temporary file and use that.
-		 */
-		font_file = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
-		_temp_files.push_back(font_file);
-		font->data()->write(font_file);
+		ttf_font = ttf::Font(font->data()->data(), font->data()->size());
+	} else {
+		ttf_font = ttf::Font(default_font_file());
 	}
 
+	DCPOMATIC_ASSERT(ttf_font->name_table());
+	auto const new_name = fmt::format("dcpomatic_custom_{}", _index++);
+
+	/* Rename the font to something that we can definitely get hold of by giving Pango a family */
+	ttf_font->name_table()->set_names(ttf::NameTable::Identifier::FONT_FAMILY, new_name, std::wstring(new_name.begin(), new_name.end()));
+	ttf_font->name_table()->set_names(ttf::NameTable::Identifier::PREFERRED_FAMILY, new_name, std::wstring(new_name.begin(), new_name.end()));
+	auto font_file = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
+	_temp_files.push_back(font_file);
+	ttf_font->write(font_file);
 
 	/* Make this font available to DCP-o-matic */
 	optional<string> font_name;
