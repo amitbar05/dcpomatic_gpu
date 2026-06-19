@@ -266,14 +266,12 @@ def configure(conf):
             msg += ' >= %s' % minimum_version
         conf.check_cfg(package=package, args=args, uselib_store=uselib_store, mandatory=mandatory, msg=msg)
 
-    # libcurl
     if conf.options.static_curl:
         conf.env.STLIB_CURL = ['curl']
         conf.env.LIB_CURL = ['ssh2', 'idn']
     else:
         conf.check_cfg(package='libcurl', args='libcurl >= 7.19.1 --cflags --libs', uselib_store='CURL', mandatory=True)
 
-    # libicu
     if conf.check_cfg(package='icu-i18n icu-uc', args='--cflags --libs', uselib_store='ICU', mandatory=False) is None:
         if conf.check_cfg(package='icu', args='--cflags --libs', uselib_store='ICU', mandatory=False) is None:
             conf.check_cxx(fragment="""
@@ -294,13 +292,9 @@ def configure(conf):
     if conf.check_cfg(modversion='icu-i18n') >= '75':
         conf.env.append_value('CXXFLAGS', '-std=c++17')
 
-    # libsamplerate
     conf.check_cfg(package='samplerate', args='--cflags --libs', uselib_store='SAMPLERATE', mandatory=True)
-
-    # glib
     conf.check_cfg(package='glib-2.0', args='--cflags --libs', uselib_store='GLIB', mandatory=True)
 
-    # libzip
     conf.check_cfg(package='libzip', args='--cflags --libs', uselib_store='ZIP', mandatory=True)
     conf.check_cxx(fragment="""
                             #include <zip.h>
@@ -354,26 +348,16 @@ def configure(conf):
                    uselib_store="LIBZ"
                    )
 
-    # fontconfig
     conf.check_cfg(package='fontconfig', args='--cflags --libs', uselib_store='FONTCONFIG', mandatory=True)
-
-    # pangomm
     conf.check_cfg(package='pangomm-' + conf.env.PANGOMM_API, args='--cflags --libs', uselib_store='PANGOMM', mandatory=True)
-
-    # cairomm
     conf.check_cfg(package='cairomm-' + conf.env.CAIROMM_API, args='--cflags --libs', uselib_store='CAIROMM', mandatory=True)
-
-    # leqm_nrt
     conf.check_cfg(package='leqm_nrt', args='--cflags --libs', uselib_store='LEQM_NRT', mandatory=True)
-
-    # libcxml
     if conf.options.static_cxml:
         conf.check_cfg(package='libcxml', args='libcxml >= 0.17.0 --cflags', uselib_store='CXML', mandatory=True)
         conf.env.STLIB_CXML = ['cxml']
     else:
         conf.check_cfg(package='libcxml', args='libcxml >= 0.16.0 --cflags --libs', uselib_store='CXML', mandatory=True)
 
-    # libssh
     if conf.options.static_ssh:
         conf.env.STLIB_SSH = ['ssh']
         if conf.options.workaround_gssapi:
@@ -391,7 +375,6 @@ def configure(conf):
                       lib='ssh',
                       uselib_store='SSH')
 
-    # libdcp
     if conf.options.static_dcp:
         check_via_pkg_config(conf, 'libdcp-1.0', 'DCP', mandatory=True, static=True, minimum_version=libdcp_version)
         conf.env.DEFINES_DCP = [f.replace('\\', '') for f in conf.env.DEFINES_DCP]
@@ -401,7 +384,6 @@ def configure(conf):
         check_via_pkg_config(conf, 'libdcp-1.0', 'DCP', mandatory=True, static=False, minimum_version=libdcp_version)
         conf.env.DEFINES_DCP = [f.replace('\\', '') for f in conf.env.DEFINES_DCP]
 
-    # libsub
     if conf.options.static_sub:
         conf.check_cfg(package='libsub-1.0', args='libsub-1.0 >= %s --cflags' % libsub_version, uselib_store='SUB', mandatory=True)
         conf.env.DEFINES_SUB = [f.replace('\\', '') for f in conf.env.DEFINES_SUB]
@@ -410,14 +392,12 @@ def configure(conf):
         conf.check_cfg(package='libsub-1.0', args='libsub-1.0 >= %s --cflags --libs' % libsub_version, uselib_store='SUB', mandatory=True)
         conf.env.DEFINES_SUB = [f.replace('\\', '') for f in conf.env.DEFINES_SUB]
 
-    # libxml++
     if conf.options.static_xmlpp:
         conf.env.STLIB_XMLPP = ['xml++-' + conf.env.XMLPP_API]
         conf.env.LIB_XMLPP = ['xml2']
     else:
         conf.check_cfg(package='libxml++-' + conf.env.XMLPP_API, args='--cflags --libs', uselib_store='XMLPP', mandatory=True)
 
-    # libxmlsec
     if conf.options.static_xmlsec:
         if conf.check_cxx(lib='xmlsec1-openssl', mandatory=False):
             conf.env.STLIB_XMLSEC = ['xmlsec1-openssl', 'xmlsec1']
@@ -428,13 +408,8 @@ def configure(conf):
     else:
         conf.env.LIB_XMLSEC = ['xmlsec1-openssl', 'xmlsec1']
 
-    # nettle
     conf.check_cfg(package="nettle", args='--cflags --libs', uselib_store='NETTLE', mandatory=True)
-
-    # libpng
     conf.check_cfg(package='libpng', args='--cflags --libs', uselib_store='PNG', mandatory=True)
-
-    # libjpeg
     conf.check_cxx(fragment="""
                             #include <cstddef>
                             #include <cstdio>
@@ -445,7 +420,6 @@ def configure(conf):
                    lib=['jpeg'],
                    uselib_store='JPEG')
 
-    # lwext4
     if conf.options.enable_disk:
         conf.check_cxx(fragment="""
                                 #include <lwext4/ext4.h>\n
@@ -458,7 +432,6 @@ def configure(conf):
     if conf.env.TARGET_LINUX and conf.options.enable_disk:
         conf.check_cfg(package='polkit-gobject-1', args='--cflags --libs', uselib_store='POLKIT', mandatory=True)
 
-    # nanomsg
     if conf.options.enable_disk:
         if conf.check_cfg(package='nanomsg', args='--cflags --libs', uselib_store='NANOMSG', mandatory=False) is None:
             conf.check_cfg(package='libnanomsg', args='--cflags --libs', uselib_store='NANOMSG', mandatory=True)
@@ -466,7 +439,6 @@ def configure(conf):
             # We link with nanomsg statically on Centos 8 so we need to link this as well
             conf.env.LIB_NANOMSG.append('anl')
 
-    # FFmpeg
     if conf.options.static_ffmpeg:
         names = ['avformat', 'avfilter', 'avcodec', 'avutil', 'swscale', 'postproc', 'swresample']
         for name in names:
