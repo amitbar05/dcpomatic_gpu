@@ -89,15 +89,9 @@ FontConfig::make_font_available(shared_ptr<dcpomatic::Font> font)
 	if (auto font_set = FcFontList(_config, pattern, object_set)) {
 		for (int i = 0; i < font_set->nfont; ++i) {
 			FcPattern* font = font_set->fonts[i];
-			FcChar8* file;
 			FcChar8* family;
-			FcChar8* style;
-			if (
-				FcPatternGetString (font, FC_FILE, 0, &file) == FcResultMatch &&
-				FcPatternGetString (font, FC_FAMILY, 0, &family) == FcResultMatch &&
-				FcPatternGetString (font, FC_STYLE, 0, &style) == FcResultMatch
-				) {
-				font_name = reinterpret_cast<char const *> (family);
+			if (FcPatternGetString(font, FC_FAMILY, 0, &family) == FcResultMatch) {
+				font_name = reinterpret_cast<char const *>(family);
 			}
 		}
 
