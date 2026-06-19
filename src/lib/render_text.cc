@@ -19,9 +19,7 @@
 */
 
 
-#include "cross.h"
 #include "dcpomatic_assert.h"
-#include "font.h"
 #include "font_config.h"
 #include "image.h"
 #include "render_text.h"
@@ -35,16 +33,11 @@ LIBDCP_ENABLE_WARNINGS
 #include <pango/pangocairo.h>
 #include <fmt/format.h>
 #include <boost/algorithm/string.hpp>
-#include <iostream>
 
 
-using std::cerr;
-using std::cout;
-using std::make_pair;
 using std::make_shared;
 using std::max;
 using std::min;
-using std::pair;
 using std::shared_ptr;
 using std::string;
 using std::vector;

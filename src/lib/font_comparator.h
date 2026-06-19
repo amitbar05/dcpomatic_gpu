@@ -20,6 +20,7 @@
 
 
 #include "dcpomatic_assert.h"
+#include "font.h"
 
 
 /** Comparator to allow dcpomatic::Font::Content to be compared for use in a map */
