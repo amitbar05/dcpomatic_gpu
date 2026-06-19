@@ -975,7 +975,7 @@ default_font_file()
 		return liberation;
 	}
 
-#ifdef DCPOMATIC_DEBUG
+#ifdef DCPOMATIC_DEVELOPER
 	return directory_containing_executable().parent_path().parent_path().parent_path() / "fonts" / "LiberationSans-Regular.ttf";
 #endif
 
