@@ -86,8 +86,7 @@ FontConfig::make_font_available(shared_ptr<dcpomatic::Font> font)
 		0, FC_FILE, FcTypeString, font_file.string().c_str(), static_cast<char *>(0)
 		);
 	auto object_set = FcObjectSetBuild (FC_FAMILY, FC_STYLE, FC_LANG, FC_FILE, static_cast<char *> (0));
-	auto font_set = FcFontList (_config, pattern, object_set);
-	if (font_set) {
+	if (auto font_set = FcFontList(_config, pattern, object_set)) {
 		for (int i = 0; i < font_set->nfont; ++i) {
 			FcPattern* font = font_set->fonts[i];
 			FcChar8* file;
