@@ -1328,6 +1328,7 @@ static const wxCmdLineEntryDesc command_line_description[] = {
 	{ wxCMD_LINE_OPTION, "s", "stress", "File containing description of stress test", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_OPTION, "k", "kdm", "KDM to load", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_SWITCH, "a", "auto-play", "start playing given DCP", wxCMD_LINE_VAL_NONE, wxCMD_LINE_PARAM_OPTIONAL },
+	{ wxCMD_LINE_OPTION, "d", "dcp", "DCP to load or create", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_NONE, "", "", "", wxCmdLineParamType(0), 0 }
 };
 
@@ -1445,8 +1446,8 @@ private:
 
 	bool OnCmdLineParsed(wxCmdLineParser& parser) override
 	{
-		if (parser.GetParamCount() > 0) {
-			auto path = boost::filesystem::path(wx_to_std(parser.GetParam(0)));
+		auto set_dcp_to_load = [this](wxString wx_path) {
+			auto path = boost::filesystem::path(wx_to_std(wx_path));
 			/* Go at most two directories higher looking for a DCP that contains the file
 			 * that was passed in.
 			 */
@@ -1457,6 +1458,10 @@ private:
 				}
 				path = path.parent_path();
 			}
+		};
+
+		if (parser.GetParamCount() > 0) {
+			set_dcp_to_load(parser.GetParam(0));
 		}
 
 		wxString config;
@@ -1473,6 +1478,10 @@ private:
 		}
 		if (parser.Found(char_to_wx("a"))) {
 			_auto_play = true;
+		}
+		wxString dcp;
+		if (parser.Found(char_to_wx("d"), &dcp)) {
+			set_dcp_to_load(dcp);
 		}
 
 		return true;
