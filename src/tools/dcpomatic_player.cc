@@ -199,7 +199,7 @@ public:
 	};
 
 
-	DOMFrame()
+	explicit DOMFrame(bool auto_play)
 		: wxFrame(nullptr, -1, variant::wx::dcpomatic_player())
 		, _mode(Config::instance()->player_mode())
 		/* Use a panel as the only child of the Frame so that we avoid
@@ -208,6 +208,7 @@ public:
 		, _overall_panel(new wxPanel(this, wxID_ANY))
 		, _viewer(_overall_panel, true)
 		, _main_sizer(new wxBoxSizer(wxVERTICAL))
+		, _auto_play(auto_play)
 	{
 		dcpomatic_log = make_shared<NullLog>();
 
@@ -436,6 +437,10 @@ public:
 				reset_film(film);
 				if (kdm) {
 					add_kdms({*kdm});
+				}
+
+				if (_auto_play) {
+					_viewer.start();
 				}
 			};
 
@@ -1314,6 +1319,7 @@ private:
 	std::unique_ptr<HTTPServer> _http_server;
 	struct timeval _last_http_server_update = { 0, 0 };
 	wx_ptr<AudioDialog> _audio_dialog;
+	bool _auto_play;
 };
 
 static const wxCmdLineEntryDesc command_line_description[] = {
@@ -1321,6 +1327,7 @@ static const wxCmdLineEntryDesc command_line_description[] = {
 	{ wxCMD_LINE_OPTION, "c", "config", "Directory containing config.xml", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_OPTION, "s", "stress", "File containing description of stress test", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_OPTION, "k", "kdm", "KDM to load", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL },
+	{ wxCMD_LINE_SWITCH, "a", "auto-play", "start playing given DCP", wxCMD_LINE_VAL_NONE, wxCMD_LINE_PARAM_OPTIONAL },
 	{ wxCMD_LINE_NONE, "", "", "", wxCmdLineParamType(0), 0 }
 };
 
@@ -1388,7 +1395,7 @@ private:
 
 			signal_manager = new wxSignalManager(this);
 
-			_frame = new DOMFrame();
+			_frame = new DOMFrame(_auto_play);
 			SetTopWindow(_frame);
 			_frame->Maximize();
 			if (splash) {
@@ -1464,6 +1471,9 @@ private:
 		if (parser.Found(char_to_wx("k"), &kdm)) {
 			_kdm_to_load = boost::filesystem::path(wx_to_std(kdm));
 		}
+		if (parser.Found(char_to_wx("a"))) {
+			_auto_play = true;
+		}
 
 		return true;
 	}
@@ -1531,6 +1541,7 @@ private:
 	boost::optional<boost::filesystem::path> _dcp_to_load;
 	boost::optional<boost::filesystem::path> _kdm_to_load;
 	boost::optional<string> _stress;
+	bool _auto_play = false;
 };
 
 IMPLEMENT_APP(App)
