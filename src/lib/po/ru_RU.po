@@ -4,7 +4,7 @@ msgstr ""
 "Project-Id-Version: DCP\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-04-19 23:03+0200\n"
-"PO-Revision-Date: 2025-06-08 20:12+0300\n"
+"PO-Revision-Date: 2026-06-18 02:36+0300\n"
 "Last-Translator: Mikhail Epshteyn <virus-2006@yandex.ru>\n"
 "Language-Team: Mikhail Epshteyn\n"
 "Language: ru\n"
@@ -13,7 +13,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
 "n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
-"X-Generator: Poedit 3.6\n"
+"X-Generator: Poedit 3.9\n"
 "X-Poedit-Basepath: .\n"
 "X-Poedit-SearchPath-0: .\n"
 
@@ -113,7 +113,7 @@ msgstr "1.19"
 
 #: src/lib/ratio.cc:45
 msgid "1.25"
-msgstr ""
+msgstr "1.25"
 
 #: src/lib/ratio.cc:46
 msgid "1.33 (4:3)"
@@ -129,7 +129,7 @@ msgstr "1.43 (IMAX)"
 
 #: src/lib/ratio.cc:49
 msgid "1.50"
-msgstr ""
+msgstr "1.50"
 
 #: src/lib/ratio.cc:50
 msgid "1.66"
@@ -157,11 +157,11 @@ msgstr "16"
 
 #: src/lib/ratio.cc:53
 msgid "2.00"
-msgstr ""
+msgstr "2.00"
 
 #: src/lib/ratio.cc:54
 msgid "2.21"
-msgstr ""
+msgstr "2.21"
 
 #: src/lib/ratio.cc:55
 msgid "2.35 (35mm Scope)"
@@ -201,7 +201,7 @@ msgid "; {} remaining; finishing at {}{}"
 msgstr "; осталось {}; время завершения {}{}"
 
 #: src/lib/analytics.cc:58
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "<h2>You have made {} DCPs with {}!</h2><img width=\"150\" height=\"193\" "
 "src=\"memory:me.jpg\" align=\"center\"><font size=\"+1\"><p>Hello. I'm Carl "
@@ -215,7 +215,7 @@ msgid ""
 "href=\"https://dcpomatic.com/donate_amount?amount=10\">Go to Paypal to "
 "donate €10</a></ul><p>Thank you!</font>"
 msgstr ""
-"<h2>Вы создали {} DCP с помощью {}!</h2><img width=\"20%%\" "
+"<h2>Вы создали {} DCP с помощью {}!</h2><img width=\"150\" height=\"193\" "
 "src=\"memory:me.jpg\" align=\"center\"><font size=\"+1\"><p>Привет. Меня "
 "зовут Карл и я разработчик {}. Я работаю над программой в свободное время (с "
 "помощью команды тестировщиков и переводчиков) и я публикую это как "
@@ -444,7 +444,7 @@ msgstr "C"
 #: src/lib/exceptions.cc:196
 #, c++-format
 msgid "CPL {} not found"
-msgstr ""
+msgstr "CPL {} не найден"
 
 #: src/lib/job.cc:657
 msgid "Cancelled"
@@ -476,6 +476,8 @@ msgid ""
 "Check the server settings in the TMS tab of preferences, or un-tick \"Upload "
 "DCP to TMS after creation\" if you do not want to upload your DCP."
 msgstr ""
+"Проверьте настройки сервера на вкладке TMS в настройках или снимите флажок "
+"\"Загружать DCP в TMS после создания\", если вы не хотите загружать свой DCP."
 
 #: src/lib/transcode_job.cc:106
 msgid "Check their new settings, then try again."
@@ -499,7 +501,7 @@ msgstr "Хроматическая непостоянная яркость"
 
 #: src/lib/dcp_content_type.cc:64
 msgid "Clip"
-msgstr "Обрезать"
+msgstr "CLP (Фрагмент, Клип)"
 
 #: src/lib/text_type.cc:85
 msgid "Closed captions"
@@ -706,26 +708,26 @@ msgid "Copy DCP to TMS"
 msgstr "Копировать DCP на TMS (Theater Management System)"
 
 #: src/lib/copy_to_drive_job.cc:119
-#, fuzzy
 msgid "Copying DCP"
-msgstr "Объединить DCP"
+msgstr "Копирование DCP"
 
 #: src/lib/copy_to_drive_job.cc:61
-#, fuzzy, c++-format
+#, c++-format
 msgid "Copying DCPs to {}"
-msgstr "Копировать DCP на TMS (Theater Management System)"
+msgstr "Копировать DCP на {}"
 
 #: src/lib/reel_writer.cc:194
-#, fuzzy
 msgid "Copying existing asset"
-msgstr "Проверка данных изображения"
+msgstr "Копирование существующего ресурса"
 
 #: src/lib/copy_to_drive_job.cc:58
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "Copying {}\n"
 "to {}"
-msgstr "копирование {}"
+msgstr ""
+"Копирование {}\n"
+"в {}"
 
 #: src/lib/scp_uploader.cc:56
 #, c++-format
@@ -828,14 +830,13 @@ msgid "DCI Scope"
 msgstr "DCI Scope"
 
 #: src/lib/film.cc:2048
-#, fuzzy
 msgid "DCP"
-msgstr "DBP"
+msgstr "DCP"
 
 #: src/lib/film.cc:2045
 #, c++-format
 msgid "DCP (via {})"
-msgstr ""
+msgstr "DCP (через {})"
 
 #: src/lib/dcp_subtitle_content.cc:138
 msgid "DCP XML subtitles"
@@ -846,9 +847,9 @@ msgid "DCP sample rate"
 msgstr "Частота кадров DCP"
 
 #: src/lib/frame_rate_change.cc:93
-#, fuzzy, c++-format
+#, c++-format
 msgid "DCP will contain 1 out of every {} frames of the content.\n"
-msgstr "DCP будет использовать каждый второй кадр контента.\n"
+msgstr "DCP будет содержать 1 из каждых {} кадров контента.\n"
 
 #: src/lib/frame_rate_change.cc:103
 #, c-format
@@ -922,14 +923,14 @@ msgstr ""
 "{}"
 
 #: src/lib/exceptions.cc:178
-#, fuzzy, c++-format
+#, c++-format
 msgid "Disk full when writing {}"
-msgstr "Диск заполнен при записи% 1"
+msgstr "Диск заполнен при записи {}"
 
 #: src/lib/job.cc:268
-#, fuzzy, c++-format
+#, c++-format
 msgid "Disk full while writing {}"
-msgstr "Диск заполнен при записи% 1"
+msgstr "Диск заполнен во время записи {}"
 
 #: src/lib/dolby_cp750.cc:31
 msgid "Dolby CP650 or CP750"
@@ -943,9 +944,8 @@ msgstr "Ошибка загрузки ({} ошибка {})"
 #. TRANSLATORS: this is an abbreviation for "end credits", shown next to the pair of markers
 #. "FFEC" and "LFEC" ({First, Last} Frame of End Credits)
 #: src/lib/layout_markers.cc:145
-#, fuzzy
 msgid "EC"
-msgstr "C"
+msgstr "EC"
 
 #: src/lib/frame_rate_change.cc:95
 msgid "Each content frame will be doubled in the DCP.\n"
@@ -999,7 +999,7 @@ msgstr "Ошибка: ({})"
 
 #: src/lib/dcp_content_type.cc:69
 msgid "Event"
-msgstr "Событие"
+msgstr "EVT (Событие)"
 
 #: src/lib/hints.cc:410
 msgid "Examining audio"
@@ -1071,9 +1071,8 @@ msgid "Finding length"
 msgstr "Расчёт длительности"
 
 #: src/lib/copy_to_drive_job.cc:112
-#, fuzzy
 msgid "Formatting drive"
-msgstr "Проверка целостности"
+msgstr "Форматирование диска"
 
 #: src/lib/content.cc:465
 msgid "Frame rate"
@@ -1148,7 +1147,7 @@ msgstr "Высококачественный подавитель шума 3D"
 
 #: src/lib/dcp_content_type.cc:68
 msgid "Highlights"
-msgstr "Выделения"
+msgstr "HLT (Основные моменты)"
 
 #: src/lib/filter.cc:93
 msgid "Horizontal flip"
@@ -1170,7 +1169,7 @@ msgstr "IEC61966-2-4"
 #. "FFOI" and "LFOI" ({First, Last} Frame of Intermission)
 #: src/lib/layout_markers.cc:142
 msgid "IN"
-msgstr ""
+msgstr "IN"
 
 #: src/lib/hints.cc:198
 msgid "If you do use 25fps you should change your DCP standard to SMPTE."
@@ -1278,9 +1277,8 @@ msgstr "Ls"
 #. TRANSLATORS: this is an abbreviation for "moving credits", shown next to the pair of markers
 #. "FFMC" and "LFMC" ({First, Last} Frame of Moving Credits)
 #: src/lib/layout_markers.cc:148
-#, fuzzy
 msgid "MC"
-msgstr "C"
+msgstr "MC"
 
 #: src/lib/mid_side_decoder.cc:39
 msgid "Mid-side decoder"
@@ -1326,12 +1324,11 @@ msgstr "Диентерлейсер компенсации движения"
 
 #: src/lib/dcp_content.cc:212
 msgid "No ASSETMAP or ASSETMAP.xml file found: is this a DCP?"
-msgstr ""
+msgstr "Нет ASSETMAP или файла ASSETMAP.xml. Это DCP?"
 
 #: src/lib/dcp_examiner.cc:115
-#, fuzzy
 msgid "No CPLs found in DCP"
-msgstr "В DCP не обнаружены CPL-файлы."
+msgstr "В DCP не обнаружены CPL-файлы"
 
 #: src/lib/dcp_decoder.cc:114
 msgid "No CPLs found in DCP."
@@ -1412,15 +1409,15 @@ msgstr "Подавитель шума owdenoise"
 
 #: src/lib/colour_conversion.cc:293
 msgid "P3 D60 (~6000K)"
-msgstr ""
+msgstr "P3 D60 (~6000K)"
 
 #: src/lib/colour_conversion.cc:292
 msgid "P3 D65 (~6500K)"
-msgstr ""
+msgstr "P3 D65 (~6500K)"
 
 #: src/lib/colour_conversion.cc:291
 msgid "P3 DCI (~6300K)"
-msgstr ""
+msgstr "P3 DCI (~6300K)"
 
 #: src/lib/util.cc:1111
 #, c++-format
@@ -1464,9 +1461,8 @@ msgstr "R"
 #. TRANSLATORS: this is an abbreviation for "ratings band", shown next to the pair of markers
 #. "FFOB" and "LFOB" ({First, Last} Frame of Band)
 #: src/lib/layout_markers.cc:136
-#, fuzzy
 msgid "RB"
-msgstr "R"
+msgstr "RB"
 
 #: src/lib/ffmpeg_content.cc:644
 msgid "RGB / sRGB (IEC61966-2-1)"
@@ -1557,9 +1553,8 @@ msgid "SMPTE ST 2084 for 10, 12, 14 and 16 bit systems"
 msgstr "SMPTE ST 2084 для 10, 12, 14 и 16-битных систем"
 
 #: src/lib/ffmpeg_content.cc:660
-#, fuzzy
 msgid "SMPTE ST 2128, IPT-C2"
-msgstr "SMPTE ST 428-1"
+msgstr "SMPTE ST 2128, IPT-C2"
 
 #: src/lib/ffmpeg_content.cc:636
 msgid "SMPTE ST 428-1"
@@ -1645,15 +1640,12 @@ msgstr ""
 "настройки."
 
 #: src/lib/check_content_job.cc:94
-#, fuzzy
 msgid ""
 "Some files must be re-examined due to a bug fix in DCP-o-matic.  You may "
 "need to check their settings."
 msgstr ""
-"Некоторые файлы изменились с момента их добавления в проект.\n"
-"\n"
-"Эти файлы сейчас будут перепроверены. Возможно, вам придётся проверить их "
-"настройки."
+"Некоторые файлы необходимо повторно проверить из-за исправления ошибки в DCP-"
+"o-matic.  Возможно, вам потребуется проверить их настройки."
 
 #: src/lib/hints.cc:622
 #, c++-format
@@ -1681,6 +1673,12 @@ msgid ""
 "in doubt, set everything (picture, sound and text) to be either encrypted or "
 "not."
 msgstr ""
+"Часть вашего контента зашифрована, а часть - нет.  Хотя некоторые "
+"распространители (например, Netflix) требуют, чтобы субтитры не шифровались "
+"(даже если изображение и звук зашифрованы), другие будут отмечать ошибки в "
+"протоколе передачи данных, созданном в рамках этого проекта.  Если вы "
+"сомневаетесь, установите все (изображение, звук и текст) либо в "
+"зашифрованном виде, либо нет."
 
 #: src/lib/make_dcp.cc:69
 msgid "Some of your content is missing"
@@ -1713,7 +1711,7 @@ msgstr "Стерео"
 
 #: src/lib/dcp_content_type.cc:66
 msgid "Stereo card"
-msgstr "Стерео карта"
+msgstr "STR (Наденьте 3D очки)"
 
 #: src/lib/upmixer_a.cc:51
 msgid "Stereo to 5.1 up-mixer A"
@@ -1730,9 +1728,8 @@ msgstr "Воскресенье"
 #. TRANSLATORS: this is an abbreviation for "title credits", shown next to the pair of markers
 #. "FFTC" and "LFTC" ({First, Last} Frame of Title Credits)
 #: src/lib/layout_markers.cc:139
-#, fuzzy
 msgid "TC"
-msgstr "C"
+msgstr "TC"
 
 #: src/lib/dcp_content_type.cc:60
 msgid "Teaser"
@@ -1764,7 +1761,7 @@ msgid "The certificate chain for signing is invalid ({})"
 msgstr "Цепочка сертификатов для подписи неверна ({})"
 
 #: src/lib/hints.cc:761
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "The certificate chain that {} uses for signing DCPs and KDMs contains a "
 "small error which will prevent DCPs from being validated correctly on some "
@@ -1772,14 +1769,14 @@ msgid ""
 "clicking the \"Re-make certificates and key...\" button in the Keys page of "
 "Preferences."
 msgstr ""
-"Цепочка сертификатов, которую % 1 использует для подписи DCP и KDMs, "
-"содержит небольшую ошибку, которая не позволяет корректно проверять DCP в "
-"некоторых системах.  Рекомендуется заново создать цепочку подписывающих "
-"сертификатов, нажав кнопку \"Переделать сертификаты и ключи...\" на странице "
-"настроек \"Ключи\"."
+"Цепочка сертификатов, которую {} использует для подписи DCP и KDMs, содержит "
+"небольшую ошибку, которая не позволяет корректно проверять DCP в некоторых "
+"системах.  Рекомендуется заново создать цепочку подписывающих сертификатов, "
+"нажав кнопку \"Переделать сертификаты и ключи...\" на странице настроек "
+"\"Ключи\"."
 
 #: src/lib/hints.cc:769
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "The certificate chain that {} uses for signing DCPs and KDMs has a validity "
 "period that is too long.  This will cause problems playing back DCPs on some "
@@ -1787,7 +1784,7 @@ msgid ""
 "clicking the \"Re-make certificates and key...\" button in the Keys page of "
 "Preferences."
 msgstr ""
-"Цепочка сертификатов, которую % 1 использует для подписи DCP и KDMs, имеет "
+"Цепочка сертификатов, которую {} использует для подписи DCP и KDMs, имеет "
 "слишком большой срок действия.  Это приведет к проблемам с воспроизведением "
 "DCP в некоторых системах. Рекомендуется заново создать цепочку подписывающих "
 "сертификатов, нажав кнопку \"Переделать сертификаты и ключи...\" на странице "
@@ -1950,9 +1947,8 @@ msgid "Timed text"
 msgstr "Субтитры"
 
 #: src/lib/job.cc:274
-#, fuzzy
 msgid "Too many open files"
-msgstr "не удалось открыть файл {}"
+msgstr "Слишком много открытых файлов"
 
 #: src/lib/dcp_content_type.cc:56
 msgid "Trailer"
@@ -2035,16 +2031,16 @@ msgstr "Проверить DCP"
 
 #: src/lib/copy_to_drive_job.cc:126
 msgid "Verifying copied files"
-msgstr ""
+msgstr "Проверка скопированных файлов"
 
 #: src/lib/filter.cc:92
 msgid "Vertical flip"
 msgstr "Отразить по горизонтали"
 
 #: src/lib/fcpxml.cc:69
-#, fuzzy, c++-format
+#, c++-format
 msgid "Video refers to missing asset {}"
-msgstr "Видео относится к отсутствующему ресурсу % 1"
+msgstr "Видео относится к отсутствующему ресурсу {}"
 
 #: src/lib/util.cc:589
 msgid "Visually impaired"
@@ -2068,11 +2064,11 @@ msgstr "YCOCG"
 
 #: src/lib/ffmpeg_content.cc:661
 msgid "YCgCo-R, even addition"
-msgstr ""
+msgstr "YCgCo-R, четное сложение"
 
 #: src/lib/ffmpeg_content.cc:662
 msgid "YCgCo-R, odd addition"
-msgstr ""
+msgstr "YCgCo-R, нечетное сложение"
 
 #: src/lib/filter.cc:98
 msgid "Yet Another Deinterlacing Filter"
@@ -2181,13 +2177,13 @@ msgstr ""
 "тишиной."
 
 #: src/lib/hints.cc:787
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "Your DCP has {} audio channels, rather than 8 or 16.  This may cause some "
 "distributors to raise QC errors when they check your DCP.  To avoid this, "
 "set the DCP audio channels to 8 or 16."
 msgstr ""
-"В вашем DCP используется 1% аудиоканалов, а не 8 или 16.  Это может привести "
+"В вашем DCP используется {} аудиоканалов, а не 8 или 16.  Это может привести "
 "к тому, что некоторые дистрибьюторы будут выдавать ошибки контроля качества "
 "при проверке вашего DCP.  Чтобы избежать этого, установите для аудиоканалов "
 "DCP значение 8 или 16."
@@ -2340,13 +2336,13 @@ msgid "it has a different frame rate to the film."
 msgstr "частота кадров проекта отличается от частоты кадров DCP."
 
 #: src/lib/dcp_content.cc:799
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "it has a different number of audio channels than the project; set the "
 "project to have {} channels."
 msgstr ""
 "в нем количество аудиоканалов отличается от количества аудиоканалов в "
-"проекте; установите для проекта значение% 1 каналов."
+"проекте; установите для проекта значение {} каналов."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
 #: src/lib/dcp_content.cc:835
@@ -2418,13 +2414,12 @@ msgstr "название"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
 #: src/lib/dcp_content.cc:829
-#, fuzzy
 msgid ""
 "one of its closed caption reels has a non-zero entry point so it must be re-"
 "written."
 msgstr ""
-"один из файлов скрытых субтитров имеет ненулевой индекс, поэтому он должен "
-"быть перезаписан."
+"одна из частей файла скрытых субтитров (CC) имеет ненулевой индекс, поэтому "
+"он должен быть перезаписан."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
 #: src/lib/dcp_content.cc:823
@@ -2514,21 +2509,21 @@ msgstr ""
 "соответствует вашему контенту Atmos."
 
 #: src/lib/film.cc:1844
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "{} had to remove one of your custom reel boundaries as it no longer lies "
 "within the film."
 msgstr ""
-"% 1 пришлось удалить одну из ваших пользовательских границ, так как она "
+"{} пришлось удалить одну из ваших пользовательских границ, так как она "
 "больше не находится внутри фильма."
 
 #: src/lib/film.cc:1842
-#, fuzzy, c++-format
+#, c++-format
 msgid ""
 "{} had to remove some of your custom reel boundaries as they no longer lie "
 "within the film."
 msgstr ""
-"% 1 пришлось удалить некоторые из ваших пользовательских границ, так как они "
+"{} пришлось удалить некоторые из ваших пользовательских границ, так как они "
 "больше не находятся в пределах фильма."
 
 #: src/lib/ffmpeg_content.cc:114

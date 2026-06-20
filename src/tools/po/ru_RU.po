@@ -4,7 +4,7 @@ msgstr ""
 "Project-Id-Version: \n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-04-12 11:50+0200\n"
-"PO-Revision-Date: 2025-06-08 19:54+0300\n"
+"PO-Revision-Date: 2026-06-18 01:46+0300\n"
 "Last-Translator: Mikhail Epshteyn <virus-2006@yandex.ru>\n"
 "Language-Team: Russian\n"
 "Language: ru\n"
@@ -13,7 +13,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
 "n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
-"X-Generator: Poedit 3.6\n"
+"X-Generator: Poedit 3.9\n"
 
 #: src/tools/dcpomatic_kdm.cc:491
 #, c-format
@@ -150,11 +150,11 @@ msgstr "&Вид"
 
 #: src/tools/dcpomatic_verifier.cc:107
 msgid "(encrypted, have KDM)"
-msgstr ""
+msgstr "(зашифрован, есть KDM)"
 
 #: src/tools/dcpomatic_verifier.cc:109
 msgid "(encrypted, no KDM)"
-msgstr ""
+msgstr "(зашифрован, нет KDM)"
 
 #: src/tools/dcpomatic_playlist.cc:324
 msgid "<b>Playlist:</b>"
@@ -187,9 +187,8 @@ msgid "Add &KDM..."
 msgstr "Добавить &KDM…"
 
 #: src/tools/dcpomatic_verifier.cc:187
-#, fuzzy
 msgid "Add KDM..."
-msgstr "Добавить &KDM…"
+msgstr "Добавить KDM…"
 
 #: src/tools/dcpomatic_playlist.cc:80
 msgid "Add content"
@@ -292,7 +291,7 @@ msgstr ""
 
 #: src/tools/dcpomatic_player.cc:709
 msgid "Audio graph..."
-msgstr ""
+msgstr "График аудио..."
 
 #: src/tools/dcpomatic.cc:878
 #, c-format
@@ -315,7 +314,7 @@ msgstr "CPL: %s"
 
 #: src/tools/dcpomatic_verifier.cc:206
 msgid "Cancel"
-msgstr ""
+msgstr "Отменить"
 
 #: src/tools/dcpomatic.cc:1441 src/tools/dcpomatic_player.cc:711
 msgid "Check for updates"
@@ -323,7 +322,7 @@ msgstr "Проверить обновления"
 
 #: src/tools/dcpomatic_verifier.cc:375
 msgid "Checking KDM"
-msgstr ""
+msgstr "Проверка KDM"
 
 #: src/tools/dcpomatic_combiner.cc:68 src/tools/dcpomatic_disk.cc:84
 msgid "Choose a DCP folder"
@@ -531,7 +530,7 @@ msgstr "Создатель"
 
 #: src/tools/dcpomatic_playlist.cc:342
 msgid "Crop"
-msgstr ""
+msgstr "Обрезать"
 
 #: src/tools/dcpomatic_disk.cc:139 src/tools/dcpomatic_verifier.cc:179
 msgid "DCP"
@@ -651,9 +650,8 @@ msgid "Edit reel"
 msgstr "Редактировать части"
 
 #: src/tools/dcpomatic_playlist.cc:351
-#, fuzzy
 msgid "Edit..."
-msgstr "&Правка"
+msgstr "Правка..."
 
 #: src/tools/dcpomatic_batch.cc:103 src/tools/dcpomatic.cc:1439
 msgid "Encoding servers..."
@@ -668,22 +666,20 @@ msgid "Entry point"
 msgstr "Начальная точка"
 
 #: src/tools/dcpomatic_verifier.cc:152
-#, fuzzy
 msgid "Examining DCPs"
-msgstr "Объединение DCPs"
+msgstr "Изучение DCP"
 
 #: src/tools/dcpomatic.cc:1446
 msgid "Export preferences..."
-msgstr "Экспортировать настройки по умолчанию…"
+msgstr "Экспорт настроек…"
 
 #: src/tools/dcpomatic.cc:1418
-#, fuzzy
 msgid "Export subtitles...\tShift-Ctrl-E"
-msgstr "Экспортировать субтитры..."
+msgstr "Экспорт субтитров...\tShift-Ctrl-E"
 
 #: src/tools/dcpomatic.cc:1417
 msgid "Export video file...\tCtrl-E"
-msgstr "Экспортировать видеофайл...\tCtrl-E"
+msgstr "Экспорт видеофайла...\tCtrl-E"
 
 #: src/tools/dcpomatic_kdm.cc:220
 msgid "Export..."
@@ -816,8 +812,8 @@ msgid ""
 "No ASSETMAP or ASSETMAP.xml found in this folder.  Please choose a DCP "
 "folder."
 msgstr ""
-"Ни ASSETMAP или ASSETMAP.xml не найден в папке. Пожалуйста выберите папку с "
-"DCP."
+"Нет ASSETMAP или файл ASSETMAP.xml не найден в папке. Пожалуйста выберите "
+"папку с DCP."
 
 #: src/tools/dcpomatic_playlist.cc:253
 msgid ""
@@ -977,9 +973,8 @@ msgid "Select DCP to open as OV"
 msgstr "Выберите DCP для открытия как OV"
 
 #: src/tools/dcpomatic_verifier.cc:165 src/tools/dcpomatic_verifier.cc:167
-#, fuzzy
 msgid "Select DCP(s)"
-msgstr "Выберите KDM-файл"
+msgstr "Выберите DCP"
 
 #: src/tools/dcpomatic_kdm.cc:821
 msgid "Select DKDM File"
@@ -1222,6 +1217,9 @@ msgid ""
 "Tick to check details of the picture asset, such as frame sizes and JPEG2000 "
 "bitstream validity.  These checks are quite time-consuming."
 msgstr ""
+"Установите флажок, чтобы проверить данные о графическом ресурсе, такие как "
+"размеры кадров и допустимость использования битового потока JPEG2000.  Эти "
+"проверки занимают довольно много времени."
 
 #: src/tools/dcpomatic_player.cc:712
 msgid "Timing..."
@@ -1261,12 +1259,11 @@ msgstr "Вверх"
 
 #: src/tools/dcpomatic.cc:1455
 msgid "User manual..."
-msgstr ""
+msgstr "Руководство пользователя..."
 
 #: src/tools/dcpomatic_verifier.cc:208
-#, fuzzy
 msgid "Verify"
-msgstr "Проверить DCP"
+msgstr "Проверить"
 
 #: src/tools/dcpomatic_player.cc:1041
 msgid "Verify DCP"
@@ -1278,7 +1275,7 @@ msgstr "Проверить DCP..."
 
 #: src/tools/dcpomatic_verifier.cc:194
 msgid "Verify picture asset details"
-msgstr ""
+msgstr "Проверьте информацию о ресурсе изображения"
 
 #: src/tools/dcpomatic.cc:1437
 msgid "Version File (VF)..."
@@ -1289,9 +1286,8 @@ msgid "Video waveform..."
 msgstr "Волновая диаграмма видео…"
 
 #: src/tools/dcpomatic_verifier.cc:201
-#, fuzzy
 msgid "Write logs to DCP folders"
-msgstr "Выбрать папку с DCP"
+msgstr "Запись логов в папку DCP"
 
 #: src/tools/dcpomatic_kdm.cc:795
 msgid ""
