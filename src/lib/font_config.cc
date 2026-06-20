@@ -56,7 +56,11 @@ FontConfig::~FontConfig()
 }
 
 
-string
+/** Try to make the given Font available, returning a name to use with Pango, or
+ *  boost::none if there was some problem.  If Font contains no filename and no
+ *  data we will try to load default_font_file().
+ */
+optional<string>
 FontConfig::make_font_available(shared_ptr<dcpomatic::Font> font)
 {
 	DCPOMATIC_ASSERT(font);
@@ -87,7 +91,15 @@ FontConfig::make_font_available(shared_ptr<dcpomatic::Font> font)
 
 	/* Make this font available to DCP-o-matic */
 	optional<string> font_name;
-	FcConfigAppFontAddFile (_config, reinterpret_cast<FcChar8 const *>(font_file.string().c_str()));
+	auto result = FcConfigAppFontAddFile(_config, reinterpret_cast<FcChar8 const *>(font_file.string().c_str()));
+	if (result == FcFalse) {
+		if (font->file()) {
+			LOG_ERROR("Failed to add font {} for {}", font_file.string(), font->file()->string());
+		} else {
+			LOG_ERROR("Failed to add font {}", font_file.string());
+		}
+		return boost::none;
+	}
 	auto pattern = FcPatternBuild (
 		0, FC_FILE, FcTypeString, font_file.string().c_str(), static_cast<char *>(0)
 		);
@@ -107,15 +119,21 @@ FontConfig::make_font_available(shared_ptr<dcpomatic::Font> font)
 	FcObjectSetDestroy (object_set);
 	FcPatternDestroy (pattern);
 
-	DCPOMATIC_ASSERT(font_name);
-
-	/* We need to use the font object as the key, as we may be passed the same shared_ptr to a modified
-	 * Font object in the future and in that case we need to load the new font.
-	 */
-	_available_fonts[font->content()] = *font_name;
+	if (font_name) {
+		/* We need to use the font object as the key, as we may be passed the same shared_ptr to a modified
+		 * Font object in the future and in that case we need to load the new font.
+		 */
+		_available_fonts[font->content()] = *font_name;
+	} else {
+		if (font->file()) {
+			LOG_ERROR("Tried to add font {} for {} but it wasn't found in the list", font_file.string(), font->file()->string());
+		} else {
+			LOG_ERROR("Tried to add font {} but it wasn't found in the list", font_file.string());
+		}
+	}
 
 	FcConfigBuildFonts(_config);
-	return *font_name;
+	return font_name;
 }
 
 

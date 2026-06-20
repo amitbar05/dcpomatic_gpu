@@ -336,7 +336,7 @@ setup_layout(vector<StringText> subtitles, dcp::Size target, DCPTime time, int f
 	DCPOMATIC_ASSERT(!subtitles.empty());
 	auto const& first = subtitles.front();
 
-	auto const font_name = FontConfig::instance()->make_font_available(first.font);
+	auto const font_name = FontConfig::instance()->make_font_available(first.font).get_value_or("Arial");
 	auto const fade_factor = calculate_fade_factor(first, time, frame_rate);
 	auto const markup = marked_up(subtitles, target.height, fade_factor, font_name);
 	auto layout = create_layout(font_name, markup);
@@ -541,7 +541,7 @@ FontMetrics::get(StringText const& subtitle)
 		return iter;
 	}
 
-	auto const font_name = FontConfig::instance()->make_font_available(subtitle.font);
+	auto const font_name = FontConfig::instance()->make_font_available(subtitle.font).get_value_or("Arial");
 	auto copy = subtitle;
 	copy.set_text("Qypjg");
 	auto layout = create_layout(font_name, marked_up({copy}, _target_height, 1, font_name));

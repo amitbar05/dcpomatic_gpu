@@ -32,7 +32,7 @@ class FontConfig
 public:
 	static FontConfig* instance();
 
-	std::string make_font_available(std::shared_ptr<dcpomatic::Font> font);
+	boost::optional<std::string> make_font_available(std::shared_ptr<dcpomatic::Font> font);
 	boost::optional<boost::filesystem::path> system_font_with_name(std::string name);
 
 	static void drop();
