@@ -418,7 +418,7 @@ Hints::scan_content(shared_ptr<const Film> film)
 		/* We don't need to analyse audio because we already loaded a suitable analysis */
 		player->set_ignore_audio();
 	} else {
-		/* Send auto to the analyser to check loudness */
+		/* Send audio to the analyser to check loudness */
 		player->Audio.connect(boost::bind(&Hints::audio, this, _1, _2));
 	}
 	player->Text.connect(boost::bind(&Hints::text, this, _1, _2, _3, _4));
