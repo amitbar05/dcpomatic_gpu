@@ -1314,6 +1314,10 @@ Player::bitmap_text_start(weak_ptr<Piece> weak_piece, weak_ptr<const TextContent
 	}
 
 	_active_texts[content->type()].add_from(weak_content, ps, *from);
+	if (_ignore_video) {
+		/* _active_texts is not going to be cleared out in emit_video(), so do it here instead */
+		_active_texts[content->type()].clear_before(*from);
+	}
 }
 
 
@@ -1356,6 +1360,10 @@ Player::plain_text_start(weak_ptr<Piece> weak_piece, weak_ptr<const TextContent>
 	}
 
 	_active_texts[content->type()].add_from(weak_content, ps, *from);
+	if (_ignore_video) {
+		/* _active_texts is not going to be cleared out in emit_video(), so do it here instead */
+		_active_texts[content->type()].clear_before(*from);
+	}
 }
 
 
