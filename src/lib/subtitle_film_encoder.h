@@ -65,13 +65,16 @@ private:
 	class Output
 	{
 	public:
-		Output(std::shared_ptr<dcp::TextAsset> asset_, boost::filesystem::path path_)
+		Output(std::shared_ptr<dcp::TextAsset> asset_, boost::filesystem::path path)
 			: asset(asset_)
-			, path(path_)
+			, _path(path)
 		{}
 
+		void write() const;
+
 		std::shared_ptr<dcp::TextAsset> asset;
-		boost::filesystem::path path;
+	private:
+		boost::filesystem::path _path;
 	};
 
 	std::vector<Output> _outputs;

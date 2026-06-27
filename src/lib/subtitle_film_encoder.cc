@@ -138,7 +138,7 @@ SubtitleFilmEncoder::go()
 			}
 		}
 
-		i.asset->write(i.path);
+		i.write();
 		++reel;
 	}
 }
@@ -220,3 +220,11 @@ SubtitleFilmEncoder::frames_done() const
 	/* XXX: assuming 24fps here but I don't think it matters */
 	return _last->seconds() * 24;
 }
+
+
+void
+SubtitleFilmEncoder::Output::write() const
+{
+	asset->write(_path);
+}
+
