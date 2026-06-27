@@ -133,10 +133,7 @@ SubtitleFilmEncoder::text(PlayerText subs, TextType type, optional<DCPTextTrack>
 		/* XXX: couldn't / shouldn't we use period here rather than getting time from the subtitle? */
 		i.set_in (i.in());
 		i.set_out(i.out());
-		if (_format == SubtitleFormat::XML && !_include_font) {
-			i.unset_font();
-		}
-		_outputs[_reel_index].add(i);
+		_outputs[_reel_index].add(i, _include_font);
 	}
 
 	if (_split_reels && (_reel_index < int(_reels.size()) - 1) && period.from > _reels[_reel_index].from) {
@@ -224,9 +221,12 @@ SubtitleFilmEncoder::Output::write() const
 
 
 void
-SubtitleFilmEncoder::Output::add(StringText const& sub)
+SubtitleFilmEncoder::Output::add(StringText sub, bool include_font)
 {
 	DCPOMATIC_ASSERT(_asset);
+	if (_format == SubtitleFormat::XML && !include_font) {
+		sub.unset_font();
+	}
 	_asset->add(make_shared<dcp::TextString>(sub));
 }
 

@@ -73,7 +73,7 @@ private:
 			boost::optional<DCPTextTrack> track
 		);
 
-		void add(StringText const& sub);
+		void add(StringText sub, bool include_font);
 		void add_fonts(std::vector<std::shared_ptr<dcpomatic::Font>> const& fonts, dcp::ArrayData default_font);
 		void write() const;
 
