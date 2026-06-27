@@ -34,7 +34,6 @@
 #include "player_video.h"
 #include "referenced_reel_asset.h"
 #include "text_content.h"
-#include "video_decoder.h"
 #include "writer.h"
 #include <boost/signals2.hpp>
 #include <iostream>
@@ -44,11 +43,9 @@
 
 using std::cout;
 using std::dynamic_pointer_cast;
-using std::list;
 using std::make_shared;
 using std::shared_ptr;
 using std::string;
-using std::vector;
 using std::weak_ptr;
 using boost::optional;
 #if BOOST_VERSION >= 106100
