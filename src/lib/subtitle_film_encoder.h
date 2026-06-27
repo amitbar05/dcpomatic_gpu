@@ -62,7 +62,19 @@ public:
 private:
 	void text(PlayerText subs, TextType type, boost::optional<DCPTextTrack> track, dcpomatic::DCPTimePeriod period);
 
-	std::vector<std::pair<std::shared_ptr<dcp::TextAsset>, boost::filesystem::path>> _assets;
+	class Output
+	{
+	public:
+		Output(std::shared_ptr<dcp::TextAsset> asset_, boost::filesystem::path path_)
+			: asset(asset_)
+			, path(path_)
+		{}
+
+		std::shared_ptr<dcp::TextAsset> asset;
+		boost::filesystem::path path;
+	};
+
+	std::vector<Output> _outputs;
 	std::vector<dcpomatic::DCPTimePeriod> _reels;
 	bool _split_reels;
 	bool _include_font;
