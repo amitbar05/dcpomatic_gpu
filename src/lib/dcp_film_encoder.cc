@@ -20,10 +20,7 @@
 
 
 /** @file  src/dcp_film_encoder.cc
- *  @brief A class which takes a Film and some Options, then uses those to encode the film into a DCP.
- *
- *  A decoder is selected according to the content type, and the encoder can be specified
- *  as a parameter to the constructor.
+ *  @brief A class which makes a DCP from a film.
  */
 
 
