@@ -242,7 +242,7 @@ J2KEncoder::end()
 					i.index(),
 					i.eyes()
 					);
-				frame_done();
+				frame_done(i.eyes());
 			} catch (std::exception& e) {
 				LOG_ERROR(N_("Local encode failed ({})"), e.what());
 			}
@@ -258,9 +258,11 @@ J2KEncoder::end()
 
 /** Should be called when a frame has been encoded successfully */
 void
-J2KEncoder::frame_done()
+J2KEncoder::frame_done(Eyes eyes)
 {
-	_history.event();
+	if (eyes == Eyes::BOTH || eyes == Eyes::LEFT) {
+		_history.event();
+	}
 }
 
 
@@ -313,16 +315,16 @@ J2KEncoder::encode(shared_ptr<PlayerVideo> pv, DCPTime time)
 		/* We can fake-write this frame */
 		LOG_DEBUG_ENCODE("Frame @ {} FAKE", to_string(time));
 		_writer.fake_write(position, pv->eyes());
-		frame_done();
+		frame_done(pv->eyes());
 	} else if (pv->has_j2k() && !_film->reencode_j2k()) {
 		LOG_DEBUG_ENCODE("Frame @ {} J2K", to_string(time));
 		/* This frame already has J2K data, so just write it */
 		_writer.write(pv->j2k(), position, pv->eyes());
-		frame_done();
+		frame_done(pv->eyes());
 	} else if (_last_player_video[pv->eyes()] && _writer.can_repeat(position) && pv->same(_last_player_video[pv->eyes()])) {
 		LOG_DEBUG_ENCODE("Frame @ {} REPEAT", to_string(time));
 		_writer.repeat(position, pv->eyes());
-		frame_done();
+		frame_done(pv->eyes());
 	} else {
 		LOG_DEBUG_ENCODE("Frame @ {} ENCODE", to_string(time));
 		/* Queue this new frame for encoding */
@@ -508,5 +510,5 @@ void
 J2KEncoder::write(shared_ptr<const dcp::Data> data, int index, Eyes eyes)
 {
 	_writer.write(data, index, eyes);
-	frame_done();
+	frame_done(eyes);
 }

@@ -96,7 +96,7 @@ private:
 	friend struct ::remote_threads_created_and_destroyed;
 	friend struct ::frames_not_lost_when_threads_disappear;
 
-	void frame_done();
+	void frame_done(Eyes eyes);
 	void servers_list_changed();
 	void remake_threads(int cpu, int gpu, std::list<EncodeServerDescription> servers);
 	void terminate_threads();
