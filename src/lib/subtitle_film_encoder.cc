@@ -61,7 +61,6 @@ SubtitleFilmEncoder::SubtitleFilmEncoder(
 	, _include_font(include_font)
 	, _reel_index(0)
 	, _length(film->length())
-	, _format(format)
 {
 	_player.set_play_referenced();
 	_player.set_ignore_video();

@@ -90,6 +90,5 @@ private:
 	int _reel_index;
 	boost::optional<dcpomatic::DCPTime> _last;
 	dcpomatic::DCPTime _length;
-	SubtitleFormat _format;
 	dcp::ArrayData _default_font;
 };
