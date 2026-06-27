@@ -70,6 +70,7 @@ private:
 			, _path(path)
 		{}
 
+		void add(StringText const& sub);
 		void write() const;
 
 		std::shared_ptr<dcp::TextAsset> asset;

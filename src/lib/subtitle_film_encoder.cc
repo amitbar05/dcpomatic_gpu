@@ -195,7 +195,7 @@ SubtitleFilmEncoder::text(PlayerText subs, TextType type, optional<DCPTextTrack>
 		if (_format == SubtitleFormat::XML && !_include_font) {
 			i.unset_font();
 		}
-		_outputs[_reel_index].asset->add(make_shared<dcp::TextString>(i));
+		_outputs[_reel_index].add(i);
 	}
 
 	if (_split_reels && (_reel_index < int(_reels.size()) - 1) && period.from > _reels[_reel_index].from) {
@@ -226,5 +226,12 @@ void
 SubtitleFilmEncoder::Output::write() const
 {
 	asset->write(_path);
+}
+
+
+void
+SubtitleFilmEncoder::Output::add(StringText const& sub)
+{
+	asset->add(make_shared<dcp::TextString>(sub));
 }
 
