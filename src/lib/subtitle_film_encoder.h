@@ -77,9 +77,9 @@ private:
 		void add_fonts(std::vector<std::shared_ptr<dcpomatic::Font>> const& fonts, dcp::ArrayData default_font);
 		void write() const;
 
-		std::shared_ptr<dcp::TextAsset> asset;
 	private:
 		SubtitleFormat _format;
+		std::shared_ptr<dcp::TextAsset> _asset;
 		boost::filesystem::path _path;
 	};
 

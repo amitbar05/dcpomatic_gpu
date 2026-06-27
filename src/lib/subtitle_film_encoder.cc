@@ -174,7 +174,7 @@ SubtitleFilmEncoder::Output::Output(SubtitleFormat format, boost::filesystem::pa
 void
 SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index, optional<DCPTextTrack> track)
 {
-	if (asset) {
+	if (_asset) {
 		return;
 	}
 
@@ -184,7 +184,7 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index
 	case SubtitleFormat::XML:
 	{
 		auto interop_asset = make_shared<dcp::InteropTextAsset>();
-		asset = interop_asset;
+		_asset = interop_asset;
 		interop_asset->set_movie_title(film->name());
 		if (lang.first) {
 			interop_asset->set_language(lang.first->as_string());
@@ -195,7 +195,7 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index
 	case SubtitleFormat::MXF:
 	{
 		auto smpte_asset = make_shared<dcp::SMPTETextAsset>();
-		asset = smpte_asset;
+		_asset = smpte_asset;
 		smpte_asset->set_content_title_text(film->name());
 		if (lang.first) {
 			smpte_asset->set_language(*lang.first);
@@ -218,16 +218,16 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index
 void
 SubtitleFilmEncoder::Output::write() const
 {
-	DCPOMATIC_ASSERT(asset);
-	asset->write(_path);
+	DCPOMATIC_ASSERT(_asset);
+	_asset->write(_path);
 }
 
 
 void
 SubtitleFilmEncoder::Output::add(StringText const& sub)
 {
-	DCPOMATIC_ASSERT(asset);
-	asset->add(make_shared<dcp::TextString>(sub));
+	DCPOMATIC_ASSERT(_asset);
+	_asset->add(make_shared<dcp::TextString>(sub));
 }
 
 
@@ -236,7 +236,7 @@ SubtitleFilmEncoder::Output::add_fonts(vector<shared_ptr<dcpomatic::Font>> const
 {
 	if (_format == SubtitleFormat::MXF) {
 		for (auto font: fonts) {
-			asset->add_font(font->id(), font->data().get_value_or(default_font));
+			_asset->add_font(font->id(), font->data().get_value_or(default_font));
 		}
 	}
 }
