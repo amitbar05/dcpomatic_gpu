@@ -84,7 +84,7 @@ SubtitleFilmEncoder::SubtitleFilmEncoder(
 			}
 		}
 
-		_outputs.push_back(Output(dcp::filesystem::change_extension(filename, extension)));
+		_outputs.push_back(Output(format, dcp::filesystem::change_extension(filename, extension)));
 	}
 
 	for (auto i: film->reels()) {
@@ -110,13 +110,10 @@ SubtitleFilmEncoder::go()
 
 	int reel = 0;
 	for (auto& i: _outputs) {
-		i.prepare(_film, _format, reel, {});
-		if (_format == SubtitleFormat::MXF || _include_font) {
-			for (auto j: _player.get_subtitle_fonts()) {
-				i.asset->add_font(j->id(), j->data().get_value_or(_default_font));
-			}
+		i.prepare(_film, reel, {});
+		if (_include_font) {
+			i.add_fonts(_player.get_subtitle_fonts(), _default_font);
 		}
-
 		i.write();
 		++reel;
 	}
@@ -130,7 +127,7 @@ SubtitleFilmEncoder::text(PlayerText subs, TextType type, optional<DCPTextTrack>
 		return;
 	}
 
-	_outputs[_reel_index].prepare(_film, _format, _reel_index, track);
+	_outputs[_reel_index].prepare(_film, _reel_index, track);
 
 	for (auto i: subs.string) {
 		/* XXX: couldn't / shouldn't we use period here rather than getting time from the subtitle? */
@@ -166,15 +163,16 @@ SubtitleFilmEncoder::frames_done() const
 }
 
 
-SubtitleFilmEncoder::Output::Output(boost::filesystem::path const& path)
-	: _path(path)
+SubtitleFilmEncoder::Output::Output(SubtitleFormat format, boost::filesystem::path const& path)
+	: _format(format)
+	, _path(path)
 {
 
 }
 
 
 void
-SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, SubtitleFormat format, int reel_index, optional<DCPTextTrack> track)
+SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, int reel_index, optional<DCPTextTrack> track)
 {
 	if (asset) {
 		return;
@@ -182,7 +180,7 @@ SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, SubtitleFormat
 
 	auto const lang = film->open_text_languages();
 
-	switch (format) {
+	switch (_format) {
 	case SubtitleFormat::XML:
 	{
 		auto interop_asset = make_shared<dcp::InteropTextAsset>();
@@ -230,5 +228,16 @@ SubtitleFilmEncoder::Output::add(StringText const& sub)
 {
 	DCPOMATIC_ASSERT(asset);
 	asset->add(make_shared<dcp::TextString>(sub));
+}
+
+
+void
+SubtitleFilmEncoder::Output::add_fonts(vector<shared_ptr<dcpomatic::Font>> const& fonts, dcp::ArrayData default_font)
+{
+	if (_format == SubtitleFormat::MXF) {
+		for (auto font: fonts) {
+			asset->add_font(font->id(), font->data().get_value_or(default_font));
+		}
+	}
 }
 

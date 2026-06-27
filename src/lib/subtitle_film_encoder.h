@@ -65,20 +65,21 @@ private:
 	class Output
 	{
 	public:
-		Output(boost::filesystem::path const& path);
+		Output(SubtitleFormat format, boost::filesystem::path const& path);
 
 		void prepare(
 			std::shared_ptr<const Film> film,
-			SubtitleFormat format,
 			int reel_index,
 			boost::optional<DCPTextTrack> track
 		);
 
 		void add(StringText const& sub);
+		void add_fonts(std::vector<std::shared_ptr<dcpomatic::Font>> const& fonts, dcp::ArrayData default_font);
 		void write() const;
 
 		std::shared_ptr<dcp::TextAsset> asset;
 	private:
+		SubtitleFormat _format;
 		boost::filesystem::path _path;
 	};
 
