@@ -84,7 +84,7 @@ SubtitleFilmEncoder::SubtitleFilmEncoder(
 			}
 		}
 
-		_outputs.push_back(Output(shared_ptr<dcp::TextAsset>(), dcp::filesystem::change_extension(filename, extension)));
+		_outputs.push_back(Output(dcp::filesystem::change_extension(filename, extension)));
 	}
 
 	for (auto i: film->reels()) {
@@ -110,28 +110,7 @@ SubtitleFilmEncoder::go()
 
 	int reel = 0;
 	for (auto& i: _outputs) {
-		if (!i.asset) {
-			/* No subtitles arrived for this asset; make an empty one so we write something to the output */
-			switch (_format) {
-			case SubtitleFormat::XML:
-			{
-				auto s = make_shared<dcp::InteropTextAsset>();
-				s->set_movie_title(_film->name());
-				s->set_reel_number(fmt::to_string(reel + 1));
-				i.asset = s;
-				break;
-			}
-			case SubtitleFormat::MXF:
-			{
-				auto s = make_shared<dcp::SMPTETextAsset>();
-				s->set_content_title_text(_film->name());
-				s->set_reel_number(reel + 1);
-				i.asset = s;
-				break;
-			}
-			}
-		}
-
+		i.prepare(_film, _format, reel, {});
 		if (_format == SubtitleFormat::MXF || _include_font) {
 			for (auto j: _player.get_subtitle_fonts()) {
 				i.asset->add_font(j->id(), j->data().get_value_or(_default_font));
@@ -151,42 +130,7 @@ SubtitleFilmEncoder::text(PlayerText subs, TextType type, optional<DCPTextTrack>
 		return;
 	}
 
-	if (!_outputs[_reel_index].asset) {
-		shared_ptr<dcp::TextAsset> asset;
-		auto const lang = _film->open_text_languages();
-		switch (_format) {
-		case SubtitleFormat::XML:
-		{
-			auto s = make_shared<dcp::InteropTextAsset>();
-			s->set_movie_title(_film->name());
-			if (lang.first) {
-				s->set_language(lang.first->as_string());
-			}
-			s->set_reel_number(fmt::to_string(_reel_index + 1));
-			_outputs[_reel_index].asset = s;
-			break;
-		}
-		case SubtitleFormat::MXF:
-		{
-			auto s = make_shared<dcp::SMPTETextAsset>();
-			s->set_content_title_text(_film->name());
-			if (lang.first) {
-				s->set_language(*lang.first);
-			} else if (track->language) {
-				s->set_language(track->language.get());
-			}
-			s->set_edit_rate(dcp::Fraction(_film->video_frame_rate(), 1));
-			s->set_reel_number(_reel_index + 1);
-			s->set_time_code_rate(_film->video_frame_rate());
-			s->set_start_time(dcp::Time());
-			if (_film->encrypted()) {
-				s->set_key(_film->key());
-			}
-			_outputs[_reel_index].asset = s;
-			break;
-		}
-		}
-	}
+	_outputs[_reel_index].prepare(_film, _format, _reel_index, track);
 
 	for (auto i: subs.string) {
 		/* XXX: couldn't / shouldn't we use period here rather than getting time from the subtitle? */
@@ -222,9 +166,61 @@ SubtitleFilmEncoder::frames_done() const
 }
 
 
+SubtitleFilmEncoder::Output::Output(boost::filesystem::path const& path)
+	: _path(path)
+{
+
+}
+
+
+void
+SubtitleFilmEncoder::Output::prepare(shared_ptr<const Film> film, SubtitleFormat format, int reel_index, optional<DCPTextTrack> track)
+{
+	if (asset) {
+		return;
+	}
+
+	auto const lang = film->open_text_languages();
+
+	switch (format) {
+	case SubtitleFormat::XML:
+	{
+		auto interop_asset = make_shared<dcp::InteropTextAsset>();
+		asset = interop_asset;
+		interop_asset->set_movie_title(film->name());
+		if (lang.first) {
+			interop_asset->set_language(lang.first->as_string());
+		}
+		interop_asset->set_reel_number(fmt::to_string(reel_index + 1));
+		break;
+	}
+	case SubtitleFormat::MXF:
+	{
+		auto smpte_asset = make_shared<dcp::SMPTETextAsset>();
+		asset = smpte_asset;
+		smpte_asset->set_content_title_text(film->name());
+		if (lang.first) {
+			smpte_asset->set_language(*lang.first);
+		} else if (track && track->language) {
+			smpte_asset->set_language(track->language.get());
+		}
+		smpte_asset->set_edit_rate(dcp::Fraction(film->video_frame_rate(), 1));
+		smpte_asset->set_reel_number(reel_index + 1);
+		smpte_asset->set_time_code_rate(film->video_frame_rate());
+		smpte_asset->set_start_time(dcp::Time());
+		if (film->encrypted()) {
+			smpte_asset->set_key(film->key());
+		}
+		break;
+	}
+	}
+}
+
+
 void
 SubtitleFilmEncoder::Output::write() const
 {
+	DCPOMATIC_ASSERT(asset);
 	asset->write(_path);
 }
 
@@ -232,6 +228,7 @@ SubtitleFilmEncoder::Output::write() const
 void
 SubtitleFilmEncoder::Output::add(StringText const& sub)
 {
+	DCPOMATIC_ASSERT(asset);
 	asset->add(make_shared<dcp::TextString>(sub));
 }
 
