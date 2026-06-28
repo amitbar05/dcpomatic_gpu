@@ -19,14 +19,11 @@
 */
 
 
-#include "config.h"
-#include "constants.h"
 #include "dcp_content.h"
 #include "dcp_examiner.h"
 #include "dcpomatic_log.h"
 #include "exceptions.h"
 #include "font_id_allocator.h"
-#include "image.h"
 #include "text_content.h"
 #include "util.h"
 #include <dcp/cpl.h>

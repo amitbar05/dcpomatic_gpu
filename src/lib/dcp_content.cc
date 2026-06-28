@@ -28,7 +28,6 @@
 #include "dcpomatic_log.h"
 #include "film.h"
 #include "job.h"
-#include "log.h"
 #include "overlaps.h"
 #include "text_content.h"
 #include "video_content.h"
@@ -42,13 +41,10 @@
 #include <dcp/types.h>
 #include <libxml++/libxml++.h>
 #include <fmt/format.h>
-#include <iterator>
-#include <iostream>
 
 #include "i18n.h"
 
 
-using std::cout;
 using std::dynamic_pointer_cast;
 using std::exception;
 using std::function;
@@ -58,7 +54,6 @@ using std::shared_ptr;
 using std::string;
 using std::vector;
 using boost::optional;
-using boost::scoped_ptr;
 #if BOOST_VERSION >= 106100
 using namespace boost::placeholders;
 #endif

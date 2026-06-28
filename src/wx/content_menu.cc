@@ -63,7 +63,6 @@ LIBDCP_ENABLE_WARNINGS
 
 using std::dynamic_pointer_cast;
 using std::exception;
-using std::list;
 using std::make_shared;
 using std::shared_ptr;
 using std::vector;
