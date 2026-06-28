@@ -196,6 +196,7 @@ public:
 	}
 
 	std::map<dcp::Marker, dcpomatic::ContentTime> markers() const {
+		boost::mutex::scoped_lock lm(_mutex);
 		return _markers;
 	}
 
@@ -204,10 +205,12 @@ public:
 	Resolution resolution() const;
 
 	std::vector<dcp::Rating> ratings() const {
+		boost::mutex::scoped_lock lm(_mutex);
 		return _ratings;
 	}
 
 	std::vector<std::string> content_versions() const {
+		boost::mutex::scoped_lock lm(_mutex);
 		return _content_versions;
 	}
 
@@ -223,18 +226,22 @@ public:
 	void check_font_ids();
 
 	boost::optional<std::string> chain() const {
+		boost::mutex::scoped_lock lm(_mutex);
 		return _chain;
 	}
 
 	boost::optional<std::string> distributor() const {
+		boost::mutex::scoped_lock lm(_mutex);
 		return _distributor;
 	}
 
 	boost::optional<std::string> facility() const {
+		boost::mutex::scoped_lock lm(_mutex);
 		return _facility;
 	}
 
 	boost::optional<dcp::Luminance> luminance() const {
+		boost::mutex::scoped_lock lm(_mutex);
 		return _luminance;
 	}
 

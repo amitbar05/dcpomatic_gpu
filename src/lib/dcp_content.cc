@@ -281,8 +281,11 @@ DCPContent::examine(shared_ptr<const Film> film, shared_ptr<Job> job, bool toler
 		m.make_default(film ? film->audio_processor() : 0);
 		as->set_mapping(m);
 
-		_active_audio_channels = examiner->active_audio_channels();
-		_audio_language = examiner->audio_language();
+		{
+			boost::mutex::scoped_lock lm(_mutex);
+			_active_audio_channels = examiner->active_audio_channels();
+			_audio_language = examiner->audio_language();
+		}
 	}
 
 	if (examiner->has_atmos()) {
