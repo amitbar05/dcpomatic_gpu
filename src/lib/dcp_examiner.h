@@ -116,7 +116,7 @@ public:
 		return _audio_language;
 	}
 
-	/*  @return the number of "streams" of @type in the DCP.
+	/*  @return the number of "streams" of @p type in the DCP.
 	 *  Reels do not affect the return value of this method: if a DCP
 	 *  has any subtitles, type=TEXT_OPEN_SUBTITLE will return 1.
 	 */
