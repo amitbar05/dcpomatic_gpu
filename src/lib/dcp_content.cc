@@ -184,6 +184,14 @@ DCPContent::DCPContent(cxml::ConstNodePtr node, boost::optional<boost::filesyste
 	if (auto luminance = node->optional_node_child("Luminance")) {
 		_luminance = dcp::Luminance(luminance);
 	}
+
+	if (auto open_subtitle_has_bitmaps = node->optional_bool_child("OpenSubtitleHasBitmaps")) {
+		_open_subtitle_has_bitmaps = *open_subtitle_has_bitmaps;
+	}
+
+	if (auto open_caption_has_bitmaps = node->optional_bool_child("OpenCaptionHasBitmaps")) {
+		_open_caption_has_bitmaps = *open_caption_has_bitmaps;
+	}
 }
 
 void
@@ -353,6 +361,8 @@ DCPContent::examine(shared_ptr<const Film> film, shared_ptr<Job> job, bool toler
 		_distributor = examiner->distributor();
 		_facility = examiner->facility();
 		_luminance = examiner->luminance();
+		_open_subtitle_has_bitmaps = examiner->open_subtitle_has_bitmaps();
+		_open_caption_has_bitmaps = examiner->open_caption_has_bitmaps();
 	}
 
 	if (needed_assets == needs_assets()) {
@@ -507,6 +517,9 @@ DCPContent::as_xml(xmlpp::Element* element, bool with_paths, PathBehaviour path_
 	if (_luminance) {
 		_luminance->as_xml(element, "");
 	}
+
+	cxml::add_text_child(element, "OpenSubtitleHasBitmaps", _open_subtitle_has_bitmaps ? "1" : "0");
+	cxml::add_text_child(element, "OpenCaptionHasBitmaps", _open_caption_has_bitmaps ? "1" : "0");
 }
 
 
@@ -944,5 +957,20 @@ boost::filesystem::path
 DCPContent::path_for_display() const
 {
 	return path(0).parent_path();
+}
+
+
+bool
+DCPContent::text_has_bitmaps(TextType type) const
+{
+	boost::mutex::scoped_lock lm(_mutex);
+	switch (type) {
+	case TextType::OPEN_SUBTITLE:
+		return _open_subtitle_has_bitmaps;
+	case TextType::OPEN_CAPTION:
+		return _open_caption_has_bitmaps;
+	default:
+		return false;
+	}
 }
 

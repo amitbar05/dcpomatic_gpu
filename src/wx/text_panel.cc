@@ -550,8 +550,7 @@ void
 TextPanel::setup_sensitivity()
 {
 	int any_subs = 0;
-	/* We currently assume that FFmpeg subtitles are bitmapped */
-	int ffmpeg_subs = 0;
+	int bitmap_subs = 0;
 	/* DCP subs can't have their line spacing changed */
 	int dcp_subs = 0;
 	auto sel = _parent->selected_text();
@@ -564,14 +563,20 @@ TextPanel::setup_sensitivity()
 		auto fcp = std::dynamic_pointer_cast<const FCPXMLContent>(i);
 		if (fc) {
 			if (!fc->text.empty()) {
-				++ffmpeg_subs;
+				/* Ideally we would check here to see if the FFmpeg content has "string" subs (i.e. not bitmaps) */
+				++bitmap_subs;
 				++any_subs;
 			}
 		} else if (dc || dsc) {
 			++dcp_subs;
+			if (dc && dc->text_has_bitmaps(_original_type)) {
+				++bitmap_subs;
+			}
+			if (dsc && dsc->has_bitmaps()) {
+				++bitmap_subs;
+			}
 			++any_subs;
 		} else if (sc || fcp) {
-			/* XXX: in the future there could be bitmap subs from DCPs */
 			++any_subs;
 		}
 	}
@@ -591,7 +596,7 @@ TextPanel::setup_sensitivity()
 	_type->clear();
 	_type->add_entry(_("open subtitles"), text_type_to_string(TextType::OPEN_SUBTITLE));
 	_type->add_entry(_("open captions"), text_type_to_string(TextType::OPEN_CAPTION));
-	if (ffmpeg_subs == 0) {
+	if (bitmap_subs == 0) {
 		_type->add_entry(_("closed subtitles"), text_type_to_string(TextType::CLOSED_SUBTITLE));
 		_type->add_entry(_("closed captions"), text_type_to_string(TextType::CLOSED_CAPTION));
 	}
@@ -611,10 +616,9 @@ TextPanel::setup_sensitivity()
 	_x_scale->Enable(!reference && any_subs > 0 && use && is_open(type));
 	_y_scale->Enable(!reference && any_subs > 0 && use && is_open(type));
 	_line_spacing->Enable(!reference && use && is_open(type) && dcp_subs < any_subs);
-	_stream->Enable(!reference && ffmpeg_subs == 1);
-	/* Ideally we would check here to see if the FFmpeg content has "string" subs (i.e. not bitmaps) */
-	_text_view_button->Enable(!reference && any_subs > 0 && ffmpeg_subs == 0);
-	_fonts_dialog_button->Enable(!reference && any_subs > 0 && ffmpeg_subs == 0 && is_open(type));
+	_stream->Enable(!reference && bitmap_subs == 1);
+	_text_view_button->Enable(!reference && any_subs > 0 && bitmap_subs == 0);
+	_fonts_dialog_button->Enable(!reference && any_subs > 0 && bitmap_subs == 0 && is_open(type));
 	_appearance_dialog_button->Enable(!reference && any_subs > 0 && use && is_open(type));
 }
 

@@ -49,6 +49,7 @@
 #include <dcp/stereo_j2k_picture_asset_reader.h>
 #include <dcp/stereo_j2k_picture_frame.h>
 #include <dcp/text_asset.h>
+#include <dcp/text_image.h>
 #include <iostream>
 
 #include "i18n.h"
@@ -209,7 +210,7 @@ DCPExaminer::DCPExaminer(shared_ptr<const DCPContent> content, bool tolerant)
 		}
 
 		auto read_main_text = [this, reel, reel_index, try_to_parse_language](
-			shared_ptr<dcp::ReelTextAsset> reel_asset, TextType type, string name, boost::optional<dcp::LanguageTag>& language
+			shared_ptr<dcp::ReelTextAsset> reel_asset, TextType type, string name, boost::optional<dcp::LanguageTag>& language, bool& has_bitmaps
 			) {
 
 			if (reel_asset) {
@@ -229,13 +230,15 @@ DCPExaminer::DCPExaminer(shared_ptr<const DCPContent> content, bool tolerant)
 					for (auto const& font: asset->font_data()) {
 						_fonts.push_back({reel_index, asset->id(), make_shared<dcpomatic::Font>(font.first, font.second)});
 					}
+
+					auto text = asset->texts();
+					has_bitmaps = std::any_of(text.begin(), text.end(), [](shared_ptr<const dcp::Text> t) { return dynamic_pointer_cast<const dcp::TextImage>(t); });
 				}
 			}
-
 		};
 
-		read_main_text(reel->main_subtitle(), TextType::OPEN_SUBTITLE, "subtitle", _open_subtitle_language);
-		read_main_text(reel->main_caption(), TextType::OPEN_CAPTION, "caption", _open_caption_language);
+		read_main_text(reel->main_subtitle(), TextType::OPEN_SUBTITLE, "subtitle", _open_subtitle_language, _open_subtitle_has_bitmaps);
+		read_main_text(reel->main_caption(), TextType::OPEN_CAPTION, "caption", _open_caption_language, _open_caption_has_bitmaps);
 
 		auto read_closed_text = [this, reel, reel_index, try_to_parse_language](
 			vector<shared_ptr<dcp::ReelTextAsset>> reel_assets, TextType type, string name, vector<DCPTextTrack>& tracks

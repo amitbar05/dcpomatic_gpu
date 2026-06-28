@@ -220,6 +220,14 @@ public:
 		return _luminance;
 	}
 
+	bool open_subtitle_has_bitmaps() const {
+		return _open_subtitle_has_bitmaps;
+	}
+
+	bool open_caption_has_bitmaps() const {
+		return _open_caption_has_bitmaps;
+	}
+
 	void add_fonts(std::shared_ptr<TextContent> content);
 
 private:
@@ -239,7 +247,9 @@ private:
 	/** number of different assets of each type (OCAP/CCAP) */
 	EnumIndexedVector<int, TextType> _text_count;
 	boost::optional<dcp::LanguageTag> _open_subtitle_language;
+	bool _open_subtitle_has_bitmaps = false;
 	boost::optional<dcp::LanguageTag> _open_caption_language;
+	bool _open_caption_has_bitmaps = false;
 	/** the DCPTextTracks for each of our closed subtitles */
 	std::vector<DCPTextTrack> _closed_subtitle_tracks;
 	/** the DCPTextTracks for each of our closed captions */

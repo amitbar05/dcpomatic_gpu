@@ -41,8 +41,14 @@ public:
 	dcpomatic::DCPTime full_length(std::shared_ptr<const Film> film) const override;
 	dcpomatic::DCPTime approximate_length() const override;
 
+	bool has_bitmaps() const {
+		boost::mutex::scoped_lock lm(_mutex);
+		return _has_bitmaps;
+	}
+
 private:
 	void add_fonts(std::shared_ptr<TextContent> content, std::shared_ptr<dcp::TextAsset> subtitle_asset);
 
 	dcpomatic::ContentTime _length;
+	bool _has_bitmaps;
 };

@@ -54,6 +54,7 @@ DCPSubtitleContent::DCPSubtitleContent(boost::filesystem::path path)
 DCPSubtitleContent::DCPSubtitleContent(cxml::ConstNodePtr node, boost::optional<boost::filesystem::path> film_directory, int version)
 	: Content(node, film_directory)
 	, _length(node->number_child<ContentTime::Type>("Length"))
+	, _has_bitmaps(node->optional_bool_child("HasBitmaps").get_value_or(false))
 {
 	list<string> notes;
 	text = TextContent::from_xml(this, node, version, notes);
@@ -73,6 +74,9 @@ DCPSubtitleContent::examine(shared_ptr<const Film> film, shared_ptr<Job> job, bo
 	boost::mutex::scoped_lock lm(_mutex);
 
 	_length = ContentTime::from_seconds(subtitle_asset->latest_text_out().as_seconds());
+
+	auto text = subtitle_asset->texts();
+	_has_bitmaps = std::any_of(text.begin(), text.end(), [](shared_ptr<const dcp::Text> t) { return dynamic_pointer_cast<const dcp::TextImage>(t); });
 
 	subtitle_asset->fix_empty_font_ids();
 	only_text()->clear_fonts();
@@ -149,4 +153,5 @@ DCPSubtitleContent::as_xml(xmlpp::Element* element, bool with_paths, PathBehavio
 	}
 
 	cxml::add_text_child(element, "Length", fmt::to_string(_length.get()));
+	cxml::add_text_child(element, "HasBitmaps", _has_bitmaps ? "1" : "0");
 }

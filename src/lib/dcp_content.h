@@ -245,6 +245,8 @@ public:
 		return _luminance;
 	}
 
+	bool text_has_bitmaps(TextType type) const;
+
 	std::list<dcpomatic::DCPTimePeriod> reels(std::shared_ptr<const Film> film) const;
 
 private:
@@ -301,6 +303,9 @@ private:
 	boost::optional<std::string> _distributor;
 	boost::optional<std::string> _facility;
 	boost::optional<dcp::Luminance> _luminance;
+
+	bool _open_subtitle_has_bitmaps = false;
+	bool _open_caption_has_bitmaps = false;
 };
 
 
