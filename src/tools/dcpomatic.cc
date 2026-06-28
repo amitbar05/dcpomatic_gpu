@@ -1064,6 +1064,29 @@ private:
 
 	void jobs_export_subtitles()
 	{
+		int open_subs = 0;
+		int open_subs_in_use = 0;
+		for (auto content: film()->content()) {
+			for (auto text: content->text) {
+				if (text->type() == TextType::OPEN_SUBTITLE) {
+					++open_subs;
+					if (text->use()) {
+						++open_subs_in_use;
+					}
+				}
+			}
+		}
+
+		if (open_subs == 0) {
+			error_dialog(this, _("Your project contains no open subtitles, so there is nothing to export."));
+			return;
+		}
+
+		if (open_subs_in_use == 0) {
+			error_dialog(this, _("Your project contains open subtitles, but none are being used.  Tick the \"Use as\" checkbox for the subtitles that you want to use."));
+			return;
+		}
+
 		ExportSubtitlesDialog dialog(this, _film->reels().size(), _film->interop());
 		if (dialog.ShowModal() != wxID_OK) {
 			return;
