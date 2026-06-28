@@ -723,9 +723,7 @@ TextPanel::text_view_clicked()
 	auto c = _parent->selected_text();
 	DCPOMATIC_ASSERT(c.size() == 1);
 
-	auto decoder = decoder_factory(_parent->film(), c.front(), false, false, shared_ptr<Decoder>());
-
-	if (decoder) {
+	if (auto decoder = decoder_factory(_parent->film(), c.front(), false, false, shared_ptr<Decoder>())) {
 		_text_view.reset(this, _parent->film(), c.front(), c.front()->text_of_original_type(_original_type), decoder, _parent->film_viewer());
 		_text_view->show();
 	}
@@ -879,8 +877,7 @@ void
 TextPanel::language_changed()
 {
 	for (auto i: _parent->selected_text()) {
-		auto t = i->text_of_original_type(_original_type);
-		if (t) {
+		if (auto t = i->text_of_original_type(_original_type)) {
 			t->set_language(_language->get());
 		}
 	}
@@ -891,8 +888,7 @@ void
 TextPanel::language_is_additional_changed()
 {
 	for (auto i: _parent->selected_text()) {
-		auto t = i->text_of_original_type(_original_type);
-		if (t) {
+		if (auto t = i->text_of_original_type(_original_type)) {
 			t->set_language_is_additional(_language_type->GetSelection() == 1);
 		}
 	}
