@@ -27,7 +27,11 @@
 #include "audio_examiner.h"
 #include "dcp_text_track.h"
 #include "dcpomatic_assert.h"
+#include "enum_indexed_vector.h"
+#include "font.h"
+#include "video_encoding.h"
 #include "video_examiner.h"
+#include <dcp/content_kind.h>
 #include <dcp/dcp_time.h>
 #include <dcp/rating.h>
 
