@@ -37,43 +37,43 @@ class SubtitleAnalysis;
 class TextPanel : public ContentSubPanel
 {
 public:
-	TextPanel (ContentPanel *, TextType t);
+	TextPanel(ContentPanel *, TextType t);
 
-	void create () override;
+	void create() override;
 	void film_changed(FilmProperty) override;
-	void film_content_changed (int) override;
-	void content_selection_changed () override;
+	void film_content_changed(int) override;
+	void content_selection_changed() override;
 
 private:
-	void use_toggled ();
-	void type_changed ();
-	void burn_toggled ();
-	void x_offset_changed ();
-	void y_offset_changed ();
-	void x_scale_changed ();
-	void y_scale_changed ();
+	void use_toggled();
+	void type_changed();
+	void burn_toggled();
+	void x_offset_changed();
+	void y_offset_changed();
+	void x_scale_changed();
+	void y_scale_changed();
 	void link_clicked();
-	void line_spacing_changed ();
-	void dcp_track_changed ();
-	void stream_changed ();
-	void text_view_clicked ();
-	void fonts_dialog_clicked ();
-	void appearance_dialog_clicked ();
-	void outline_subtitles_changed ();
-	TextType current_type () const;
-	void update_dcp_tracks ();
-	void update_dcp_track_selection ();
-	void add_to_grid () override;
-	void try_to_load_analysis ();
+	void line_spacing_changed();
+	void dcp_track_changed();
+	void stream_changed();
+	void text_view_clicked();
+	void fonts_dialog_clicked();
+	void appearance_dialog_clicked();
+	void outline_subtitles_changed();
+	TextType current_type() const;
+	void update_dcp_tracks();
+	void update_dcp_track_selection();
+	void add_to_grid() override;
+	void try_to_load_analysis();
 	void analysis_finished(Job::Result result);
-	void language_changed ();
-	void language_is_additional_changed ();
+	void language_changed();
+	void language_is_additional_changed();
 
-	void setup_sensitivity ();
-	void setup_visibility ();
+	void setup_sensitivity();
+	void setup_visibility();
 
-	void update_outline_subtitles_in_viewer ();
-	void clear_outline_subtitles ();
+	void update_outline_subtitles_in_viewer();
+	void clear_outline_subtitles();
 
 	CheckBox* _outline_subtitles = nullptr;
 	CheckBox* _use;
