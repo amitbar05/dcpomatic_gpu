@@ -136,14 +136,14 @@ public:
 		return _open_caption_language;
 	}
 
-	DCPTextTrack dcp_subtitle_track(int i) const {
-		DCPOMATIC_ASSERT(i >= 0 && i < static_cast<int>(_dcp_subtitle_tracks.size()));
-		return _dcp_subtitle_tracks[i];
+	DCPTextTrack closed_subtitle_track(int i) const {
+		DCPOMATIC_ASSERT(i >= 0 && i < static_cast<int>(_closed_subtitle_tracks.size()));
+		return _closed_subtitle_tracks[i];
 	}
 
-	DCPTextTrack dcp_caption_track(int i) const {
-		DCPOMATIC_ASSERT(i >= 0 && i < static_cast<int>(_dcp_caption_tracks.size()));
-		return _dcp_caption_tracks[i];
+	DCPTextTrack closed_caption_track(int i) const {
+		DCPOMATIC_ASSERT(i >= 0 && i < static_cast<int>(_closed_caption_tracks.size()));
+		return _closed_caption_tracks[i];
 	}
 
 	bool kdm_valid() const {
@@ -241,9 +241,9 @@ private:
 	boost::optional<dcp::LanguageTag> _open_subtitle_language;
 	boost::optional<dcp::LanguageTag> _open_caption_language;
 	/** the DCPTextTracks for each of our closed subtitles */
-	std::vector<DCPTextTrack> _dcp_subtitle_tracks;
+	std::vector<DCPTextTrack> _closed_subtitle_tracks;
 	/** the DCPTextTracks for each of our closed captions */
-	std::vector<DCPTextTrack> _dcp_caption_tracks;
+	std::vector<DCPTextTrack> _closed_caption_tracks;
 	bool _picture_encrypted = false;
 	bool _sound_encrypted = false;
 	bool _text_encrypted = false;

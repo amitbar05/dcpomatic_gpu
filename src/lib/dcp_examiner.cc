@@ -275,8 +275,8 @@ DCPExaminer::DCPExaminer(shared_ptr<const DCPContent> content, bool tolerant)
 			}
 		};
 
-		read_closed_text(reel->closed_subtitles(), TextType::CLOSED_SUBTITLE, "subtitle", _dcp_subtitle_tracks);
-		read_closed_text(reel->closed_captions(), TextType::CLOSED_CAPTION, "caption", _dcp_caption_tracks);
+		read_closed_text(reel->closed_subtitles(), TextType::CLOSED_SUBTITLE, "subtitle", _closed_subtitle_tracks);
+		read_closed_text(reel->closed_captions(), TextType::CLOSED_CAPTION, "caption", _closed_caption_tracks);
 
 		if (reel->main_markers ()) {
 			auto edit_rate = reel->main_markers()->edit_rate().numerator;

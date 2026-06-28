@@ -320,14 +320,14 @@ DCPContent::examine(shared_ptr<const Film> film, shared_ptr<Job> job, bool toler
 
 	for (int i = 0; i < examiner->text_count(TextType::CLOSED_SUBTITLE); ++i) {
 		auto c = make_shared<TextContent>(this, TextType::CLOSED_SUBTITLE, TextType::CLOSED_SUBTITLE);
-		c->set_dcp_track(examiner->dcp_subtitle_track(i));
+		c->set_dcp_track(examiner->closed_subtitle_track(i));
 		examiner->add_fonts(c);
 		new_text.push_back(c);
 	}
 
 	for (int i = 0; i < examiner->text_count(TextType::CLOSED_CAPTION); ++i) {
 		auto c = make_shared<TextContent>(this, TextType::CLOSED_CAPTION, TextType::CLOSED_CAPTION);
-		c->set_dcp_track(examiner->dcp_caption_track(i));
+		c->set_dcp_track(examiner->closed_caption_track(i));
 		examiner->add_fonts(c);
 		new_text.push_back(c);
 	}
