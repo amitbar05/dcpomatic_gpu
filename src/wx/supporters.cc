@@ -845,6 +845,7 @@ supported_by.Add (wxT ("David Armati Lechner"));
 supported_by.Add (wxT ("Youen Leclerc"));
 supported_by.Add (wxT ("Richard Lecocq"));
 supported_by.Add (wxT ("Philipp Leder"));
+supported_by.Add (wxT ("Kyung Lee"));
 supported_by.Add (wxT ("Lilian Lefranc"));
 supported_by.Add (wxT ("Robert Legato"));
 supported_by.Add (wxT ("Nicholas Legault"));
