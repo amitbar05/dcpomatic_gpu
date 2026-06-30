@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: DCP-o-matic\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-04-19 23:03+0200\n"
+"POT-Creation-Date: 2026-06-29 07:42+0200\n"
 "PO-Revision-Date: 2021-12-28 14:46+0100\n"
 "Last-Translator: Mattias Mattsson <vitplister@gmail.com>\n"
 "Language-Team: \n"
@@ -74,7 +74,7 @@ msgstr " (%.2f:1)"
 msgid " on {}"
 msgstr " på {}"
 
-#: src/lib/config.cc:1270
+#: src/lib/config.cc:1262
 #, fuzzy
 msgid ""
 "$CPL_NAME\n"
@@ -98,7 +98,7 @@ msgstr ""
 "Speltid: $LENGTH\n"
 "Storlek: $SIZE\n"
 
-#: src/lib/config.cc:1248
+#: src/lib/config.cc:1240
 msgid "$JOB_NAME: $JOB_STATUS"
 msgstr "$JOB_NAME: $JOB_STATUS"
 
@@ -461,7 +461,7 @@ msgstr "Får inte innehålla snedstreck"
 msgid "Cannot handle pixel format {} during {}"
 msgstr "Kan inte hantera pixelformat {} under {}"
 
-#: src/lib/film.cc:1940
+#: src/lib/film.cc:1941
 msgid "Cannot make a KDM as this project is not encrypted."
 msgstr "Kan inte göra KDM eftersom projektet inte är krypterat."
 
@@ -780,7 +780,7 @@ msgstr "Kunde inte öppna hämtad ZIP-fil"
 msgid "Could not open downloaded ZIP file ({}:{}: {})"
 msgstr "Kunde inte öppna hämtad ZIP-fil"
 
-#: src/lib/config.cc:1172
+#: src/lib/config.cc:1164
 msgid "Could not open file for writing"
 msgstr "Kunde inte öppna fil {} för skrivning ({})"
 
@@ -837,17 +837,17 @@ msgstr "Flat"
 msgid "DCI Scope"
 msgstr "Scope"
 
-#: src/lib/film.cc:2048
+#: src/lib/film.cc:2049
 #, fuzzy
 msgid "DCP"
 msgstr "DBP"
 
-#: src/lib/film.cc:2045
+#: src/lib/film.cc:2046
 #, c++-format
 msgid "DCP (via {})"
 msgstr ""
 
-#: src/lib/dcp_subtitle_content.cc:138
+#: src/lib/dcp_subtitle_content.cc:142
 msgid "DCP XML subtitles"
 msgstr "DCP XML-undertexter"
 
@@ -869,19 +869,19 @@ msgstr "DCP:n kommer spelas upp i %.1f %% av källmaterialets hastighet.\n"
 msgid "DCP will use every other frame of the content.\n"
 msgstr "DCP:n kommer använda varannan bild från källmaterialet.\n"
 
-#: src/lib/film.cc:1857
+#: src/lib/film.cc:1858
 msgid ""
 "DCP-o-matic had to set your container to 1920x1080 as it's the only one that "
 "can be used with MPEG2 encoding."
 msgstr ""
 
-#: src/lib/film.cc:1861
+#: src/lib/film.cc:1862
 msgid ""
 "DCP-o-matic had to set your film to 2D as 3D is not yet supported with MPEG2 "
 "encoding."
 msgstr ""
 
-#: src/lib/film.cc:1865
+#: src/lib/film.cc:1866
 msgid ""
 "DCP-o-matic set your container to DCI Flat as it was previously 1920x1080 "
 "and that is not a standard ratio with JPEG2000 encoding."
@@ -896,7 +896,7 @@ msgstr "Datasat AP20 eller AP25"
 msgid "De-interlacing"
 msgstr "Avflätning"
 
-#: src/lib/config.cc:1233
+#: src/lib/config.cc:1225
 #, fuzzy, c++-format
 msgid ""
 "Dear Projectionist\n"
@@ -982,7 +982,7 @@ msgstr "E-posta felrapport"
 msgid "Email problem report for {}"
 msgstr "E-posta felrapport för {}"
 
-#: src/lib/dcp_film_encoder.cc:120 src/lib/ffmpeg_film_encoder.cc:134
+#: src/lib/dcp_film_encoder.cc:114 src/lib/ffmpeg_film_encoder.cc:134
 msgid "Encoding"
 msgstr "Kodar"
 
@@ -1025,7 +1025,7 @@ msgstr "Läser undertexter"
 msgid "Examining subtitles and closed captions"
 msgstr "Undersöker undertexter"
 
-#: src/lib/subtitle_film_encoder.cc:106
+#: src/lib/subtitle_film_encoder.cc:104
 msgid "Extracting"
 msgstr "Extraherar"
 
@@ -1119,7 +1119,7 @@ msgstr "Speltid i bildrutor i DCP:ns hastighet"
 msgid "Full length in video frames at content rate"
 msgstr "Speltid i bildrutor i källmaterialets hastighet"
 
-#: src/lib/j2k_encoder.cc:280
+#: src/lib/j2k_encoder.cc:282
 msgid ""
 "GPU acceleration is enabled but the grok decoder is not working.  Please "
 "check your configuration and license, and ensure that you are connected to "
@@ -1209,7 +1209,7 @@ msgstr "Det är inte känt vad som orsakade detta fel."
 msgid "JEDEC P22"
 msgstr "JEDEC P22"
 
-#: src/lib/config.cc:422 src/lib/config.cc:1230
+#: src/lib/config.cc:414 src/lib/config.cc:1222
 msgid "KDM delivery: $CPL_NAME"
 msgstr "KDM-leverans: $CPL_NAME"
 
@@ -1295,19 +1295,19 @@ msgstr "Mid-side decoder"
 msgid "Misc"
 msgstr "Diverse"
 
-#: src/lib/dcp_examiner.cc:198
+#: src/lib/dcp_examiner.cc:196
 msgid "Mismatched audio channel counts in DCP"
 msgstr "Antalet ljudkanaler är inte enhetligt genom hela DCP:n"
 
-#: src/lib/dcp_examiner.cc:206
+#: src/lib/dcp_examiner.cc:204
 msgid "Mismatched audio sample rates in DCP"
 msgstr "Ljudspårets samplingsfrekvens är inte enhetlig genom hela DCP:n"
 
-#: src/lib/dcp_examiner.cc:167
+#: src/lib/dcp_examiner.cc:165
 msgid "Mismatched frame rates in DCP"
 msgstr "Bildhastigheten är inte enhetlig genom hela DCP:n"
 
-#: src/lib/dcp_examiner.cc:174
+#: src/lib/dcp_examiner.cc:172
 msgid "Mismatched video sizes in DCP"
 msgstr "Bildstorleken är inte enhetlig genom hela DCP:n"
 
@@ -1328,11 +1328,11 @@ msgstr "Mono"
 msgid "Motion compensating deinterlacer"
 msgstr "Rörelsekompenserande avflätare"
 
-#: src/lib/dcp_content.cc:212
+#: src/lib/dcp_content.cc:215
 msgid "No ASSETMAP or ASSETMAP.xml file found: is this a DCP?"
 msgstr ""
 
-#: src/lib/dcp_examiner.cc:115
+#: src/lib/dcp_examiner.cc:113
 #, fuzzy
 msgid "No CPLs found in DCP"
 msgstr "Inga CPL:er hittades i DCP:n."
@@ -1811,22 +1811,22 @@ msgstr ""
 "Filsystemet som filmen lagras på har för lite ledigt utrymme. Frigör utrymme "
 "och försök igen."
 
-#: src/lib/playlist.cc:244
+#: src/lib/playlist.cc:242
 #, c++-format
 msgid "The file {} has been moved {} milliseconds earlier."
 msgstr "Filen {} har flyttats {} millisekunder tidigare."
 
-#: src/lib/playlist.cc:239
+#: src/lib/playlist.cc:237
 #, c++-format
 msgid "The file {} has been moved {} milliseconds later."
 msgstr "Filen {} har flyttats {} millisekunder senare."
 
-#: src/lib/playlist.cc:264
+#: src/lib/playlist.cc:262
 #, c++-format
 msgid "The file {} has been trimmed by {} milliseconds less."
 msgstr "Filen {} har trimmats med {} millisekunder mindre."
 
-#: src/lib/playlist.cc:259
+#: src/lib/playlist.cc:257
 #, c++-format
 msgid "The file {} has been trimmed by {} milliseconds more."
 msgstr "Filen {} har trimmats med {} millisekunder mer."
@@ -1860,7 +1860,7 @@ msgstr ""
 "att ange DCP:ns bildhastighet närmare källmaterialets, förutsatt att den "
 "tänkta utrustningen för uppspelning klarar den angivna bildhastigheten."
 
-#: src/lib/dcp_content.cc:760
+#: src/lib/dcp_content.cc:771
 msgid "There is no video in this DCP"
 msgstr "Det finns inget bildspår i denna DCP"
 
@@ -1913,7 +1913,7 @@ msgstr ""
 "Detta är en KDM. KDM:er ska läggas till DCP:er genom att högerklicka på "
 "källmaterialet och välja \"Lägg till KDM\"."
 
-#: src/lib/film.cc:556
+#: src/lib/film.cc:557
 #, fuzzy, c++-format
 msgid ""
 "This film was created with a newer version of {}, and it cannot be loaded "
@@ -1922,7 +1922,7 @@ msgstr ""
 "Denna film skapades i en nyare version av DCP-o-matic, och den kan inte "
 "öppnas i denna version. Förlåt!"
 
-#: src/lib/film.cc:537
+#: src/lib/film.cc:538
 #, fuzzy, c++-format
 msgid ""
 "This film was created with an older version of {}, and unfortunately it "
@@ -1984,7 +1984,7 @@ msgstr "Okänd"
 msgid "Unknown error"
 msgstr "Okänt fel"
 
-#: src/lib/ffmpeg_decoder.cc:384
+#: src/lib/ffmpeg_decoder.cc:438
 #, c++-format
 msgid "Unrecognised audio sample format ({})"
 msgstr "Okänt ljudsamplingsformat ({})"
@@ -2121,7 +2121,7 @@ msgstr ""
 "rekommenderas att du provlyssnar den färdiga DCP:n på biograf för att "
 "säkerställa att den låter bra."
 
-#: src/lib/film.cc:1794
+#: src/lib/film.cc:1795
 msgid ""
 "You have more than one piece of Atmos content, and they do not have the same "
 "frame rate.  You must remove some Atmos content."
@@ -2197,12 +2197,12 @@ msgstr ""
 "Din ljudnivå är mycket hög (på {}). Rekommenderat är att sänka gain på "
 "ljudspåret."
 
-#: src/lib/playlist.cc:235
+#: src/lib/playlist.cc:233
 msgid ""
 "Your project contains video content that was not aligned to a frame boundary."
 msgstr "Ditt projekt innehåller bild som inte passar mot en hel bildruta."
 
-#: src/lib/playlist.cc:255
+#: src/lib/playlist.cc:253
 msgid ""
 "Your project contains video content whose trim was not aligned to a frame "
 "boundary."
@@ -2218,7 +2218,7 @@ msgstr "[bildsekvens]"
 msgid "[still]"
 msgstr "[stillbild]"
 
-#: src/lib/dcp_subtitle_content.cc:132 src/lib/fcpxml_content.cc:86
+#: src/lib/dcp_subtitle_content.cc:136 src/lib/fcpxml_content.cc:86
 #: src/lib/string_text_file_content.cc:111
 msgid "[subtitles]"
 msgstr "[undertexter]"
@@ -2320,11 +2320,11 @@ msgid "h"
 msgstr "tim"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:717
+#: src/lib/dcp_content.cc:728
 msgid "it has a different frame rate to the film."
 msgstr "den har en annan bildhastighet än filmen."
 
-#: src/lib/dcp_content.cc:799
+#: src/lib/dcp_content.cc:810
 #, c++-format
 msgid ""
 "it has a different number of audio channels than the project; set the "
@@ -2332,51 +2332,51 @@ msgid ""
 msgstr ""
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:835
+#: src/lib/dcp_content.cc:846
 msgid ""
 "it has a start trim so its subtitles or closed captions must be re-written."
 msgstr "den har en beskärning i början så dess undertitlar måste skrivas om."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:770
+#: src/lib/dcp_content.cc:781
 msgid "it is 2K and the film is 4K."
 msgstr "den är i 2K men filmen är i 4K."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:767
+#: src/lib/dcp_content.cc:778
 msgid "it is 4K and the film is 2K."
 msgstr "den är i 4K men filmen är i 2K."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:705
+#: src/lib/dcp_content.cc:716
 msgid "it is Interop and the film is set to SMPTE."
 msgstr "den är i Interop men filmen är inställd att vara i SMPTE."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:709
+#: src/lib/dcp_content.cc:720
 msgid "it is SMPTE and the film is set to Interop."
 msgstr "den är i SMPTE men filmen är inställd att vara i Interop."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:810
+#: src/lib/dcp_content.cc:821
 #, fuzzy
 msgid "it overlaps other audio content."
 msgstr "den överlappar med annat ljud-källmaterial; ta bort detta."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:845
+#: src/lib/dcp_content.cc:856
 #, fuzzy
 msgid "it overlaps other text content."
 msgstr "den överlappar med annat ljud-källmaterial; ta bort detta."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:785
+#: src/lib/dcp_content.cc:796
 #, fuzzy
 msgid "it overlaps other video content."
 msgstr "den överlappar med annat video-källmaterial; ta bort detta."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:740
+#: src/lib/dcp_content.cc:751
 msgid ""
 "its reel lengths differ from those in the film; set the reel mode to 'split "
 "by video content'."
@@ -2385,7 +2385,7 @@ msgstr ""
 "'dela upp enligt källmaterial'."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:775
+#: src/lib/dcp_content.cc:786
 msgid "its video frame size differs from the film's."
 msgstr "bildrutornas storlek skiljer sig från filmens."
 
@@ -2404,7 +2404,7 @@ msgid "name"
 msgstr "namn"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:829
+#: src/lib/dcp_content.cc:840
 #, fuzzy
 msgid ""
 "one of its closed caption reels has a non-zero entry point so it must be re-"
@@ -2413,7 +2413,7 @@ msgstr ""
 "en av dess undertitlar har en icke-noll början så den måste skrivas om."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:823
+#: src/lib/dcp_content.cc:834
 msgid ""
 "one of its subtitle reels has a non-zero entry point so it must be re-"
 "written."
@@ -2451,7 +2451,7 @@ msgstr "{} ({} GB) [{}]"
 msgid "{} [Atmos]"
 msgstr "{} [Atmos]"
 
-#: src/lib/dcp_content.cc:381
+#: src/lib/dcp_content.cc:389
 #, c++-format
 msgid "{} [DCP]"
 msgstr "{} [DCP]"
@@ -2480,7 +2480,7 @@ msgstr ""
 "DCP-o-matic kunde inte öppna {} ({}). Kanske finns inte filen eller har ett "
 "okänt format."
 
-#: src/lib/film.cc:1831
+#: src/lib/film.cc:1832
 #, fuzzy, c++-format
 msgid ""
 "{} had to change your settings for referring to DCPs as OV.  Please review "
@@ -2490,7 +2490,7 @@ msgstr ""
 "DCP:er som OV. Var vänlig kontrollera dessa inställningar så att det är "
 "korrekta."
 
-#: src/lib/film.cc:1797
+#: src/lib/film.cc:1798
 #, fuzzy, c++-format
 msgid ""
 "{} had to change your settings so that the film's frame rate is the same as "
@@ -2499,14 +2499,14 @@ msgstr ""
 "DCP-o-matic var tvungen att ändra dina inställningar så att filmens "
 "bildhastighet är samma som för Atmos-innehållet."
 
-#: src/lib/film.cc:1844
+#: src/lib/film.cc:1845
 #, c++-format
 msgid ""
 "{} had to remove one of your custom reel boundaries as it no longer lies "
 "within the film."
 msgstr ""
 
-#: src/lib/film.cc:1842
+#: src/lib/film.cc:1843
 #, c++-format
 msgid ""
 "{} had to remove some of your custom reel boundaries as they no longer lie "
@@ -2518,7 +2518,7 @@ msgstr ""
 msgid "{} no longer supports the `{}' filter, so it has been turned off."
 msgstr "DCP-o-matic stödjer inte längre '{}'-filtret, så det har inaktiverats."
 
-#: src/lib/config.cc:432 src/lib/config.cc:1245
+#: src/lib/config.cc:424 src/lib/config.cc:1237
 #, fuzzy, c++-format
 msgid "{} notification"
 msgstr "E-postmeddelande"

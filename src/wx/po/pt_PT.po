@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: DCP-o-matic PORTUGUESE (Portugal)\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-04-21 17:39+0200\n"
+"POT-Creation-Date: 2026-06-30 20:55+0200\n"
 "PO-Revision-Date: 2016-03-19 13:56+0000\n"
 "Last-Translator: Tiago Casal Ribeiro <tiago@casalribeiro.com>\n"
 "Language-Team: \n"
@@ -91,7 +91,7 @@ msgstr ""
 msgid "%s Preferences"
 msgstr ""
 
-#: src/wx/film_name_location_dialog.cc:155
+#: src/wx/film_name_location_dialog.cc:156
 #, c-format
 msgid "%s already exists as a file, so you cannot use it for a film."
 msgstr ""
@@ -212,7 +212,7 @@ msgstr "3D superior/inferior"
 msgid "4 - L/C/R/Lfe"
 msgstr ""
 
-#: src/wx/dcp_panel.cc:1012
+#: src/wx/dcp_panel.cc:1006
 msgid "48kHz"
 msgstr ""
 
@@ -228,7 +228,7 @@ msgstr ""
 msgid "8 - 5.1/HI/VI"
 msgstr ""
 
-#: src/wx/dcp_panel.cc:1013
+#: src/wx/dcp_panel.cc:1007
 msgid "96kHz"
 msgstr ""
 
@@ -393,11 +393,11 @@ msgstr ""
 msgid "Add DKDM folder"
 msgstr ""
 
-#: src/wx/content_menu.cc:113
+#: src/wx/content_menu.cc:112
 msgid "Add KDM..."
 msgstr "Adicionar KDM..."
 
-#: src/wx/content_menu.cc:114
+#: src/wx/content_menu.cc:113
 msgid "Add OV..."
 msgstr ""
 
@@ -523,7 +523,7 @@ msgstr ""
 msgid "Advanced content settings"
 msgstr ""
 
-#: src/wx/content_menu.cc:111
+#: src/wx/content_menu.cc:110
 #, fuzzy
 msgid "Advanced settings..."
 msgstr "Adicionar..."
@@ -572,7 +572,7 @@ msgstr ""
 msgid "Alpha   0"
 msgstr "Alfa   O"
 
-#: src/wx/about_dialog.cc:184
+#: src/wx/about_dialog.cc:186
 #, fuzzy
 msgid "Also supported by"
 msgstr "Apoiado por "
@@ -688,7 +688,7 @@ msgstr ""
 msgid "Auto crop"
 msgstr "Esquerda"
 
-#: src/wx/content_menu.cc:108
+#: src/wx/content_menu.cc:107
 msgid "Auto-crop..."
 msgstr ""
 
@@ -823,7 +823,7 @@ msgstr "Cadeia"
 msgid "Channel gain"
 msgstr "Ganho do canal"
 
-#: src/wx/audio_dialog.cc:110 src/wx/dcp_panel.cc:981
+#: src/wx/audio_dialog.cc:110 src/wx/dcp_panel.cc:975
 msgid "Channels"
 msgstr "Canais"
 
@@ -839,7 +839,7 @@ msgstr "Pesquisar por actualizações de teste no arranque"
 msgid "Check for updates on startup"
 msgstr "Pesquisar por actualizações no arranque"
 
-#: src/wx/content_menu.cc:116
+#: src/wx/content_menu.cc:115
 #, fuzzy
 msgid "Choose CPL"
 msgstr "Seleccionar ficheiro"
@@ -848,7 +848,7 @@ msgstr "Seleccionar ficheiro"
 msgid "Choose a DCP folder"
 msgstr ""
 
-#: src/wx/content_menu.cc:387
+#: src/wx/content_menu.cc:386
 msgid "Choose a file"
 msgstr "Seleccionar ficheiro"
 
@@ -856,7 +856,7 @@ msgstr "Seleccionar ficheiro"
 msgid "Choose a file or files"
 msgstr "Seleccionar ficheiro(s)"
 
-#: src/wx/content_menu.cc:383 src/wx/content_panel.cc:634
+#: src/wx/content_menu.cc:382 src/wx/content_panel.cc:634
 msgid "Choose a folder"
 msgstr "Seleccionar pasta"
 
@@ -979,7 +979,7 @@ msgstr ""
 msgid "Copy as name"
 msgstr "Copiar como nome"
 
-#: src/wx/content_menu.cc:109
+#: src/wx/content_menu.cc:108
 msgid "Copy settings from another project..."
 msgstr ""
 
@@ -1000,7 +1000,7 @@ msgstr "Audio"
 msgid "Could not analyse audio."
 msgstr "Não foi possível analizar audio."
 
-#: src/wx/text_panel.cc:868
+#: src/wx/text_panel.cc:870
 #, fuzzy
 msgid "Could not analyse subtitles."
 msgstr "Não foi possível analizar audio."
@@ -1010,7 +1010,7 @@ msgstr "Não foi possível analizar audio."
 msgid "Could not find serial number %s"
 msgstr "Não foi possível ler o ficheiro do certificado (%s)"
 
-#: src/wx/content_menu.cc:667
+#: src/wx/content_menu.cc:666
 #, fuzzy, c-format
 msgid "Could not find this content in the project \"%s\"."
 msgstr "Não foi possível ler o ficheiro do certificado (%s)"
@@ -1020,7 +1020,7 @@ msgstr "Não foi possível ler o ficheiro do certificado (%s)"
 msgid "Could not import certificate (%s)"
 msgstr "Não foi possível ler o ficheiro do certificado (%s)"
 
-#: src/wx/content_menu.cc:447
+#: src/wx/content_menu.cc:446
 #, fuzzy
 msgid "Could not load KDM"
 msgstr "Não foi possível carregar a KDM (%s)"
@@ -1045,7 +1045,7 @@ msgstr "Não foi possível carregar a KDM (%s)"
 msgid "Could not read DCP (%error)"
 msgstr "Não foi possível carregar a KDM (%s)"
 
-#: src/wx/gl_video_view.cc:131
+#: src/wx/gl_video_view.cc:132
 #, fuzzy, c-format
 msgid "Could not read DCP: %s"
 msgstr "Não foi possível carregar a KDM (%s)"
@@ -1078,7 +1078,7 @@ msgstr "Não foi possível ler o ficheiro do certificado (%s)"
 msgid "Could not read key file; file is too long (%s)"
 msgstr "Não foi possível ler o ficheiro da chave (%s)"
 
-#: src/wx/film_viewer.cc:638 src/wx/film_viewer.cc:680
+#: src/wx/film_viewer.cc:641 src/wx/film_viewer.cc:683
 msgid ""
 "Could not set up audio output.  There will be no audio during the preview."
 msgstr ""
@@ -1091,7 +1091,7 @@ msgstr ""
 msgid "Create KDMs anyway"
 msgstr ""
 
-#: src/wx/film_name_location_dialog.cc:51
+#: src/wx/film_name_location_dialog.cc:52
 msgid "Create in folder"
 msgstr "Criar na pasta"
 
@@ -1255,7 +1255,7 @@ msgstr "Duração padrão de imagens estáticas"
 msgid "Defaults"
 msgstr "Padrões"
 
-#: src/wx/export_subtitles_dialog.cc:61
+#: src/wx/export_subtitles_dialog.cc:62
 msgid "Define font in output and export font file"
 msgstr ""
 
@@ -1373,7 +1373,7 @@ msgid "Edit screen"
 msgstr "Editar ecrã..."
 
 #: src/wx/audio_mapping_view.cc:90 src/wx/content_advanced_dialog.cc:75
-#: src/wx/dcp_panel.cc:996 src/wx/language_tag_widget.cc:51
+#: src/wx/dcp_panel.cc:990 src/wx/language_tag_widget.cc:51
 #: src/wx/recipients_panel.cc:71 src/wx/region_subtag_widget.cc:52
 #: src/wx/video_panel.cc:159 src/wx/video_panel.cc:170
 #: src/wx/editable_list.h:149
@@ -1537,11 +1537,11 @@ msgstr "Nome do filme"
 msgid "Filename format"
 msgstr "Nome do ficheiro"
 
-#: src/wx/film_name_location_dialog.cc:48
+#: src/wx/film_name_location_dialog.cc:49
 msgid "Film name"
 msgstr "Nome do filme"
 
-#: src/wx/content_menu.cc:653
+#: src/wx/content_menu.cc:652
 msgid "Film to copy settings from"
 msgstr ""
 
@@ -1560,7 +1560,7 @@ msgstr ""
 "Encontrar intensidade sonora integrada, pico real e variação de intensidade "
 "sonora durante a análise de áudio"
 
-#: src/wx/content_menu.cc:105
+#: src/wx/content_menu.cc:104
 msgid "Find missing..."
 msgstr "A procurar em falta..."
 
@@ -1666,7 +1666,7 @@ msgstr "De"
 msgid "From address"
 msgstr "Endereço de origem"
 
-#: src/wx/film_name_location_dialog.cc:66
+#: src/wx/film_name_location_dialog.cc:67
 msgid "From template"
 msgstr ""
 
@@ -1931,7 +1931,7 @@ msgstr ""
 msgid "JPEG2000 comment"
 msgstr ""
 
-#: src/wx/content_menu.cc:104
+#: src/wx/content_menu.cc:103
 msgid "Join"
 msgstr "Unir"
 
@@ -1978,7 +1978,7 @@ msgstr ""
 msgid "Label"
 msgstr ""
 
-#: src/wx/dcp_panel.cc:994 src/wx/dcp_text_track_dialog.cc:35
+#: src/wx/dcp_panel.cc:988 src/wx/dcp_text_track_dialog.cc:35
 #: src/wx/text_panel.cc:166
 msgid "Language"
 msgstr "Língua"
@@ -2446,7 +2446,7 @@ msgid "Non-standard"
 msgstr "Norma"
 
 #: src/wx/content_advanced_dialog.cc:74 src/wx/content_advanced_dialog.cc:155
-#: src/wx/content_advanced_dialog.cc:163 src/wx/dcp_panel.cc:1099
+#: src/wx/content_advanced_dialog.cc:163 src/wx/dcp_panel.cc:1093
 #: src/wx/subtitle_appearance_dialog.cc:151
 msgid "None"
 msgstr "Nenhum"
@@ -2565,12 +2565,12 @@ msgstr ""
 msgid "Output"
 msgstr "Saída"
 
-#: src/wx/export_subtitles_dialog.cc:65 src/wx/export_video_file_dialog.cc:98
+#: src/wx/export_subtitles_dialog.cc:66 src/wx/export_video_file_dialog.cc:98
 #, fuzzy
 msgid "Output file"
 msgstr "Saída"
 
-#: src/wx/export_subtitles_dialog.cc:70
+#: src/wx/export_subtitles_dialog.cc:71
 #, fuzzy
 msgid "Output folder"
 msgstr "Saída"
@@ -2626,7 +2626,7 @@ msgstr "Usar legendas"
 msgid "Paste video settings"
 msgstr ""
 
-#: src/wx/about_dialog.cc:176
+#: src/wx/about_dialog.cc:178
 msgid "Patrons"
 msgstr ""
 
@@ -2703,7 +2703,7 @@ msgstr "Pré-lançamento"
 msgid "Previous"
 msgstr ""
 
-#: src/wx/dcp_panel.cc:990
+#: src/wx/dcp_panel.cc:984
 msgid "Processor"
 msgstr "Processador"
 
@@ -2717,7 +2717,7 @@ msgstr "Nome de utilizador"
 msgid "Product version"
 msgstr "Versão do conteúdo"
 
-#: src/wx/content_menu.cc:110
+#: src/wx/content_menu.cc:109
 msgid "Properties..."
 msgstr "Propriedades..."
 
@@ -2765,7 +2765,7 @@ msgstr "Avisos"
 msgid "Re-encode JPEG2000 data from input"
 msgstr ""
 
-#: src/wx/content_menu.cc:106
+#: src/wx/content_menu.cc:105
 msgid "Re-examine..."
 msgstr "Reexaminar..."
 
@@ -2857,7 +2857,7 @@ msgstr ""
 msgid "Release territory for this DCP"
 msgstr ""
 
-#: src/wx/certificate_chain_editor.cc:91 src/wx/content_menu.cc:120
+#: src/wx/certificate_chain_editor.cc:91 src/wx/content_menu.cc:119
 #: src/wx/content_panel.cc:284 src/wx/full_language_tag_dialog.cc:71
 #: src/wx/recipients_panel.cc:73 src/wx/templates_dialog.cc:61
 #: src/wx/editable_list.h:157
@@ -2909,7 +2909,7 @@ msgstr "Repetir"
 msgid "Repeat Content"
 msgstr "Repetir Conteúdo"
 
-#: src/wx/content_menu.cc:103
+#: src/wx/content_menu.cc:102
 msgid "Repeat..."
 msgstr "Repetir..."
 
@@ -3005,7 +3005,7 @@ msgstr ""
 msgid "Sample peak is %.2fdB at %s on %s"
 msgstr "Pico de amostra é %.2fdB em %s em %s"
 
-#: src/wx/dcp_panel.cc:986
+#: src/wx/dcp_panel.cc:980
 #, fuzzy
 msgid "Sample rate"
 msgstr "Cadência de fotogramas"
@@ -3100,7 +3100,7 @@ msgstr "Seleccionar Ficheiro da Chave"
 msgid "Select File To Import"
 msgstr "Seleccionar Ficheiro da Chave"
 
-#: src/wx/content_menu.cc:437
+#: src/wx/content_menu.cc:436
 msgid "Select KDM"
 msgstr "Seleccionar KDM"
 
@@ -3113,7 +3113,7 @@ msgstr "Seleccionar Ficheiro da Chave"
 msgid "Select Key file"
 msgstr "Seleccionar Ficheiro da Chave"
 
-#: src/wx/content_menu.cc:491
+#: src/wx/content_menu.cc:490
 #, fuzzy
 msgid "Select OV"
 msgstr "Seleccionar KDM"
@@ -3137,7 +3137,7 @@ msgstr "Seleccionar Ficheiro do Certificado"
 msgid "Select debug log file"
 msgstr "Seleccionar Ficheiro do Certificado"
 
-#: src/wx/export_subtitles_dialog.cc:66 src/wx/export_video_file_dialog.cc:104
+#: src/wx/export_subtitles_dialog.cc:67 src/wx/export_video_file_dialog.cc:104
 #, fuzzy
 msgid "Select output file"
 msgstr "Seleccionar Ficheiro do Certificado"
@@ -3211,11 +3211,11 @@ msgstr "Definir de fonte do sistema..."
 msgid "Set language"
 msgstr "Definir Língua"
 
-#: src/wx/content_menu.cc:117
+#: src/wx/content_menu.cc:116
 msgid "Set project DCP settings from this DCP"
 msgstr ""
 
-#: src/wx/content_menu.cc:118
+#: src/wx/content_menu.cc:117
 msgid "Set project markers from this DCP"
 msgstr ""
 
@@ -3248,7 +3248,7 @@ msgstr ""
 msgid "Show experimental audio processors"
 msgstr ""
 
-#: src/wx/audio_panel.cc:75 src/wx/dcp_panel.cc:998
+#: src/wx/audio_panel.cc:75 src/wx/dcp_panel.cc:992
 msgid "Show graph of audio levels..."
 msgstr "Mostrar gráfico de níveis de audio..."
 
@@ -3402,6 +3402,10 @@ msgstr "Fluxo"
 msgid "Studio"
 msgstr "Audio"
 
+#: src/wx/export_subtitles_dialog.cc:49
+msgid "SubRip (SRT)"
+msgstr ""
+
 #: src/wx/full_config_dialog.cc:683 src/wx/kdm_email_preferences_page.cc:71
 msgid "Subject"
 msgstr "Assunto"
@@ -3416,7 +3420,7 @@ msgstr "Nome comum da Raiz"
 msgid "Subject organization name"
 msgstr "Seleccionar Ficheiro do Certificado"
 
-#: src/wx/about_dialog.cc:180
+#: src/wx/about_dialog.cc:182
 msgid "Subscribers"
 msgstr ""
 
@@ -3430,11 +3434,15 @@ msgstr "Aparência da legenda"
 msgid "Subtitle asset %asset_id has a non-zero <EntryPoint>."
 msgstr ""
 
-#: src/wx/export_subtitles_dialog.cc:105
+#: src/wx/export_subtitles_dialog.cc:110
 msgid "Subtitle files (.mxf)|*.mxf"
 msgstr ""
 
-#: src/wx/export_subtitles_dialog.cc:105
+#: src/wx/export_subtitles_dialog.cc:113
+msgid "Subtitle files (.srt)|*.srt"
+msgstr ""
+
+#: src/wx/export_subtitles_dialog.cc:107
 msgid "Subtitle files (.xml)|*.xml"
 msgstr ""
 
@@ -3512,7 +3520,7 @@ msgstr "Depuração: envio de email"
 msgid "Test version"
 msgstr "Versão de teste %s"
 
-#: src/wx/about_dialog.cc:251
+#: src/wx/about_dialog.cc:253
 msgid "Tested by"
 msgstr "Testado por"
 
@@ -3752,7 +3760,7 @@ msgstr ""
 msgid "The closed caption asset %asset_id has no <EntryPoint> tag."
 msgstr ""
 
-#: src/wx/film_name_location_dialog.cc:146
+#: src/wx/film_name_location_dialog.cc:147
 #, c-format
 msgid ""
 "The directory %s already exists and is not empty.  Are you sure you want to "
@@ -3955,11 +3963,11 @@ msgid ""
 "There is already a template with this name.  Do you want to overwrite it?"
 msgstr ""
 
-#: src/wx/film_viewer.cc:179
+#: src/wx/film_viewer.cc:181
 msgid "There is not enough free memory to do that."
 msgstr "Não há memória livre para executar essa acção."
 
-#: src/wx/film_viewer.cc:362
+#: src/wx/film_viewer.cc:365
 msgid ""
 "There was a problem starting audio playback.  Please try another audio "
 "output device in Preferences."
@@ -3980,14 +3988,14 @@ msgstr ""
 msgid "This DCP uses the Interop standard, but it should be made with SMPTE."
 msgstr ""
 
-#: src/wx/content_menu.cc:472
+#: src/wx/content_menu.cc:471
 msgid ""
 "This KDM was made for one of the CPLs in this DCP, but not the currently "
 "selected one.  To play the currently-selected CPL you will need a different "
 "KDM."
 msgstr ""
 
-#: src/wx/content_menu.cc:467
+#: src/wx/content_menu.cc:466
 msgid "This KDM was not made for this DCP.  You will need a different one."
 msgstr ""
 
@@ -4128,7 +4136,7 @@ msgstr "Superior"
 msgid "Track"
 msgstr ""
 
-#: src/wx/about_dialog.cc:172
+#: src/wx/about_dialog.cc:174
 msgid "Translated by"
 msgstr "Traduzido por"
 
@@ -4372,7 +4380,7 @@ msgstr "Criar cadeia de certificados"
 msgid "Verify"
 msgstr ""
 
-#: src/wx/content_menu.cc:425
+#: src/wx/content_menu.cc:424
 msgid "Verify DCP"
 msgstr ""
 
@@ -4380,7 +4388,7 @@ msgstr ""
 msgid "Verify picture asset details"
 msgstr ""
 
-#: src/wx/content_menu.cc:107
+#: src/wx/content_menu.cc:106
 msgid "Verify..."
 msgstr ""
 
@@ -4480,7 +4488,7 @@ msgstr ""
 msgid "Write each audio channel to its own stream"
 msgstr ""
 
-#: src/wx/export_subtitles_dialog.cc:53 src/wx/export_video_file_dialog.cc:83
+#: src/wx/export_subtitles_dialog.cc:54 src/wx/export_video_file_dialog.cc:83
 msgid "Write reels into separate files"
 msgstr ""
 
@@ -4584,11 +4592,11 @@ msgstr ""
 msgid "cinema"
 msgstr "Cinema"
 
-#: src/wx/text_panel.cc:596
+#: src/wx/text_panel.cc:601
 msgid "closed captions"
 msgstr ""
 
-#: src/wx/text_panel.cc:595
+#: src/wx/text_panel.cc:600
 #, fuzzy
 msgid "closed subtitles"
 msgstr "Usar legendas"
@@ -4683,12 +4691,12 @@ msgstr ""
 msgid "number of reels"
 msgstr ""
 
-#: src/wx/text_panel.cc:593
+#: src/wx/text_panel.cc:598
 #, fuzzy
 msgid "open captions"
 msgstr "Certificado"
 
-#: src/wx/text_panel.cc:592
+#: src/wx/text_panel.cc:597
 #, fuzzy
 msgid "open subtitles"
 msgstr "Usar legendas"

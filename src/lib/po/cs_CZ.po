@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-04-19 23:03+0200\n"
+"POT-Creation-Date: 2026-06-29 07:42+0200\n"
 "PO-Revision-Date: 2025-06-10 15:13+0200\n"
 "Last-Translator: Tomáš Begeni <begeni@razdva.cz>\n"
 "Language-Team: \n"
@@ -75,7 +75,7 @@ msgstr " (%.2f:1)"
 msgid " on {}"
 msgstr " na {}"
 
-#: src/lib/config.cc:1270
+#: src/lib/config.cc:1262
 msgid ""
 "$CPL_NAME\n"
 "\n"
@@ -99,7 +99,7 @@ msgstr ""
 "Délka: $LENGTH\n"
 "Velikost: $SIZE\n"
 
-#: src/lib/config.cc:1248
+#: src/lib/config.cc:1240
 msgid "$JOB_NAME: $JOB_STATUS"
 msgstr "$JOB_NAME: $JOB_STATUS"
 
@@ -454,7 +454,7 @@ msgstr "Nemůže obsahovat lomítka"
 msgid "Cannot handle pixel format {} during {}"
 msgstr "Nemužu zpracovat formát pixelu {} během {}"
 
-#: src/lib/film.cc:1940
+#: src/lib/film.cc:1941
 msgid "Cannot make a KDM as this project is not encrypted."
 msgstr "Nelze vytvořit KDM, protože tento projekt není zašifrován."
 
@@ -754,7 +754,7 @@ msgstr "Nemohu otevřít ZIP soubor"
 msgid "Could not open downloaded ZIP file ({}:{}: {})"
 msgstr "Nemohu otevřít stažený ZIP soubor ({}:{}: {})"
 
-#: src/lib/config.cc:1172
+#: src/lib/config.cc:1164
 msgid "Could not open file for writing"
 msgstr "Nemohu otevřít soubor pro zápis"
 
@@ -811,17 +811,17 @@ msgstr "DCI Flat"
 msgid "DCI Scope"
 msgstr "DCI Scope"
 
-#: src/lib/film.cc:2048
+#: src/lib/film.cc:2049
 #, fuzzy
 msgid "DCP"
 msgstr "DBP"
 
-#: src/lib/film.cc:2045
+#: src/lib/film.cc:2046
 #, c++-format
 msgid "DCP (via {})"
 msgstr ""
 
-#: src/lib/dcp_subtitle_content.cc:138
+#: src/lib/dcp_subtitle_content.cc:142
 msgid "DCP XML subtitles"
 msgstr "DCP XML titulky"
 
@@ -843,7 +843,7 @@ msgstr "DCP bude běžet na %.1f%% obsahu videa.\n"
 msgid "DCP will use every other frame of the content.\n"
 msgstr "DCP bude používat každý druhý frame obsahu \n"
 
-#: src/lib/film.cc:1857
+#: src/lib/film.cc:1858
 msgid ""
 "DCP-o-matic had to set your container to 1920x1080 as it's the only one that "
 "can be used with MPEG2 encoding."
@@ -851,7 +851,7 @@ msgstr ""
 "DCP-o-matic musel nastavit váš kontejner na 1920x1080, protože to je jediný "
 "kontejner, který lze použít s kódováním MPEG2."
 
-#: src/lib/film.cc:1861
+#: src/lib/film.cc:1862
 msgid ""
 "DCP-o-matic had to set your film to 2D as 3D is not yet supported with MPEG2 "
 "encoding."
@@ -859,7 +859,7 @@ msgstr ""
 "DCP-o-matic musel váš film nastavit na 2D, protože 3D zatím není podporováno "
 "kódováním MPEG2."
 
-#: src/lib/film.cc:1865
+#: src/lib/film.cc:1866
 msgid ""
 "DCP-o-matic set your container to DCI Flat as it was previously 1920x1080 "
 "and that is not a standard ratio with JPEG2000 encoding."
@@ -876,7 +876,7 @@ msgstr "Datasat AP20 nebo AP25"
 msgid "De-interlacing"
 msgstr "De-interlacing"
 
-#: src/lib/config.cc:1233
+#: src/lib/config.cc:1225
 #, fuzzy, c++-format
 msgid ""
 "Dear Projectionist\n"
@@ -960,7 +960,7 @@ msgstr "Správa o problému s Emailem"
 msgid "Email problem report for {}"
 msgstr "Správa o problému s Emailem pro {}"
 
-#: src/lib/dcp_film_encoder.cc:120 src/lib/ffmpeg_film_encoder.cc:134
+#: src/lib/dcp_film_encoder.cc:114 src/lib/ffmpeg_film_encoder.cc:134
 msgid "Encoding"
 msgstr "Kódování"
 
@@ -1002,7 +1002,7 @@ msgstr "Zkoumání titulků"
 msgid "Examining subtitles and closed captions"
 msgstr "Zkoumání titulků a skrytých titulků"
 
-#: src/lib/subtitle_film_encoder.cc:106
+#: src/lib/subtitle_film_encoder.cc:104
 msgid "Extracting"
 msgstr "Rozbalování"
 
@@ -1093,7 +1093,7 @@ msgstr "Plná délka video snímků v DCP rychlosti"
 msgid "Full length in video frames at content rate"
 msgstr "Plná délka video snímků v rychlosti obsahu"
 
-#: src/lib/j2k_encoder.cc:280
+#: src/lib/j2k_encoder.cc:282
 msgid ""
 "GPU acceleration is enabled but the grok decoder is not working.  Please "
 "check your configuration and license, and ensure that you are connected to "
@@ -1183,7 +1183,7 @@ msgstr "Není známo, co tuto chybu způsobilo.  {}"
 msgid "JEDEC P22"
 msgstr "JEDEC P22"
 
-#: src/lib/config.cc:422 src/lib/config.cc:1230
+#: src/lib/config.cc:414 src/lib/config.cc:1222
 msgid "KDM delivery: $CPL_NAME"
 msgstr "KDM doručení: $CPL_NAME"
 
@@ -1269,19 +1269,19 @@ msgstr "Mid-side dekodér"
 msgid "Misc"
 msgstr "Různé"
 
-#: src/lib/dcp_examiner.cc:198
+#: src/lib/dcp_examiner.cc:196
 msgid "Mismatched audio channel counts in DCP"
 msgstr "Počet zvukových kanálů se v DCP neschoduje"
 
-#: src/lib/dcp_examiner.cc:206
+#: src/lib/dcp_examiner.cc:204
 msgid "Mismatched audio sample rates in DCP"
 msgstr "Vzorkovací kmitočet zvuku v DCP neschoduje"
 
-#: src/lib/dcp_examiner.cc:167
+#: src/lib/dcp_examiner.cc:165
 msgid "Mismatched frame rates in DCP"
 msgstr "V DPC se neschoduje počet obrázků za sekundu"
 
-#: src/lib/dcp_examiner.cc:174
+#: src/lib/dcp_examiner.cc:172
 msgid "Mismatched video sizes in DCP"
 msgstr "V DCP se neshoduje velikost videa"
 
@@ -1302,11 +1302,11 @@ msgstr "Mono"
 msgid "Motion compensating deinterlacer"
 msgstr "Pohybový kompenzační odstraňovač"
 
-#: src/lib/dcp_content.cc:212
+#: src/lib/dcp_content.cc:215
 msgid "No ASSETMAP or ASSETMAP.xml file found: is this a DCP?"
 msgstr ""
 
-#: src/lib/dcp_examiner.cc:115
+#: src/lib/dcp_examiner.cc:113
 #, fuzzy
 msgid "No CPLs found in DCP"
 msgstr "V DCP nebyla nalezena žádná CPLs."
@@ -1791,22 +1791,22 @@ msgstr ""
 "Disk, na kterém se nachází film už má málo volného místa. Uvolněte místo a "
 "zkuste to znovu."
 
-#: src/lib/playlist.cc:244
+#: src/lib/playlist.cc:242
 #, c++-format
 msgid "The file {} has been moved {} milliseconds earlier."
 msgstr "Soubor {} byl posunut o {} milisekund dříve."
 
-#: src/lib/playlist.cc:239
+#: src/lib/playlist.cc:237
 #, c++-format
 msgid "The file {} has been moved {} milliseconds later."
 msgstr "Soubor {} byl posunut o {} milisekund později."
 
-#: src/lib/playlist.cc:264
+#: src/lib/playlist.cc:262
 #, c++-format
 msgid "The file {} has been trimmed by {} milliseconds less."
 msgstr "Soubor {} byl oříznut o {} milisekund méně."
 
-#: src/lib/playlist.cc:259
+#: src/lib/playlist.cc:257
 #, c++-format
 msgid "The file {} has been trimmed by {} milliseconds more."
 msgstr "Soubor {} byl oříznut o {} milisekund více."
@@ -1845,7 +1845,7 @@ msgstr ""
 "která je blíže vašemu obsahu, za předpokladu, že vaše cílové projekční "
 "systémy podporují vámi zvolenou rychlost DCP."
 
-#: src/lib/dcp_content.cc:760
+#: src/lib/dcp_content.cc:771
 msgid "There is no video in this DCP"
 msgstr "V tomto DCP není video"
 
@@ -1899,7 +1899,7 @@ msgstr ""
 "Tento soubor je KDM. KDM by měly být přidány do obsahu DCP klepnutím pravým "
 "tlačítkem myši na obsah a výběrem možnosti “Přidat KDM”."
 
-#: src/lib/film.cc:556
+#: src/lib/film.cc:557
 #, c++-format
 msgid ""
 "This film was created with a newer version of {}, and it cannot be loaded "
@@ -1908,7 +1908,7 @@ msgstr ""
 "Tento film byl vytvořen v novější verzi {} a nelze jej do této verze "
 "načíst.  Omlouváme se!"
 
-#: src/lib/film.cc:537
+#: src/lib/film.cc:538
 #, c++-format
 msgid ""
 "This film was created with an older version of {}, and unfortunately it "
@@ -1970,7 +1970,7 @@ msgstr "Neznámé"
 msgid "Unknown error"
 msgstr "Neznáma chyba"
 
-#: src/lib/ffmpeg_decoder.cc:384
+#: src/lib/ffmpeg_decoder.cc:438
 #, c++-format
 msgid "Unrecognised audio sample format ({})"
 msgstr "Nerozpoznaná vzorkovací frekvence audia ({})"
@@ -2105,7 +2105,7 @@ msgstr ""
 "může mít za následek špatnou kvalitu zvuku.  Pokud budete pokračovat, měli "
 "byste si výsledný DCP poslechnout v kině, abyste se ujistili, že zní dobře."
 
-#: src/lib/film.cc:1794
+#: src/lib/film.cc:1795
 msgid ""
 "You have more than one piece of Atmos content, and they do not have the same "
 "frame rate.  You must remove some Atmos content."
@@ -2182,13 +2182,13 @@ msgid ""
 msgstr ""
 "Hlasitost zvuku je velmi vysoká (na {}). Snižte zesílení zvukového obsahu."
 
-#: src/lib/playlist.cc:235
+#: src/lib/playlist.cc:233
 msgid ""
 "Your project contains video content that was not aligned to a frame boundary."
 msgstr ""
 "Váš projekt obsahuje videoobsah, který nebyl zarovnán s hranicí snímku."
 
-#: src/lib/playlist.cc:255
+#: src/lib/playlist.cc:253
 msgid ""
 "Your project contains video content whose trim was not aligned to a frame "
 "boundary."
@@ -2203,7 +2203,7 @@ msgstr "[přesouvám obrázky]"
 msgid "[still]"
 msgstr "[stále]"
 
-#: src/lib/dcp_subtitle_content.cc:132 src/lib/fcpxml_content.cc:86
+#: src/lib/dcp_subtitle_content.cc:136 src/lib/fcpxml_content.cc:86
 #: src/lib/string_text_file_content.cc:111
 msgid "[subtitles]"
 msgstr "[titulky]"
@@ -2305,11 +2305,11 @@ msgid "h"
 msgstr "h"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:717
+#: src/lib/dcp_content.cc:728
 msgid "it has a different frame rate to the film."
 msgstr "má jinou snímkovou frekvenci za sekundu pro film."
 
-#: src/lib/dcp_content.cc:799
+#: src/lib/dcp_content.cc:810
 #, c++-format
 msgid ""
 "it has a different number of audio channels than the project; set the "
@@ -2318,7 +2318,7 @@ msgstr ""
 "má jiný počet zvukových kanálů než projekt; nastavte projekt na {} kanálů."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:835
+#: src/lib/dcp_content.cc:846
 msgid ""
 "it has a start trim so its subtitles or closed captions must be re-written."
 msgstr ""
@@ -2326,42 +2326,42 @@ msgstr ""
 "titulky."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:770
+#: src/lib/dcp_content.cc:781
 msgid "it is 2K and the film is 4K."
 msgstr "je 2K a film je 4K."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:767
+#: src/lib/dcp_content.cc:778
 msgid "it is 4K and the film is 2K."
 msgstr "je 4K a film je 2K."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:705
+#: src/lib/dcp_content.cc:716
 msgid "it is Interop and the film is set to SMPTE."
 msgstr "to je Interop a film je nastaven na SMPTE."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:709
+#: src/lib/dcp_content.cc:720
 msgid "it is SMPTE and the film is set to Interop."
 msgstr "to je SMPTE a film je Interop."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:810
+#: src/lib/dcp_content.cc:821
 msgid "it overlaps other audio content."
 msgstr "překrývá jiný zvukový obsah."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:845
+#: src/lib/dcp_content.cc:856
 msgid "it overlaps other text content."
 msgstr "překrývá jiný textový obsah."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:785
+#: src/lib/dcp_content.cc:796
 msgid "it overlaps other video content."
 msgstr "překrývá jiný obsah videa."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:740
+#: src/lib/dcp_content.cc:751
 msgid ""
 "its reel lengths differ from those in the film; set the reel mode to 'split "
 "by video content'."
@@ -2370,7 +2370,7 @@ msgstr ""
 "obsahu videa’."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:775
+#: src/lib/dcp_content.cc:786
 msgid "its video frame size differs from the film's."
 msgstr "velikost video rámečku se liší od filmu."
 
@@ -2388,7 +2388,7 @@ msgid "name"
 msgstr "jméno"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:829
+#: src/lib/dcp_content.cc:840
 #, fuzzy
 msgid ""
 "one of its closed caption reels has a non-zero entry point so it must be re-"
@@ -2397,7 +2397,7 @@ msgstr ""
 "jeden ze skrytých titulků má nenulový vstupní bod, takže musí být přepsán."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:823
+#: src/lib/dcp_content.cc:834
 msgid ""
 "one of its subtitle reels has a non-zero entry point so it must be re-"
 "written."
@@ -2434,7 +2434,7 @@ msgstr "{} ({} GB) [{}]"
 msgid "{} [Atmos]"
 msgstr "{} [Atmos]"
 
-#: src/lib/dcp_content.cc:381
+#: src/lib/dcp_content.cc:389
 #, c++-format
 msgid "{} [DCP]"
 msgstr "{} [DCP]"
@@ -2463,7 +2463,7 @@ msgstr ""
 "{} se nepodařilo otevřít soubor {} ({}).  Možná neexistuje nebo je v "
 "nepodporovaném formátu."
 
-#: src/lib/film.cc:1831
+#: src/lib/film.cc:1832
 #, c++-format
 msgid ""
 "{} had to change your settings for referring to DCPs as OV.  Please review "
@@ -2472,7 +2472,7 @@ msgstr ""
 "{} musel změnit nastavení pro odkazování na DCP jako OV.  Zkontrolujte "
 "prosím tato nastavení a ujistěte se, že odpovídají vašim požadavkům."
 
-#: src/lib/film.cc:1797
+#: src/lib/film.cc:1798
 #, c++-format
 msgid ""
 "{} had to change your settings so that the film's frame rate is the same as "
@@ -2481,7 +2481,7 @@ msgstr ""
 "{} musel změnit nastavení tak, aby snímková frekvence filmu byla stejná jako "
 "u obsahu Atmos."
 
-#: src/lib/film.cc:1844
+#: src/lib/film.cc:1845
 #, c++-format
 msgid ""
 "{} had to remove one of your custom reel boundaries as it no longer lies "
@@ -2490,7 +2490,7 @@ msgstr ""
 "{} musel odstranit jeden z vašich vlastních reelů, protože již neleží uvnitř "
 "filmu."
 
-#: src/lib/film.cc:1842
+#: src/lib/film.cc:1843
 #, c++-format
 msgid ""
 "{} had to remove some of your custom reel boundaries as they no longer lie "
@@ -2504,7 +2504,7 @@ msgstr ""
 msgid "{} no longer supports the `{}' filter, so it has been turned off."
 msgstr "{} již nepodporuje filtr `{}', proto byl vypnut."
 
-#: src/lib/config.cc:432 src/lib/config.cc:1245
+#: src/lib/config.cc:424 src/lib/config.cc:1237
 #, c++-format
 msgid "{} notification"
 msgstr "{} oznámení"

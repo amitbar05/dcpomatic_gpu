@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: DCP-o-matic\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-04-19 23:03+0200\n"
+"POT-Creation-Date: 2026-06-29 07:42+0200\n"
 "PO-Revision-Date: 2026-04-21 18:10+0200\n"
 "Last-Translator: Rob van Nieuwkerk <dcpomatic-translations@berrymount.nl>\n"
 "Language-Team: Rob van Nieuwkerk <dcpomatic-translations@berrymount.nl>\n"
@@ -75,7 +75,7 @@ msgstr " (%.2f:1)"
 msgid " on {}"
 msgstr " op {}"
 
-#: src/lib/config.cc:1270
+#: src/lib/config.cc:1262
 msgid ""
 "$CPL_NAME\n"
 "\n"
@@ -99,7 +99,7 @@ msgstr ""
 "Lengte: $LENGTH\n"
 "Grootte: $SIZE\n"
 
-#: src/lib/config.cc:1248
+#: src/lib/config.cc:1240
 msgid "$JOB_NAME: $JOB_STATUS"
 msgstr "$JOB_NAME: $JOB_STATUS"
 
@@ -211,8 +211,8 @@ msgid ""
 "software.<p>If you find {} useful, please consider a donation to the "
 "project. Financial support will help me to spend more time developing {} and "
 "making it better!<p><ul><li><a href=\"https://dcpomatic.com/donate_amount?"
-"amount=40\">Go to Paypal to donate €40</a><li><a href=\"https://dcpomatic."
-"com/donate_amount?amount=20\">Go to Paypal to donate €20</a><li><a "
+"amount=40\">Go to Paypal to donate €40</a><li><a href=\"https://"
+"dcpomatic.com/donate_amount?amount=20\">Go to Paypal to donate €20</a><li><a "
 "href=\"https://dcpomatic.com/donate_amount?amount=10\">Go to Paypal to "
 "donate €10</a></ul><p>Thank you!</font>"
 msgstr ""
@@ -461,7 +461,7 @@ msgstr "Mag geen slash bevatten"
 msgid "Cannot handle pixel format {} during {}"
 msgstr "Kan pixelformaat {} niet verwerken tijdens {}"
 
-#: src/lib/film.cc:1940
+#: src/lib/film.cc:1941
 msgid "Cannot make a KDM as this project is not encrypted."
 msgstr "Kan geen KDM maken omdat dit project niet is versleuteld."
 
@@ -782,7 +782,7 @@ msgstr "Kan gedownload ZIP-bestand niet openen"
 msgid "Could not open downloaded ZIP file ({}:{}: {})"
 msgstr "Kan gedownload ZIP-bestand niet openen ({}:{}: {})"
 
-#: src/lib/config.cc:1172
+#: src/lib/config.cc:1164
 msgid "Could not open file for writing"
 msgstr "Kan bestand niet openen om te schrijven"
 
@@ -839,16 +839,16 @@ msgstr "DCI Flat"
 msgid "DCI Scope"
 msgstr "DCI Scope"
 
-#: src/lib/film.cc:2048
+#: src/lib/film.cc:2049
 msgid "DCP"
 msgstr "DCP"
 
-#: src/lib/film.cc:2045
+#: src/lib/film.cc:2046
 #, c++-format
 msgid "DCP (via {})"
 msgstr "DCP (via {})"
 
-#: src/lib/dcp_subtitle_content.cc:138
+#: src/lib/dcp_subtitle_content.cc:142
 msgid "DCP XML subtitles"
 msgstr "DCP XML ondertitels"
 
@@ -870,7 +870,7 @@ msgstr "DCP zal afspelen met %.1f%% van de content-snelheid.\n"
 msgid "DCP will use every other frame of the content.\n"
 msgstr "DCP zal om het andere frame van de content gebruiken.\n"
 
-#: src/lib/film.cc:1857
+#: src/lib/film.cc:1858
 msgid ""
 "DCP-o-matic had to set your container to 1920x1080 as it's the only one that "
 "can be used with MPEG2 encoding."
@@ -878,7 +878,7 @@ msgstr ""
 "DCP-o-matic moest uw container instellen op 1920x1080, omdat dit de enige is "
 "die kan worden gebruikt met MPEG2-codering."
 
-#: src/lib/film.cc:1861
+#: src/lib/film.cc:1862
 msgid ""
 "DCP-o-matic had to set your film to 2D as 3D is not yet supported with MPEG2 "
 "encoding."
@@ -886,7 +886,7 @@ msgstr ""
 "DCP-o-matic moest uw film op 2D instellen, omdat 3D nog niet wordt "
 "ondersteund met MPEG2-codering."
 
-#: src/lib/film.cc:1865
+#: src/lib/film.cc:1866
 msgid ""
 "DCP-o-matic set your container to DCI Flat as it was previously 1920x1080 "
 "and that is not a standard ratio with JPEG2000 encoding."
@@ -903,7 +903,7 @@ msgstr "Datasat AP20 of AP25"
 msgid "De-interlacing"
 msgstr "Deinterlacing"
 
-#: src/lib/config.cc:1233
+#: src/lib/config.cc:1225
 #, c++-format
 msgid ""
 "Dear Projectionist\n"
@@ -986,7 +986,7 @@ msgstr "E-mail probleemrapport"
 msgid "Email problem report for {}"
 msgstr "E-mail probleemrapport voor {}"
 
-#: src/lib/dcp_film_encoder.cc:120 src/lib/ffmpeg_film_encoder.cc:134
+#: src/lib/dcp_film_encoder.cc:114 src/lib/ffmpeg_film_encoder.cc:134
 msgid "Encoding"
 msgstr "Encoderen"
 
@@ -1028,7 +1028,7 @@ msgstr "Onderzoeken ondertitels"
 msgid "Examining subtitles and closed captions"
 msgstr "Onderzoeken ondertitels en closed captions"
 
-#: src/lib/subtitle_film_encoder.cc:106
+#: src/lib/subtitle_film_encoder.cc:104
 msgid "Extracting"
 msgstr "Uitpakken"
 
@@ -1118,7 +1118,7 @@ msgstr "Volledige lengte in video frames bij DCP-snelheid"
 msgid "Full length in video frames at content rate"
 msgstr "Volledige lengte in video frames bij content-snelheid"
 
-#: src/lib/j2k_encoder.cc:280
+#: src/lib/j2k_encoder.cc:282
 msgid ""
 "GPU acceleration is enabled but the grok decoder is not working.  Please "
 "check your configuration and license, and ensure that you are connected to "
@@ -1211,7 +1211,7 @@ msgstr "Het is onbekend hoe deze fout is ontstaan.  {}"
 msgid "JEDEC P22"
 msgstr "JEDEC P22"
 
-#: src/lib/config.cc:422 src/lib/config.cc:1230
+#: src/lib/config.cc:414 src/lib/config.cc:1222
 msgid "KDM delivery: $CPL_NAME"
 msgstr "KDM-levering: $CPL_NAME"
 
@@ -1296,19 +1296,19 @@ msgstr "Midden-zijkant decoder"
 msgid "Misc"
 msgstr "Diversen"
 
-#: src/lib/dcp_examiner.cc:198
+#: src/lib/dcp_examiner.cc:196
 msgid "Mismatched audio channel counts in DCP"
 msgstr "Ongelijke aantallen audio-kanalen in DCP"
 
-#: src/lib/dcp_examiner.cc:206
+#: src/lib/dcp_examiner.cc:204
 msgid "Mismatched audio sample rates in DCP"
 msgstr "Ongelijke audio sample rates in DCP"
 
-#: src/lib/dcp_examiner.cc:167
+#: src/lib/dcp_examiner.cc:165
 msgid "Mismatched frame rates in DCP"
 msgstr "Ongelijke frame rates in DCP"
 
-#: src/lib/dcp_examiner.cc:174
+#: src/lib/dcp_examiner.cc:172
 msgid "Mismatched video sizes in DCP"
 msgstr "Ongelijke beeldgroottes in DCP"
 
@@ -1329,11 +1329,11 @@ msgstr "Mono"
 msgid "Motion compensating deinterlacer"
 msgstr "Motion compensating deinterlacer"
 
-#: src/lib/dcp_content.cc:212
+#: src/lib/dcp_content.cc:215
 msgid "No ASSETMAP or ASSETMAP.xml file found: is this a DCP?"
 msgstr "Geen ASSETMAP of ASSETMAP.xml bestand gevonden: is dit een DCP?"
 
-#: src/lib/dcp_examiner.cc:115
+#: src/lib/dcp_examiner.cc:113
 msgid "No CPLs found in DCP"
 msgstr "Geen CPL's gevonden in DCP"
 
@@ -1826,22 +1826,22 @@ msgstr ""
 "De harddisk waarop de film is opgeslagen heeft te weinig vrije ruimte.  Maak "
 "meer ruimte vrij en probeer het opnieuw."
 
-#: src/lib/playlist.cc:244
+#: src/lib/playlist.cc:242
 #, c++-format
 msgid "The file {} has been moved {} milliseconds earlier."
 msgstr "Het bestand {} is naar {} milliseconden eerder verplaatst."
 
-#: src/lib/playlist.cc:239
+#: src/lib/playlist.cc:237
 #, c++-format
 msgid "The file {} has been moved {} milliseconds later."
 msgstr "Het bestand {} is naar {} milliseconden later verplaatst."
 
-#: src/lib/playlist.cc:264
+#: src/lib/playlist.cc:262
 #, c++-format
 msgid "The file {} has been trimmed by {} milliseconds less."
 msgstr "Van het bestand {} is {} milliseconden minder weggeknipt."
 
-#: src/lib/playlist.cc:259
+#: src/lib/playlist.cc:257
 #, c++-format
 msgid "The file {} has been trimmed by {} milliseconds more."
 msgstr "Van het bestand {} is {} milliseconden meer weggeknipt."
@@ -1882,7 +1882,7 @@ msgstr ""
 "op voorwaarde dat uw doelprojectiesystemen de door u gekozen DCP frame rate "
 "ondersteunen."
 
-#: src/lib/dcp_content.cc:760
+#: src/lib/dcp_content.cc:771
 msgid "There is no video in this DCP"
 msgstr "Deze DCP heeft geen video"
 
@@ -1915,9 +1915,9 @@ msgid ""
 "again."
 msgstr ""
 "Deze fout is waarschijnlijk opgetreden omdat u de 32-bits versie van {} "
-"gebruikt en probeert te veel encoderings-threads te gebruiken.  Verminder a."
-"u.b. het 'Aantal threads dat {} moet gebruiken' in het \"Algemeen\"-tabblad "
-"bij Voorkeuren en probeer het opnieuw."
+"gebruikt en probeert te veel encoderings-threads te gebruiken.  Verminder "
+"a.u.b. het 'Aantal threads dat {} moet gebruiken' in het \"Algemeen\"-"
+"tabblad bij Voorkeuren en probeer het opnieuw."
 
 #: src/lib/job.cc:155
 #, c++-format
@@ -1937,7 +1937,7 @@ msgstr ""
 "met de rechtermuisknop op de content te klikken en \"Voeg KDM toe\" te "
 "kiezen."
 
-#: src/lib/film.cc:556
+#: src/lib/film.cc:557
 #, c++-format
 msgid ""
 "This film was created with a newer version of {}, and it cannot be loaded "
@@ -1946,7 +1946,7 @@ msgstr ""
 "Deze film is aangemaakt met een nieuwere versie van {} en kan niet met deze "
 "versie geladen worden.  Sorry!"
 
-#: src/lib/film.cc:537
+#: src/lib/film.cc:538
 #, c++-format
 msgid ""
 "This film was created with an older version of {}, and unfortunately it "
@@ -2007,7 +2007,7 @@ msgstr "Onbekend"
 msgid "Unknown error"
 msgstr "Onbekende fout"
 
-#: src/lib/ffmpeg_decoder.cc:384
+#: src/lib/ffmpeg_decoder.cc:438
 #, c++-format
 msgid "Unrecognised audio sample format ({})"
 msgstr "Niet-herkend audio sample-formaat ({})"
@@ -2144,7 +2144,7 @@ msgstr ""
 "bioscoop naar de resulterende DCP luisteren om er zeker van te zijn dat het "
 "goed klinkt."
 
-#: src/lib/film.cc:1794
+#: src/lib/film.cc:1795
 msgid ""
 "You have more than one piece of Atmos content, and they do not have the same "
 "frame rate.  You must remove some Atmos content."
@@ -2224,13 +2224,13 @@ msgstr ""
 "Uw audio-niveau is zeer hoog (op {}).  U kunt beter de versterking van uw "
 "audio-content verminderen."
 
-#: src/lib/playlist.cc:235
+#: src/lib/playlist.cc:233
 msgid ""
 "Your project contains video content that was not aligned to a frame boundary."
 msgstr ""
 "Uw project bevat video-content die niet was uitgelijnd op een frame-grens."
 
-#: src/lib/playlist.cc:255
+#: src/lib/playlist.cc:253
 msgid ""
 "Your project contains video content whose trim was not aligned to a frame "
 "boundary."
@@ -2246,7 +2246,7 @@ msgstr "[bewegende beelden]"
 msgid "[still]"
 msgstr "[stilstaand beeld]"
 
-#: src/lib/dcp_subtitle_content.cc:132 src/lib/fcpxml_content.cc:86
+#: src/lib/dcp_subtitle_content.cc:136 src/lib/fcpxml_content.cc:86
 #: src/lib/string_text_file_content.cc:111
 msgid "[subtitles]"
 msgstr "[ondertitels]"
@@ -2348,11 +2348,11 @@ msgid "h"
 msgstr "h"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:717
+#: src/lib/dcp_content.cc:728
 msgid "it has a different frame rate to the film."
 msgstr "hij heeft een andere frame rate dan de film."
 
-#: src/lib/dcp_content.cc:799
+#: src/lib/dcp_content.cc:810
 #, c++-format
 msgid ""
 "it has a different number of audio channels than the project; set the "
@@ -2362,7 +2362,7 @@ msgstr ""
 "in op {} kanalen."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:835
+#: src/lib/dcp_content.cc:846
 msgid ""
 "it has a start trim so its subtitles or closed captions must be re-written."
 msgstr ""
@@ -2370,42 +2370,42 @@ msgstr ""
 "captions moeten opnieuw geschreven worden."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:770
+#: src/lib/dcp_content.cc:781
 msgid "it is 2K and the film is 4K."
 msgstr "hij is 2K en de film is 4K."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:767
+#: src/lib/dcp_content.cc:778
 msgid "it is 4K and the film is 2K."
 msgstr "hij is 4K en de film is 2K."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:705
+#: src/lib/dcp_content.cc:716
 msgid "it is Interop and the film is set to SMPTE."
 msgstr "hij is Interop en de film is SMPTE."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:709
+#: src/lib/dcp_content.cc:720
 msgid "it is SMPTE and the film is set to Interop."
 msgstr "hij is SMPTE en de film is Interop."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:810
+#: src/lib/dcp_content.cc:821
 msgid "it overlaps other audio content."
 msgstr "hij overlapt met andere audio-content."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:845
+#: src/lib/dcp_content.cc:856
 msgid "it overlaps other text content."
 msgstr "hij overlapt met andere tekst-content."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:785
+#: src/lib/dcp_content.cc:796
 msgid "it overlaps other video content."
 msgstr "hij overlapt met andere video-content."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:740
+#: src/lib/dcp_content.cc:751
 msgid ""
 "its reel lengths differ from those in the film; set the reel mode to 'split "
 "by video content'."
@@ -2414,7 +2414,7 @@ msgstr ""
 "'splits per video-content'."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:775
+#: src/lib/dcp_content.cc:786
 msgid "its video frame size differs from the film's."
 msgstr "zijn video-beeldgrootte verschilt van die in de film."
 
@@ -2432,7 +2432,7 @@ msgid "name"
 msgstr "naam"
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:829
+#: src/lib/dcp_content.cc:840
 msgid ""
 "one of its closed caption reels has a non-zero entry point so it must be re-"
 "written."
@@ -2441,7 +2441,7 @@ msgstr ""
 "die moet opnieuw geschreven worden."
 
 #. TRANSLATORS: this string will follow "Cannot reference this DCP: "
-#: src/lib/dcp_content.cc:823
+#: src/lib/dcp_content.cc:834
 msgid ""
 "one of its subtitle reels has a non-zero entry point so it must be re-"
 "written."
@@ -2480,7 +2480,7 @@ msgstr "{} ({} GB) [{}]"
 msgid "{} [Atmos]"
 msgstr "{} [Atmos]"
 
-#: src/lib/dcp_content.cc:381
+#: src/lib/dcp_content.cc:389
 #, c++-format
 msgid "{} [DCP]"
 msgstr "{} [DCP]"
@@ -2509,7 +2509,7 @@ msgstr ""
 "{} kan het bestand {} ({}) niet openen.  Misschien bestaat het niet of wordt "
 "het formaat niet ondersteund."
 
-#: src/lib/film.cc:1831
+#: src/lib/film.cc:1832
 #, c++-format
 msgid ""
 "{} had to change your settings for referring to DCPs as OV.  Please review "
@@ -2519,7 +2519,7 @@ msgstr ""
 "Controleer a.u.b. deze instellingen om er zeker van te zijn dat ze zijn "
 "zoals u wilt."
 
-#: src/lib/film.cc:1797
+#: src/lib/film.cc:1798
 #, c++-format
 msgid ""
 "{} had to change your settings so that the film's frame rate is the same as "
@@ -2528,7 +2528,7 @@ msgstr ""
 "{} moest uw instellingen wijzigen zodat de frame rate van de film hetzelfde "
 "is als die van uw Atmos-content."
 
-#: src/lib/film.cc:1844
+#: src/lib/film.cc:1845
 #, c++-format
 msgid ""
 "{} had to remove one of your custom reel boundaries as it no longer lies "
@@ -2537,7 +2537,7 @@ msgstr ""
 "{} moest een van uw aangepaste reel-grenzen verwijderen omdat deze niet meer "
 "binnen de film valt."
 
-#: src/lib/film.cc:1842
+#: src/lib/film.cc:1843
 #, c++-format
 msgid ""
 "{} had to remove some of your custom reel boundaries as they no longer lie "
@@ -2552,7 +2552,7 @@ msgid "{} no longer supports the `{}' filter, so it has been turned off."
 msgstr ""
 "{} ondersteunt het filter `{}' niet langer, daarom is het uitgeschakeld."
 
-#: src/lib/config.cc:432 src/lib/config.cc:1245
+#: src/lib/config.cc:424 src/lib/config.cc:1237
 #, c++-format
 msgid "{} notification"
 msgstr "{} notificatie"

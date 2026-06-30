@@ -12,7 +12,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: libdcpomatic-wx\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-04-21 17:39+0200\n"
+"POT-Creation-Date: 2026-06-30 20:55+0200\n"
 "PO-Revision-Date: 2026-05-17 10:50+0800\n"
 "Last-Translator: Dian Li <xslidian@gmail.com>\n"
 "Language-Team: Chinese Simplified (Hanyuan branch)\n"
@@ -103,7 +103,7 @@ msgstr "%s %s"
 msgid "%s Preferences"
 msgstr "%s 偏好设置"
 
-#: src/wx/film_name_location_dialog.cc:155
+#: src/wx/film_name_location_dialog.cc:156
 #, c-format
 msgid "%s already exists as a file, so you cannot use it for a film."
 msgstr "%s 文件已经存在，所以不能用它创建工程。"
@@ -223,7 +223,7 @@ msgstr "上下眼(3D)"
 msgid "4 - L/C/R/Lfe"
 msgstr "4声道—左/中/右/低音"
 
-#: src/wx/dcp_panel.cc:1012
+#: src/wx/dcp_panel.cc:1006
 msgid "48kHz"
 msgstr "48kHz"
 
@@ -239,7 +239,7 @@ msgstr "6声道—5.1声道"
 msgid "8 - 5.1/HI/VI"
 msgstr "8声道—5.1+听力障碍声道/视力障碍声道"
 
-#: src/wx/dcp_panel.cc:1013
+#: src/wx/dcp_panel.cc:1007
 msgid "96kHz"
 msgstr "96kHz"
 
@@ -405,11 +405,11 @@ msgstr "添加 DCP…"
 msgid "Add DKDM folder"
 msgstr "添加DKDM文件夹"
 
-#: src/wx/content_menu.cc:113
+#: src/wx/content_menu.cc:112
 msgid "Add KDM..."
 msgstr "添加 KDM..."
 
-#: src/wx/content_menu.cc:114
+#: src/wx/content_menu.cc:113
 msgid "Add OV..."
 msgstr "添加 OV..."
 
@@ -523,7 +523,7 @@ msgstr "高级KDM选项"
 msgid "Advanced content settings"
 msgstr "高级内容设置"
 
-#: src/wx/content_menu.cc:111
+#: src/wx/content_menu.cc:110
 msgid "Advanced settings..."
 msgstr "高级设置..."
 
@@ -569,7 +569,7 @@ msgstr "允许使用SMPTE Bv2.0"
 msgid "Alpha   0"
 msgstr "透明度 0"
 
-#: src/wx/about_dialog.cc:184
+#: src/wx/about_dialog.cc:186
 msgid "Also supported by"
 msgstr "其他支持者"
 
@@ -681,7 +681,7 @@ msgstr "自动"
 msgid "Auto crop"
 msgstr "自动裁切"
 
-#: src/wx/content_menu.cc:108
+#: src/wx/content_menu.cc:107
 msgid "Auto-crop..."
 msgstr "自动裁切..."
 
@@ -807,7 +807,7 @@ msgstr "链"
 msgid "Channel gain"
 msgstr "通道增益"
 
-#: src/wx/audio_dialog.cc:110 src/wx/dcp_panel.cc:981
+#: src/wx/audio_dialog.cc:110 src/wx/dcp_panel.cc:975
 msgid "Channels"
 msgstr "通道"
 
@@ -823,7 +823,7 @@ msgstr "启动时检查测试版软件更新"
 msgid "Check for updates on startup"
 msgstr "启动时检查软件更新"
 
-#: src/wx/content_menu.cc:116
+#: src/wx/content_menu.cc:115
 msgid "Choose CPL"
 msgstr "选择CPL"
 
@@ -831,7 +831,7 @@ msgstr "选择CPL"
 msgid "Choose a DCP folder"
 msgstr "选择一个DCP文件夹"
 
-#: src/wx/content_menu.cc:387
+#: src/wx/content_menu.cc:386
 msgid "Choose a file"
 msgstr "选择一个文件"
 
@@ -839,7 +839,7 @@ msgstr "选择一个文件"
 msgid "Choose a file or files"
 msgstr "选择一个或多个文件"
 
-#: src/wx/content_menu.cc:383 src/wx/content_panel.cc:634
+#: src/wx/content_menu.cc:382 src/wx/content_panel.cc:634
 msgid "Choose a folder"
 msgstr "选择一个文件夹"
 
@@ -956,7 +956,7 @@ msgstr "坐标轴|Y"
 msgid "Copy as name"
 msgstr "复制名称"
 
-#: src/wx/content_menu.cc:109
+#: src/wx/content_menu.cc:108
 msgid "Copy settings from another project..."
 msgstr "从另一个项目复制设置…"
 
@@ -976,7 +976,7 @@ msgstr "CoreAudio"
 msgid "Could not analyse audio."
 msgstr "无法分析音频。"
 
-#: src/wx/text_panel.cc:868
+#: src/wx/text_panel.cc:870
 msgid "Could not analyse subtitles."
 msgstr "无法分析字幕。"
 
@@ -985,7 +985,7 @@ msgstr "无法分析字幕。"
 msgid "Could not find serial number %s"
 msgstr "无法找到序列号 %s"
 
-#: src/wx/content_menu.cc:667
+#: src/wx/content_menu.cc:666
 #, c-format
 msgid "Could not find this content in the project \"%s\"."
 msgstr "无法在项目“%s”中找到此内容。"
@@ -995,7 +995,7 @@ msgstr "无法在项目“%s”中找到此内容。"
 msgid "Could not import certificate (%s)"
 msgstr "无法导入证书文件 (%s)"
 
-#: src/wx/content_menu.cc:447
+#: src/wx/content_menu.cc:446
 msgid "Could not load KDM"
 msgstr "无法加载 KDM"
 
@@ -1017,7 +1017,7 @@ msgstr "无法播放内容"
 msgid "Could not read DCP (%error)"
 msgstr "无法读取 DCP (%error)"
 
-#: src/wx/gl_video_view.cc:131
+#: src/wx/gl_video_view.cc:132
 #, c-format
 msgid "Could not read DCP: %s"
 msgstr "无法读取 DCP: %s"
@@ -1047,7 +1047,7 @@ msgstr "无法从 Qube 服务器读取证书。"
 msgid "Could not read key file; file is too long (%s)"
 msgstr "无法读取Key文件，因为文件过长 (%s)"
 
-#: src/wx/film_viewer.cc:638 src/wx/film_viewer.cc:680
+#: src/wx/film_viewer.cc:641 src/wx/film_viewer.cc:683
 msgid ""
 "Could not set up audio output.  There will be no audio during the preview."
 msgstr "不能设置音频输出。因此预览时将没有音频输出。"
@@ -1060,7 +1060,7 @@ msgstr "封面"
 msgid "Create KDMs anyway"
 msgstr "强制制作DCP"
 
-#: src/wx/film_name_location_dialog.cc:51
+#: src/wx/film_name_location_dialog.cc:52
 msgid "Create in folder"
 msgstr "创建文件夹"
 
@@ -1208,7 +1208,7 @@ msgstr "默认静止图像持续时间(黑场)"
 msgid "Defaults"
 msgstr "默认"
 
-#: src/wx/export_subtitles_dialog.cc:61
+#: src/wx/export_subtitles_dialog.cc:62
 msgid "Define font in output and export font file"
 msgstr "定义输出和导出字体文件的字体"
 
@@ -1320,7 +1320,7 @@ msgid "Edit screen"
 msgstr "编辑放映厅服务器（证书）"
 
 #: src/wx/audio_mapping_view.cc:90 src/wx/content_advanced_dialog.cc:75
-#: src/wx/dcp_panel.cc:996 src/wx/language_tag_widget.cc:51
+#: src/wx/dcp_panel.cc:990 src/wx/language_tag_widget.cc:51
 #: src/wx/recipients_panel.cc:71 src/wx/region_subtag_widget.cc:52
 #: src/wx/video_panel.cc:159 src/wx/video_panel.cc:170
 #: src/wx/editable_list.h:149
@@ -1468,11 +1468,11 @@ msgstr "文件名称"
 msgid "Filename format"
 msgstr "文件名格式"
 
-#: src/wx/film_name_location_dialog.cc:48
+#: src/wx/film_name_location_dialog.cc:49
 msgid "Film name"
 msgstr "工程名称"
 
-#: src/wx/content_menu.cc:653
+#: src/wx/content_menu.cc:652
 msgid "Film to copy settings from"
 msgstr "从影片复制设置"
 
@@ -1489,7 +1489,7 @@ msgid ""
 "Find integrated loudness, true peak and loudness range when analysing audio"
 msgstr "发现响度，峰值和响度范围不合标准"
 
-#: src/wx/content_menu.cc:105
+#: src/wx/content_menu.cc:104
 msgid "Find missing..."
 msgstr "查找遗失的内容..."
 
@@ -1594,7 +1594,7 @@ msgstr "起始"
 msgid "From address"
 msgstr "发件人地址"
 
-#: src/wx/film_name_location_dialog.cc:66
+#: src/wx/film_name_location_dialog.cc:67
 msgid "From template"
 msgstr "从模板"
 
@@ -1870,7 +1870,7 @@ msgstr "JACK"
 msgid "JPEG2000 comment"
 msgstr "JPEG2000注释"
 
-#: src/wx/content_menu.cc:104
+#: src/wx/content_menu.cc:103
 msgid "Join"
 msgstr "创建"
 
@@ -1916,7 +1916,7 @@ msgstr "LEQ(m) %.2fdB"
 msgid "Label"
 msgstr "标签"
 
-#: src/wx/dcp_panel.cc:994 src/wx/dcp_text_track_dialog.cc:35
+#: src/wx/dcp_panel.cc:988 src/wx/dcp_text_track_dialog.cc:35
 #: src/wx/text_panel.cc:166
 msgid "Language"
 msgstr "语言"
@@ -2359,7 +2359,7 @@ msgid "Non-standard"
 msgstr "非标准设置（高级)"
 
 #: src/wx/content_advanced_dialog.cc:74 src/wx/content_advanced_dialog.cc:155
-#: src/wx/content_advanced_dialog.cc:163 src/wx/dcp_panel.cc:1099
+#: src/wx/content_advanced_dialog.cc:163 src/wx/dcp_panel.cc:1093
 #: src/wx/subtitle_appearance_dialog.cc:151
 msgid "None"
 msgstr "无"
@@ -2473,11 +2473,11 @@ msgstr "只有选择烧录字幕才能显示轮廓线。"
 msgid "Output"
 msgstr "输出"
 
-#: src/wx/export_subtitles_dialog.cc:65 src/wx/export_video_file_dialog.cc:98
+#: src/wx/export_subtitles_dialog.cc:66 src/wx/export_video_file_dialog.cc:98
 msgid "Output file"
 msgstr "输出文件"
 
-#: src/wx/export_subtitles_dialog.cc:70
+#: src/wx/export_subtitles_dialog.cc:71
 msgid "Output folder"
 msgstr "输出文件夹"
 
@@ -2528,7 +2528,7 @@ msgstr "粘贴字幕和位置设置"
 msgid "Paste video settings"
 msgstr "粘贴视频设置"
 
-#: src/wx/about_dialog.cc:176
+#: src/wx/about_dialog.cc:178
 msgid "Patrons"
 msgstr "赞助者"
 
@@ -2602,7 +2602,7 @@ msgstr "预发布(点映版)"
 msgid "Previous"
 msgstr "上一页"
 
-#: src/wx/dcp_panel.cc:990
+#: src/wx/dcp_panel.cc:984
 msgid "Processor"
 msgstr "处理方式"
 
@@ -2614,7 +2614,7 @@ msgstr "产品名称"
 msgid "Product version"
 msgstr "产品版本"
 
-#: src/wx/content_menu.cc:110
+#: src/wx/content_menu.cc:109
 msgid "Properties..."
 msgstr "属性..."
 
@@ -2660,7 +2660,7 @@ msgstr "分级"
 msgid "Re-encode JPEG2000 data from input"
 msgstr "对输入内容重新进行JPEG2000编码"
 
-#: src/wx/content_menu.cc:106
+#: src/wx/content_menu.cc:105
 msgid "Re-examine..."
 msgstr "重新检查..."
 
@@ -2746,7 +2746,7 @@ msgstr "发布区域"
 msgid "Release territory for this DCP"
 msgstr "此DCP的发布区域"
 
-#: src/wx/certificate_chain_editor.cc:91 src/wx/content_menu.cc:120
+#: src/wx/certificate_chain_editor.cc:91 src/wx/content_menu.cc:119
 #: src/wx/content_panel.cc:284 src/wx/full_language_tag_dialog.cc:71
 #: src/wx/recipients_panel.cc:73 src/wx/templates_dialog.cc:61
 #: src/wx/editable_list.h:157
@@ -2794,7 +2794,7 @@ msgstr "重复"
 msgid "Repeat Content"
 msgstr "重复内容"
 
-#: src/wx/content_menu.cc:103
+#: src/wx/content_menu.cc:102
 msgid "Repeat..."
 msgstr "重复..."
 
@@ -2888,7 +2888,7 @@ msgstr "和项目相同的位置"
 msgid "Sample peak is %.2fdB at %s on %s"
 msgstr "样本峰值为 %.2fdB 位于 %s, %s"
 
-#: src/wx/dcp_panel.cc:986
+#: src/wx/dcp_panel.cc:980
 msgid "Sample rate"
 msgstr "采样率"
 
@@ -2973,7 +2973,7 @@ msgstr "选择文件以输出"
 msgid "Select File To Import"
 msgstr "选择文件以导入"
 
-#: src/wx/content_menu.cc:437
+#: src/wx/content_menu.cc:436
 msgid "Select KDM"
 msgstr "选择KDM"
 
@@ -2985,7 +2985,7 @@ msgstr "选择密钥文件"
 msgid "Select Key file"
 msgstr "选择密钥文件"
 
-#: src/wx/content_menu.cc:491
+#: src/wx/content_menu.cc:490
 msgid "Select OV"
 msgstr "选择OV"
 
@@ -3005,7 +3005,7 @@ msgstr "选择配置文件"
 msgid "Select debug log file"
 msgstr "选择debug日志文件"
 
-#: src/wx/export_subtitles_dialog.cc:66 src/wx/export_video_file_dialog.cc:104
+#: src/wx/export_subtitles_dialog.cc:67 src/wx/export_video_file_dialog.cc:104
 msgid "Select output file"
 msgstr "选择输出文件"
 
@@ -3073,11 +3073,11 @@ msgstr "使用系统字体…"
 msgid "Set language"
 msgstr "设置语言"
 
-#: src/wx/content_menu.cc:117
+#: src/wx/content_menu.cc:116
 msgid "Set project DCP settings from this DCP"
 msgstr "根据这个DCP的设置配置项目DCP"
 
-#: src/wx/content_menu.cc:118
+#: src/wx/content_menu.cc:117
 msgid "Set project markers from this DCP"
 msgstr "从该DCP的设置 配置项目DCP"
 
@@ -3109,7 +3109,7 @@ msgstr "显示"
 msgid "Show experimental audio processors"
 msgstr "显示实验音频配置"
 
-#: src/wx/audio_panel.cc:75 src/wx/dcp_panel.cc:998
+#: src/wx/audio_panel.cc:75 src/wx/dcp_panel.cc:992
 msgid "Show graph of audio levels..."
 msgstr "显示音频电平图…"
 
@@ -3258,6 +3258,10 @@ msgstr "流"
 msgid "Studio"
 msgstr "片厂"
 
+#: src/wx/export_subtitles_dialog.cc:49
+msgid "SubRip (SRT)"
+msgstr ""
+
 #: src/wx/full_config_dialog.cc:683 src/wx/kdm_email_preferences_page.cc:71
 msgid "Subject"
 msgstr "主题"
@@ -3270,7 +3274,7 @@ msgstr "主题通用名称"
 msgid "Subject organization name"
 msgstr "主体组织名称"
 
-#: src/wx/about_dialog.cc:180
+#: src/wx/about_dialog.cc:182
 msgid "Subscribers"
 msgstr "订阅者"
 
@@ -3283,11 +3287,16 @@ msgstr "字幕外观"
 msgid "Subtitle asset %asset_id has a non-zero <EntryPoint>."
 msgstr "字幕文件 %asset_id有非零 <EntryPoint>。"
 
-#: src/wx/export_subtitles_dialog.cc:105
+#: src/wx/export_subtitles_dialog.cc:110
 msgid "Subtitle files (.mxf)|*.mxf"
 msgstr "字幕文件 (.mxf)|*.mxf"
 
-#: src/wx/export_subtitles_dialog.cc:105
+#: src/wx/export_subtitles_dialog.cc:113
+#, fuzzy
+msgid "Subtitle files (.srt)|*.srt"
+msgstr "字幕文件 (.mxf)|*.mxf"
+
+#: src/wx/export_subtitles_dialog.cc:107
 msgid "Subtitle files (.xml)|*.xml"
 msgstr "字幕文件 (.xml)|*.xml"
 
@@ -3356,7 +3365,7 @@ msgstr "测试邮件已发送。"
 msgid "Test version"
 msgstr "测试版"
 
-#: src/wx/about_dialog.cc:251
+#: src/wx/about_dialog.cc:253
 msgid "Tested by"
 msgstr "测试人员和机构"
 
@@ -3599,7 +3608,7 @@ msgstr "资产映射中 ID 为 %asset_id 的资产实际上具有 ID %other_asse
 msgid "The closed caption asset %asset_id has no <EntryPoint> tag."
 msgstr "隐藏式字幕资产 %asset_id 没有 <EntryPoint> 标记。"
 
-#: src/wx/film_name_location_dialog.cc:146
+#: src/wx/film_name_location_dialog.cc:147
 #, c-format
 msgid ""
 "The directory %s already exists and is not empty.  Are you sure you want to "
@@ -3809,11 +3818,11 @@ msgid ""
 "There is already a template with this name.  Do you want to overwrite it?"
 msgstr "已存在同名模板，是否覆盖？"
 
-#: src/wx/film_viewer.cc:179
+#: src/wx/film_viewer.cc:181
 msgid "There is not enough free memory to do that."
 msgstr "没有足够的可用内存来执行此操作。"
 
-#: src/wx/film_viewer.cc:362
+#: src/wx/film_viewer.cc:365
 msgid ""
 "There was a problem starting audio playback.  Please try another audio "
 "output device in Preferences."
@@ -3836,7 +3845,7 @@ msgstr ""
 msgid "This DCP uses the Interop standard, but it should be made with SMPTE."
 msgstr "此DCP使用Interop标准，但应使用SMPTE制作。"
 
-#: src/wx/content_menu.cc:472
+#: src/wx/content_menu.cc:471
 msgid ""
 "This KDM was made for one of the CPLs in this DCP, but not the currently "
 "selected one.  To play the currently-selected CPL you will need a different "
@@ -3845,7 +3854,7 @@ msgstr ""
 "此KDM是为此DCP中的一个CPL制作的，但不是当前选择的这一个。要播放当前选择的"
 "CPL，您将需要对应的KDM。"
 
-#: src/wx/content_menu.cc:467
+#: src/wx/content_menu.cc:466
 msgid "This KDM was not made for this DCP.  You will need a different one."
 msgstr "这个KDM不是为这个DCP制作的。请更换KDM。"
 
@@ -3998,7 +4007,7 @@ msgstr "顶部"
 msgid "Track"
 msgstr "轨道"
 
-#: src/wx/about_dialog.cc:172
+#: src/wx/about_dialog.cc:174
 msgid "Translated by"
 msgstr "翻译者"
 
@@ -4234,7 +4243,7 @@ msgstr "DCP验证"
 msgid "Verify"
 msgstr "验证"
 
-#: src/wx/content_menu.cc:425
+#: src/wx/content_menu.cc:424
 msgid "Verify DCP"
 msgstr "验证DCP"
 
@@ -4242,7 +4251,7 @@ msgstr "验证DCP"
 msgid "Verify picture asset details"
 msgstr "验证图像资产详细信息"
 
-#: src/wx/content_menu.cc:107
+#: src/wx/content_menu.cc:106
 msgid "Verify..."
 msgstr "验证..."
 
@@ -4339,7 +4348,7 @@ msgstr "将所有KDM保存到同一个文件夹中"
 msgid "Write each audio channel to its own stream"
 msgstr "将每个音频通道写入自己的流"
 
-#: src/wx/export_subtitles_dialog.cc:53 src/wx/export_video_file_dialog.cc:83
+#: src/wx/export_subtitles_dialog.cc:54 src/wx/export_video_file_dialog.cc:83
 msgid "Write reels into separate files"
 msgstr "将分卷写入到单独的文件中"
 
@@ -4440,11 +4449,11 @@ msgstr "和1个警告。"
 msgid "cinema"
 msgstr "影院"
 
-#: src/wx/text_panel.cc:596
+#: src/wx/text_panel.cc:601
 msgid "closed captions"
 msgstr "隐藏式字幕"
 
-#: src/wx/text_panel.cc:595
+#: src/wx/text_panel.cc:600
 msgid "closed subtitles"
 msgstr "开放式字幕"
 
@@ -4534,11 +4543,11 @@ msgstr "未启用"
 msgid "number of reels"
 msgstr "分卷数量"
 
-#: src/wx/text_panel.cc:593
+#: src/wx/text_panel.cc:598
 msgid "open captions"
 msgstr "隐藏式字幕"
 
-#: src/wx/text_panel.cc:592
+#: src/wx/text_panel.cc:597
 msgid "open subtitles"
 msgstr "开放式字幕"
 
