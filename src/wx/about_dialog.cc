@@ -161,7 +161,7 @@ AboutDialog::AboutDialog(wxWindow* parent)
 		translated_by.Add(char_to_wx("Tiago Casal Ribeiro"));
 		translated_by.Add(char_to_wx("Davide Sanvito"));
 		translated_by.Add(char_to_wx("Marek Skrzelowski"));
-		translated_by.Add(char_to_wx("Danbo Song"));
+		translated_by.Add(char_to_wx("Steven Song"));
 		translated_by.Add(char_to_wx("Martin Srebotnjak"));
 		translated_by.Add(char_to_wx("Laurent Tenzer"));
 		translated_by.Add(char_to_wx("Michał Tomaszewski"));
