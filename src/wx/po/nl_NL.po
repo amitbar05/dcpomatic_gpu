@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: DCP-o-matic\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-06-30 20:55+0200\n"
-"PO-Revision-Date: 2026-04-21 18:13+0200\n"
+"PO-Revision-Date: 2026-07-01 02:06+0200\n"
 "Last-Translator: Rob van Nieuwkerk <dcpomatic-translations@berrymount.nl>\n"
 "Language-Team: Rob van Nieuwkerk <dcpomatic-translations@berrymount.nl>\n"
 "Language: nl_NL\n"
@@ -3313,7 +3313,7 @@ msgstr "Studio"
 
 #: src/wx/export_subtitles_dialog.cc:49
 msgid "SubRip (SRT)"
-msgstr ""
+msgstr "SubRip (SRT)"
 
 #: src/wx/full_config_dialog.cc:683 src/wx/kdm_email_preferences_page.cc:71
 msgid "Subject"
@@ -3345,9 +3345,8 @@ msgid "Subtitle files (.mxf)|*.mxf"
 msgstr "Ondertitelbestanden (.mxf)|*.mxf"
 
 #: src/wx/export_subtitles_dialog.cc:113
-#, fuzzy
 msgid "Subtitle files (.srt)|*.srt"
-msgstr "Ondertitelbestanden (.mxf)|*.mxf"
+msgstr "Ondertitelbestanden (.srt)|*.srt"
 
 #: src/wx/export_subtitles_dialog.cc:107
 msgid "Subtitle files (.xml)|*.xml"
