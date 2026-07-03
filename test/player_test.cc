@@ -781,6 +781,6 @@ BOOST_AUTO_TEST_CASE(test_fill_audio_at_end)
 	auto film = new_test_film("test_fill_audio_at_end", content);
 	content[0]->set_trim_start(film, ContentTime::from_seconds((60 + 42) * 60));
 
-	make_and_verify_dcp(film, {});// dcp::VerificationNote::Code::MISSING_CPL_METADATA });
+	make_and_verify_dcp(film, {});
 }
 
