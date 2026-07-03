@@ -100,7 +100,7 @@ if [ "$check" == "1" ]; then
     fi
     current=$(git rev-parse HEAD)
     if [ "$current" != "$PRIVATE_GIT" ]; then
-        echo "Unexpected dcpomatic-test-private version"
+        echo "Unexpected dcpomatic-test-private version $current instead of $PRIVATE_GIT"
         exit 1
     fi
     popd
