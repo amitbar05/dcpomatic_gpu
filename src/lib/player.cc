@@ -905,7 +905,14 @@ Player::pass()
 		}
 
 		if (_next_audio_time) {
-			fill_audio(DCPTimePeriod(*_next_audio_time, film->length()));
+			if (*_next_audio_time < film->length()) {
+				fill_audio(DCPTimePeriod(*_next_audio_time, film->length()));
+			} else {
+				/* If _next_audio_time is more than half a frame (at 48kHz) after the end of the
+				 * film, something has gone wrong.
+				 */
+				DCPOMATIC_ASSERT(labs(film->length().get() - _next_audio_time->get()) < 2);
+			}
 		}
 
 		if (_shuffler) {

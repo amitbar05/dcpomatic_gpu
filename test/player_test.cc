@@ -46,6 +46,7 @@
 #include "lib/string_text_file_content.h"
 #include "lib/text_content.h"
 #include "lib/video_content.h"
+#include <dcp/scope_guard.h>
 #include "test.h"
 #include <boost/test/unit_test.hpp>
 #include <boost/algorithm/string.hpp>
@@ -784,3 +785,17 @@ BOOST_AUTO_TEST_CASE(test_fill_audio_at_end)
 	make_and_verify_dcp(film, {});
 }
 
+
+BOOST_AUTO_TEST_CASE(test_fill_audio_at_end_error)
+{
+	boost::filesystem::path copy = "build/test/fill_audio_at_end_error";
+	dcp::filesystem::remove_all(copy);
+	dcp::filesystem::create_directories(copy / "dummy");
+	for (auto i: dcp::filesystem::directory_iterator(TestPaths::private_data() / "fill_audio_at_end_error/dummy")) {
+		dcp::filesystem::copy_file(i, copy / "dummy" / i.path().filename());
+	}
+	dcp::filesystem::copy_file(TestPaths::private_data() / "fill_audio_at_end_error" / "metadata.xml", copy / "metadata.xml");
+	auto film = make_shared<Film>(copy);
+	film->read_metadata();
+	make_and_verify_dcp(film, {});
+}

@@ -3,7 +3,7 @@
 # e.g. --run_tests=foo
 set -e
 
-PRIVATE_GIT="eaa907382be3276e8275858219bd73c816ff5c77"
+PRIVATE_GIT="c7e9c1693ae891f896f3f333f56f64d8b327193f"
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 source $DIR/environment
