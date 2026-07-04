@@ -20,20 +20,15 @@
 
 
 #include "audio_buffers.h"
-#include "audio_mapping.h"
 #include "config.h"
-#include "constants.h"
 #include "cover_sheet.h"
 #include "cross.h"
 #include "dcp_content_type.h"
-#include "dcp_video.h"
 #include "dcpomatic_log.h"
 #include "film.h"
 #include "film_util.h"
 #include "frame_info.h"
 #include "job.h"
-#include "log.h"
-#include "ratio.h"
 #include "reel_writer.h"
 #include "text_content.h"
 #include "util.h"
@@ -44,8 +39,6 @@
 #include <dcp/locale_convert.h>
 #include <dcp/reel_file_asset.h>
 #include <dcp/reel_text_asset.h>
-#include <cerrno>
-#include <cfloat>
 #include <set>
 
 #include "i18n.h"
@@ -55,13 +48,10 @@
 #undef set_key
 
 
-using std::cout;
 using std::dynamic_pointer_cast;
 using std::make_shared;
 using std::max;
-using std::min;
 using std::shared_ptr;
-using std::set;
 using std::string;
 using std::vector;
 using std::weak_ptr;
