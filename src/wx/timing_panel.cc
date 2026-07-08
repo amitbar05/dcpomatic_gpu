@@ -27,15 +27,11 @@
 #include "timecode.h"
 #include "timing_panel.h"
 #include "wx_util.h"
-#include "lib/audio_content.h"
 #include "lib/content.h"
-#include "lib/dcp_content.h"
 #include "lib/dcp_subtitle_content.h"
-#include "lib/ffmpeg_content.h"
 #include "lib/film.h"
 #include "lib/image_content.h"
 #include "lib/string_text_file_content.h"
-#include "lib/text_content.h"
 #include "lib/video_content.h"
 #include <dcp/locale_convert.h>
 #include <dcp/scope_guard.h>
