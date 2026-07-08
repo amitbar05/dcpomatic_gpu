@@ -211,7 +211,7 @@ TimingPanel::update_play_length()
 void
 TimingPanel::film_content_changed(int property)
 {
-	if (_film_content_changed_suspender.check(property)) {
+	if (_film_content_changed_suspender.check(property) || !_parent->film()) {
 		return;
 	}
 
