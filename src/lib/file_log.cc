@@ -19,14 +19,13 @@
 */
 
 
-#include "file_log.h"
-#include "cross.h"
 #include "config.h"
+#include "file_log.h"
 #include <dcp/file.h>
 #include <dcp/filesystem.h>
+#include <cerrno>
 #include <cstdio>
 #include <iostream>
-#include <cerrno>
 
 
 using std::cout;
