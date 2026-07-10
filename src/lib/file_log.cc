@@ -35,22 +35,22 @@ using std::shared_ptr;
 
 
 /** @param file Filename to write log to */
-FileLog::FileLog (boost::filesystem::path file)
-	: _file (file)
+FileLog::FileLog(boost::filesystem::path file)
+	: _file(file)
 {
-	set_types (Config::instance()->log_types());
+	set_types(Config::instance()->log_types());
 }
 
 
-FileLog::FileLog (boost::filesystem::path file, int types)
-	: _file (file)
+FileLog::FileLog(boost::filesystem::path file, int types)
+	: _file(file)
 {
-	set_types (types);
+	set_types(types);
 }
 
 
 void
-FileLog::do_log (shared_ptr<const LogEntry> entry)
+FileLog::do_log(shared_ptr<const LogEntry> entry)
 {
 	dcp::File f(_file, "a");
 	if (!f) {
@@ -63,9 +63,9 @@ FileLog::do_log (shared_ptr<const LogEntry> entry)
 
 
 string
-FileLog::head_and_tail (int amount) const
+FileLog::head_and_tail(int amount) const
 {
-	boost::mutex::scoped_lock lm (_mutex);
+	boost::mutex::scoped_lock lm(_mutex);
 
 	uintmax_t head_amount = amount;
 	uintmax_t tail_amount = amount;
@@ -91,7 +91,7 @@ FileLog::head_and_tail (int amount) const
 
 	int N = f.read(buffer.data(), 1, head_amount);
 	buffer[N] = '\0';
-	out += string (buffer.data());
+	out += string(buffer.data());
 
 	if (tail_amount > 0) {
 		out +=  "\n .\n .\n .\n";
