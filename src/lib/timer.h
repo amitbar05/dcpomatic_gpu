@@ -42,8 +42,8 @@
 class PeriodTimer
 {
 public:
-	explicit PeriodTimer (std::string n);
-	~PeriodTimer ();
+	explicit PeriodTimer(std::string n);
+	~PeriodTimer();
 
 private:
 
@@ -65,18 +65,18 @@ private:
 class StateTimer
 {
 public:
-	explicit StateTimer (std::string n);
+	explicit StateTimer(std::string n);
 	/** @param n Name to use when giving output.
 	 *  @param s Initial state.
 	 */
-	StateTimer (std::string n, std::string s);
-	~StateTimer ();
+	StateTimer(std::string n, std::string s);
+	~StateTimer();
 
 	/** @param s New state that the caller is in */
-	void set (std::string s);
-	void unset ();
+	void set(std::string s);
+	void unset();
 
-	std::string name () const {
+	std::string name() const {
 		return _name;
 	}
 
@@ -87,12 +87,12 @@ public:
 		int number = 0;
 	};
 
-	std::map<std::string, Counts> counts () const {
+	std::map<std::string, Counts> counts() const {
 		return _counts;
 	}
 
 private:
-	void set_internal (boost::optional<std::string> s);
+	void set_internal(boost::optional<std::string> s);
 
 	/** name to add to the output */
 	std::string _name;
