@@ -64,17 +64,17 @@ LocationsPage::setup()
 	_panel->GetSizer()->Add(table, 1, wxALL | wxEXPAND, _border);
 
 	add_label_to_sizer(table, _panel, _("Content directory"), true, wxGBPosition(r, 0));
-	_content_directory = new wxDirPickerCtrl(_panel, wxID_ANY, wxEmptyString, char_to_wx(wxDirSelectorPromptStr), wxDefaultPosition, wxSize(300, -1));
+	_content_directory = new wxDirPickerCtrl(_panel, wxID_ANY, wxEmptyString, char_to_wx(wxDirSelectorPromptStr), wxDefaultPosition, wxSize(300, -1), wxDIRP_DEFAULT_STYLE & ~wxDIRP_DIR_MUST_EXIST);
 	table->Add(_content_directory, wxGBPosition(r, 1));
 	++r;
 
 	add_label_to_sizer(table, _panel, _("Playlist directory"), true, wxGBPosition(r, 0));
-	_playlist_directory = new wxDirPickerCtrl(_panel, wxID_ANY, wxEmptyString, char_to_wx(wxDirSelectorPromptStr), wxDefaultPosition, wxSize(300, -1));
+	_playlist_directory = new wxDirPickerCtrl(_panel, wxID_ANY, wxEmptyString, char_to_wx(wxDirSelectorPromptStr), wxDefaultPosition, wxSize(300, -1), wxDIRP_DEFAULT_STYLE & ~wxDIRP_DIR_MUST_EXIST);
 	table->Add(_playlist_directory, wxGBPosition(r, 1));
 	++r;
 
 	add_label_to_sizer(table, _panel, _("KDM directory"), true, wxGBPosition(r, 0));
-	_kdm_directory = new wxDirPickerCtrl(_panel, wxID_ANY, wxEmptyString, char_to_wx(wxDirSelectorPromptStr), wxDefaultPosition, wxSize(300, -1));
+	_kdm_directory = new wxDirPickerCtrl(_panel, wxID_ANY, wxEmptyString, char_to_wx(wxDirSelectorPromptStr), wxDefaultPosition, wxSize(300, -1), wxDIRP_DEFAULT_STYLE & ~wxDIRP_DIR_MUST_EXIST);
 	table->Add(_kdm_directory, wxGBPosition(r, 1));
 	++r;
 

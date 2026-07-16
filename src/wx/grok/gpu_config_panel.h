@@ -103,7 +103,7 @@ private:
 		_panel->GetSizer()->Add(table, 1, wxALL | wxEXPAND, _border);
 
 		add_label_to_sizer(table, _panel, _("Acceleration binary folder"), true, 0, wxLEFT | wxLEFT | wxALIGN_CENTRE_VERTICAL);
-		_binary_location = new wxDirPickerCtrl(_panel, wxDD_DIR_MUST_EXIST);
+		_binary_location = new wxDirPickerCtrl(_panel, wxID_ANY, wxEmptyString, char_to_wx(wxDirSelectorPromptStr), wxDefaultPosition, wxDefaultSize, wxDIRP_DEFAULT_STYLE & ~wxDIRP_DIR_MUST_EXIST);
 		table->Add(_binary_location, 1, wxEXPAND);
 
 		add_label_to_sizer(table, _panel, _("GPU selection"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
