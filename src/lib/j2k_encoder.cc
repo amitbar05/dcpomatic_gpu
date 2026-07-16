@@ -36,6 +36,9 @@
 #include "grok/context.h"
 #include "grok_j2k_encoder_thread.h"
 #endif
+#ifdef DCPOMATIC_SLANG
+#include "slang_j2k_encoder_thread.h"
+#endif
 #include "remote_j2k_encoder_thread.h"
 #include "j2k_encoder.h"
 #include "log.h"
@@ -43,7 +46,10 @@
 #include "util.h"
 #include "writer.h"
 #include <libcxml/cxml.h>
+#include <algorithm>
 #include <iostream>
+#include <string>
+#include <vector>
 
 #include "i18n.h"
 
@@ -139,11 +145,41 @@ J2KEncoder::servers_list_changed()
 #else
 	auto const grok_enable = false;
 #endif
+#ifdef DCPOMATIC_SLANG
+	/* GUI/config switch (Preferences → GPU (Slang)) or the original env
+	 * flag — either enables the GPU path. */
+	auto const slang_enable = getenv("DCPOMATIC_SLANG") != nullptr || config->slang().enable;
+#else
+	auto const slang_enable = false;
+#endif
 
-	auto const cpu = (grok_enable || config->only_servers_encode()) ? 0 : config->master_encoding_threads();
-	auto const gpu = grok_enable ? config->master_encoding_threads() : 0;
+	/* Optional heterogeneous CPU+GPU encode (opt-in via DCPOMATIC_SLANG_HETERO):
+	 * normally, when the Slang GPU path is on we run GPU feeder threads only
+	 * (cpu=0), exactly as before.  When DCPOMATIC_SLANG_HETERO is set, we ALSO
+	 * keep a CPU (OpenJPEG) pool running so CPU cores and GPU(s) both drain the
+	 * shared frame queue.  NOTE: measured to REGRESS on a fast-CPU / single-slow-
+	 * GPU box (the in-order writer stalls behind the ~10x-slower GPU frames), so
+	 * it is off by default; useful on CPU-poor or GPU-rich machines.
+	 * DCPOMATIC_SLANG_GPU_THREADS sets the Slang feeder-thread count (default:
+	 * heterogeneous=2, otherwise the full master pool).  Grok is unchanged. */
+	bool const slang_hetero = slang_enable && getenv("DCPOMATIC_SLANG_HETERO");
+	int slang_gpu = 0;
+	if (slang_enable) {
+		char const* g = getenv("DCPOMATIC_SLANG_GPU_THREADS");
+		slang_gpu = g ? atoi(g) : (slang_hetero ? 2 : config->master_encoding_threads());
+		if (slang_gpu < 1) {
+			slang_gpu = 1;
+		}
+		if (slang_gpu > config->master_encoding_threads()) {
+			slang_gpu = config->master_encoding_threads();
+		}
+	}
+	auto const cpu = (grok_enable || slang_enable || config->only_servers_encode())
+		? (slang_hetero ? std::max(1, config->master_encoding_threads() - slang_gpu) : 0)
+		: config->master_encoding_threads();
+	auto const gpu = grok_enable ? config->master_encoding_threads() : slang_gpu;
 
-	LOG_GENERAL("Thread counts from: grok={}, only_servers={}, master={}", grok_enable ? "yes" : "no", config->only_servers_encode() ? "yes" : "no", config->master_encoding_threads());
+	LOG_GENERAL("Thread counts from: grok={}, slang={}, hetero={}, only_servers={}, master={}, cpu={}, gpu={}", grok_enable ? "yes" : "no", slang_enable ? "yes" : "no", slang_hetero ? "yes" : "no", config->only_servers_encode() ? "yes" : "no", config->master_encoding_threads(), cpu, gpu);
 	remake_threads(cpu, gpu, EncodeServerFinder::instance()->servers());
 }
 
@@ -422,6 +458,41 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 	}
 
 	remove_threads(gpu, current_gpu_threads, is_grok_thread);
+#endif
+
+#ifdef DCPOMATIC_SLANG
+	/* GPU (Slang/Vulkan, via the external frame server) */
+
+	auto const is_slang_thread = [](shared_ptr<J2KEncoderThread> thread) {
+		return static_cast<bool>(dynamic_pointer_cast<SlangJ2KEncoderThread>(thread));
+	};
+
+	auto const current_slang_threads = std::count_if(_threads.begin(), _threads.end(), is_slang_thread);
+
+	/* Multi-GPU: DCPOMATIC_SLANG_SOCKET may be a comma-separated list of sockets
+	 * (one frame_server process per GPU). Round-robin the Slang feeder threads
+	 * across them so the GPUs run in parallel — separate processes dodge the
+	 * Python GIL that makes thread-based multi-GPU give zero speedup. */
+	auto const slang_config = Config::instance()->slang();
+	std::vector<std::string> sockets;
+	{
+		char const* sp = getenv("DCPOMATIC_SLANG_SOCKET");
+		std::string s = sp ? sp : slang_config.socket;
+		size_t pos = 0, comma;
+		while ((comma = s.find(',', pos)) != std::string::npos) {
+			if (comma > pos) sockets.push_back(s.substr(pos, comma - pos));
+			pos = comma + 1;
+		}
+		if (pos < s.size()) sockets.push_back(s.substr(pos));
+		if (sockets.empty()) sockets.push_back("/tmp/j2k_frames.sock");
+	}
+	for (auto i = current_slang_threads; i < gpu; ++i) {
+		auto thread = make_shared<SlangJ2KEncoderThread>(*this, sockets[i % sockets.size()], slang_config.coder);
+		thread->start();
+		_threads.push_back(thread);
+	}
+
+	remove_threads(gpu, current_slang_threads, is_slang_thread);
 #endif
 
 	/* Remote */

@@ -60,6 +60,11 @@
 #include "wx/wx_variant.h"
 #include "lib/analytics.h"
 #include "lib/audio_content.h"
+#include "lib/audio_processor.h"
+#ifdef DCPOMATIC_SLANG
+#include "lib/slang_audio_analyse_job.h"
+#include "lib/slang_source_bitrate.h"
+#endif
 #include "lib/check_content_job.h"
 #include "lib/cinema.h"
 #include "lib/config.h"
@@ -121,6 +126,7 @@ LIBDCP_ENABLE_WARNINGS
 #include <fmt/format.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
+#include <cmath>
 #include <iostream>
 #include <fstream>
 /* This is OK as it's only used with DCPOMATIC_WINDOWS */
@@ -235,6 +241,7 @@ enum {
 	ID_edit_paste,
 	ID_edit_select_all,
 	ID_jobs_make_dcp,
+	ID_jobs_make_dcp_gpu,
 	ID_jobs_make_dcp_batch,
 	ID_jobs_make_kdms,
 	ID_jobs_make_dkdms,
@@ -347,6 +354,9 @@ public:
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::edit_select_all, this),         ID_edit_select_all);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::edit_preferences, this),        wxID_PREFERENCES);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::jobs_make_dcp, this),           ID_jobs_make_dcp);
+#ifdef DCPOMATIC_SLANG
+		Bind(wxEVT_MENU, boost::bind(&DOMFrame::jobs_make_dcp_gpu, this),       ID_jobs_make_dcp_gpu);
+#endif
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::jobs_make_kdms, this),          ID_jobs_make_kdms);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::jobs_make_dkdms, this),         ID_jobs_make_dkdms);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::jobs_make_dcp_batch, this),     ID_jobs_make_dcp_batch);
@@ -833,6 +843,95 @@ private:
 
 		Config::instance()->load_from_zip(dialog.path(), action);
 	}
+
+#ifdef DCPOMATIC_SLANG
+	void jobs_make_dcp_gpu()
+	{
+		/* The "export using GPU" button: switch the Slang GPU encode path
+		 * on (its HT/MQ coder, frame-server socket and audio automation
+		 * live in Preferences → GPU (Slang)), give mono/stereo sources the
+		 * smart-centre L/C/R mix, run the GPU audio analysis + auto-gain
+		 * pre-pass (mix peak → just under -3 dBFS), then make the DCP as
+		 * usual.  A plain "Make DCP" also uses the GPU once the config
+		 * switch is on; this menu item just bundles the whole GPU flow. */
+		auto config = Config::instance();
+		auto slang = config->slang();
+		if (!slang.enable) {
+			slang.enable = true;
+			config->set_slang(slang);
+		}
+
+		/* Match the DCP's JPEG2000 bandwidth to the source video's bit
+		 * rate scaled for its codec's efficiency (intra-only J2K needs
+		 * several bits per long-GOP bit for like quality), floored at
+		 * 0.3 bit/pixel of the DCP raster (below that J2K adds its own
+		 * artifacts regardless of how soft the source is) and at
+		 * create_cli's 10 Mbit/s, capped at the configured maximum, and
+		 * rounded to a whole Mbit/s. */
+		if (slang.match_source_bitrate) {
+			if (auto rate = slang_equivalent_j2k_bit_rate(_film->content())) {
+				auto const size = _film->frame_size();
+				auto const floor = std::max<int64_t>(
+					std::llround(0.3 * size.width * size.height * _film->video_frame_rate()),
+					10000000
+					);
+				auto const cap = config->maximum_video_bit_rate(VideoEncoding::JPEG2000);
+				auto const target = std::min(std::max(*rate, floor), cap);
+				_film->set_video_bit_rate(
+					VideoEncoding::JPEG2000,
+					std::min(std::max<int64_t>(std::llround(target / 1e6), 1) * 1000000, cap)
+					);
+			}
+		}
+
+		bool any_audio = false;
+		int max_channels = 0;
+		for (auto content: _film->content()) {
+			if (content->audio) {
+				any_audio = true;
+				for (auto stream: content->audio->streams()) {
+					max_channels = std::max(max_channels, stream->channels());
+				}
+			}
+		}
+
+		/* Mono/stereo sources: mix L+R into a soft-clipped centre. */
+		if (slang.smart_center && any_audio && max_channels <= 2 && !_film->audio_processor()) {
+			_film->set_audio_processor(AudioProcessor::from_id("smart-center-upmixer"));
+		}
+
+		if (slang.auto_gain && any_audio) {
+			auto job = std::make_shared<SlangAudioAnalyseJob>(_film);
+			_slang_gain_job = job;
+			_slang_gain_connection = job->Finished.connect(
+				boost::bind(&DOMFrame::slang_gain_job_finished, this, _1));
+			JobManager::instance()->add(job);
+			return;
+		}
+
+		jobs_make_dcp();
+	}
+
+	void slang_gain_job_finished(Job::Result result)
+	{
+		auto job = _slang_gain_job.lock();
+		_slang_gain_job.reset();
+		if (result != Job::Result::RESULT_OK) {
+			error_dialog(this, _("GPU audio analysis failed, so the DCP was not made.  Check that the frame server is running, or disable the automatic gain in Preferences → GPU (Slang)."));
+			return;
+		}
+		if (job && job->gain_applied_db() < 0) {
+			message_dialog(
+				this,
+				wxString::Format(
+					_("The audio mix peaked at %.1f dB; every content's gain was reduced by %.1f dB so the peak now sits just under -3 dB."),
+					job->peak_dbfs(), -job->gain_applied_db()
+					)
+				);
+		}
+		jobs_make_dcp();
+	}
+#endif
 
 	void jobs_make_dcp()
 	{
@@ -1434,6 +1533,10 @@ private:
 		auto jobs_menu = new wxMenu;
 		/* [Shortcut] Ctrl+M:Make DCP */
 		add_item(jobs_menu, _("&Make DCP\tCtrl-M"), ID_jobs_make_dcp, NEEDS_FILM | NOT_DURING_DCP_CREATION);
+#ifdef DCPOMATIC_SLANG
+		/* [Shortcut] Ctrl+Shift+M:Make DCP using the GPU (Slang encoder) */
+		add_item(jobs_menu, _("Make DCP using &GPU\tCtrl-Shift-M"), ID_jobs_make_dcp_gpu, NEEDS_FILM | NOT_DURING_DCP_CREATION);
+#endif
 		/* [Shortcut] Ctrl+B:Make DCP in the batch converter*/
 		add_item(jobs_menu, _("Make DCP in &batch converter\tCtrl-B"), ID_jobs_make_dcp_batch, NEEDS_FILM | NOT_DURING_DCP_CREATION);
 		jobs_menu->AppendSeparator();
@@ -1646,6 +1749,11 @@ private:
 	wxMenuItem* _history_separator = nullptr;
 	boost::signals2::scoped_connection _config_changed_connection;
 	boost::signals2::scoped_connection _analytics_message_connection;
+#ifdef DCPOMATIC_SLANG
+	/* GPU export: the auto-gain analysis job chained before make-DCP. */
+	std::weak_ptr<SlangAudioAnalyseJob> _slang_gain_job;
+	boost::signals2::scoped_connection _slang_gain_connection;
+#endif
 	bool _update_news_requested = false;
 	shared_ptr<Content> _clipboard;
 	bool _first_shown_called = false;

@@ -61,6 +61,9 @@ sources = """
           copy_dcp_details_to_film.cc
           cover_sheet.cc
           cpu_j2k_encoder_thread.cc
+          slang_j2k_encoder_thread.cc
+          slang_audio_analyse_job.cc
+          slang_source_bitrate.cc
           create_cli.cc
           crop.cc
           cross_common.cc
@@ -167,6 +170,7 @@ sources = """
           maths_util.cc
           memory_util.cc
           mid_side_decoder.cc
+          smart_center_upmixer.cc
           mpeg2_encoder.cc
           named_channel.cc
           overlaps.cc

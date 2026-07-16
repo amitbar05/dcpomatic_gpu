@@ -731,6 +731,9 @@ def build(bld):
 
         bld.add_manual_dependency(bld.path.find_node('src/wx/full_config_dialog.cc'), bld.path.find_node('src/wx/grok/gpu_config_panel.h'))
 
+    # Same story for the Slang GPU integration's header-only preferences page.
+    bld.add_manual_dependency(bld.path.find_node('src/wx/full_config_dialog.cc'), bld.path.find_node('src/wx/slang_gpu_config_panel.h'))
+
     bld.recurse('src')
     bld.recurse('graphics')
     bld.recurse('web')

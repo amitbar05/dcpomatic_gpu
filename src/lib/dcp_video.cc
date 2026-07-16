@@ -164,6 +164,49 @@ DCPVideo::convert_to_xyz(uint16_t* dst) const
 }
 
 
+/** I2 (Slang GPU thread): fetch this frame's image BEFORE colour conversion.
+ *  @param dst buffer for H*W*3 interleaved uint16 RGB48 samples.
+ *  @return true if dst was filled and colour_conversion() holds the conversion
+ *  the DCP path would apply to it; false when the content needs no conversion
+ *  (already XYZ) — the caller must use convert_to_xyz() instead.
+ */
+bool
+DCPVideo::rgb48(uint16_t* dst) const
+{
+	if (!_frame->colour_conversion()) {
+		return false;
+	}
+
+	auto conversion = [](AVPixelFormat fmt) {
+		return fmt == AV_PIX_FMT_XYZ12LE ? AV_PIX_FMT_XYZ12LE : AV_PIX_FMT_RGB48LE;
+	};
+
+	auto image = _frame->image(conversion, VideoRange::FULL, false);
+	if (image->pixel_format() != AV_PIX_FMT_RGB48LE) {
+		return false;
+	}
+
+	auto const size = image->size();
+	auto const row_bytes = static_cast<size_t>(size.width) * 3 * sizeof(uint16_t);
+	auto src = image->data()[0];
+	auto const src_stride = image->stride()[0];
+	auto out = reinterpret_cast<uint8_t*>(dst);
+	for (int y = 0; y < size.height; ++y) {
+		memcpy(out, src, row_bytes);
+		src += src_stride;
+		out += row_bytes;
+	}
+	return true;
+}
+
+
+boost::optional<ColourConversion>
+DCPVideo::colour_conversion() const
+{
+	return _frame->colour_conversion();
+}
+
+
 /** J2K-encode this frame on the local host.
  *  @return Encoded data.
  */

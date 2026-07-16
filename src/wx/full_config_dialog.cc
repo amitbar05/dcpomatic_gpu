@@ -53,6 +53,9 @@
 #ifdef DCPOMATIC_GROK
 #include "grok/gpu_config_panel.h"
 #endif
+#ifdef DCPOMATIC_SLANG
+#include "slang_gpu_config_panel.h"
+#endif
 #include "wx_util.h"
 #include "wx_variant.h"
 #include "lib/config.h"
@@ -1521,6 +1524,9 @@ create_full_config_dialog()
 	e->AddPage(new EncodingServersPage(ps, border));
 #ifdef DCPOMATIC_GROK
 	e->AddPage(new GPUPage(ps, border));
+#endif
+#ifdef DCPOMATIC_SLANG
+	e->AddPage(new SlangGPUPage(ps, border));
 #endif
 	e->AddPage(new preferences::KeysPage(ps, border));
 	e->AddPage(new TMSPage(ps, border));

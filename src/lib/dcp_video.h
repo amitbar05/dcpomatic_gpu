@@ -21,6 +21,7 @@
 #define DCPOMATIC_DCP_VIDEO_H
 
 
+#include "colour_conversion.h"
 #include "encode_server_description.h"
 #include "resolution.h"
 #include <libcxml/cxml.h>
@@ -69,7 +70,19 @@ public:
 	static std::shared_ptr<dcp::OpenJPEGImage> convert_to_xyz(std::shared_ptr<const PlayerVideo> frame);
 
 	void convert_to_xyz(uint16_t* dst) const;
+	/* I2 (Slang GPU thread): the frame BEFORE colour conversion + the
+	 * conversion itself, so convert_to_xyz can run on the GPU instead. */
+	bool rgb48(uint16_t* dst) const;
+	boost::optional<ColourConversion> colour_conversion() const;
 	dcp::Size get_size() const;
+	/* Slang GPU thread (J2KO options): the rate this frame is encoded at,
+	 * so the frame server needn't be started with matching flags. */
+	int frames_per_second() const {
+		return _frames_per_second;
+	}
+	int64_t video_bit_rate() const {
+		return _video_bit_rate;
+	}
 
 private:
 

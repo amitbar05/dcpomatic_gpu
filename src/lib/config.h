@@ -121,6 +121,9 @@ public:
 #ifdef DCPOMATIC_GROK
 		GROK,
 #endif
+#ifdef DCPOMATIC_SLANG
+		SLANG,
+#endif
 		CINEMAS_FILE,
 		OTHER
 	};
@@ -666,6 +669,38 @@ public:
 
 	Grok grok() const {
 		return _grok;
+	}
+#endif
+
+#ifdef DCPOMATIC_SLANG
+	/** Slang/Vulkan GPU J2K encoder (the frame-server integration). */
+	class Slang
+	{
+	public:
+		Slang();
+		Slang(cxml::ConstNodePtr node);
+
+		void as_xml(xmlpp::Element* node) const;
+
+		/** encode J2K frames on the GPU via the Slang frame server */
+		bool enable = false;
+		/** Tier-1 block coder: "ht" (HTJ2K, the fast default) or "mq" */
+		std::string coder = "ht";
+		/** Unix socket of the frame server (frame_server.py) */
+		std::string socket = "/tmp/j2k_frames.sock";
+		/** analyse the mix on the GPU before encoding and reduce gain so
+		 *  the peak lands just under -3 dBFS */
+		bool auto_gain = true;
+		/** when the film's audio is mono/stereo and no audio processor is
+		 *  set, apply the smart-centre upmix (L/R + soft-clipped centre) */
+		bool smart_center = true;
+		/** probe the source video's real bit rate when making the DCP and
+		 *  set the film's JPEG2000 bandwidth to match it */
+		bool match_source_bitrate = true;
+	};
+
+	Slang slang() const {
+		return _slang;
 	}
 #endif
 
@@ -1249,6 +1284,10 @@ public:
 	void set_grok(Grok const& grok);
 #endif
 
+#ifdef DCPOMATIC_SLANG
+	void set_slang(Slang const& slang);
+#endif
+
 	void set_isdcf_name_part_length(int length) {
 		maybe_set(_isdcf_name_part_length, length, ISDCF_NAME_PART_LENGTH);
 	}
@@ -1519,6 +1558,10 @@ private:
 
 #ifdef DCPOMATIC_GROK
 	Grok _grok;
+#endif
+
+#ifdef DCPOMATIC_SLANG
+	Slang _slang;
 #endif
 
 	ExportConfig _export;

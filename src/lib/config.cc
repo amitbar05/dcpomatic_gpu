@@ -663,6 +663,12 @@ try
 	}
 #endif
 
+#ifdef DCPOMATIC_SLANG
+	if (auto slang = f.optional_node_child("Slang")) {
+		_slang = Slang(slang);
+	}
+#endif
+
 	_export.read(f.optional_node_child("Export"));
 }
 catch (...) {
@@ -1150,6 +1156,10 @@ Config::write_config() const
 
 #ifdef DCPOMATIC_GROK
 	_grok.as_xml(cxml::add_child(root, "Grok"));
+#endif
+
+#ifdef DCPOMATIC_SLANG
+	_slang.as_xml(cxml::add_child(root, "Slang"));
 #endif
 
 	_export.write(cxml::add_child(root, "Export"));
@@ -1775,6 +1785,47 @@ Config::set_grok(Grok const& grok)
 {
 	_grok = grok;
 	changed(GROK);
+}
+
+#endif
+
+
+#ifdef DCPOMATIC_SLANG
+
+Config::Slang::Slang() = default;
+
+
+Config::Slang::Slang(cxml::ConstNodePtr node)
+	: enable(node->optional_bool_child("Enable").get_value_or(false))
+	, coder(node->optional_string_child("Coder").get_value_or("ht"))
+	, socket(node->optional_string_child("Socket").get_value_or("/tmp/j2k_frames.sock"))
+	, auto_gain(node->optional_bool_child("AutoGain").get_value_or(true))
+	, smart_center(node->optional_bool_child("SmartCentre").get_value_or(true))
+	, match_source_bitrate(node->optional_bool_child("MatchSourceBitrate").get_value_or(true))
+{
+	if (coder != "ht" && coder != "mq") {
+		coder = "ht";
+	}
+}
+
+
+void
+Config::Slang::as_xml(xmlpp::Element* node) const
+{
+	cxml::add_text_child(node, "Enable", enable ? "1" : "0");
+	cxml::add_text_child(node, "Coder", coder);
+	cxml::add_text_child(node, "Socket", socket);
+	cxml::add_text_child(node, "AutoGain", auto_gain ? "1" : "0");
+	cxml::add_text_child(node, "SmartCentre", smart_center ? "1" : "0");
+	cxml::add_text_child(node, "MatchSourceBitrate", match_source_bitrate ? "1" : "0");
+}
+
+
+void
+Config::set_slang(Slang const& slang)
+{
+	_slang = slang;
+	changed(SLANG);
 }
 
 #endif
