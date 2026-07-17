@@ -46,8 +46,10 @@ public:
 	int backoff() const override { return _backoff; }
 
 private:
+	std::shared_ptr<dcp::ArrayData> encode_locked(DCPVideo const& frame);
 	bool maybe_send_tables(ColourConversion const& conversion);
 	void maybe_send_options(DCPVideo const& frame);
+	void verify_encode_contract(std::vector<uint8_t> const& j2c, DCPVideo const& frame) const;
 
 	std::unique_ptr<SlangFrameClient> _client;
 	int _backoff = 0;
@@ -65,6 +67,9 @@ private:
 	std::string _coder;
 	uint64_t _options_generation = 0;
 	bool _options_disabled = false;
+	/** consecutive J2KO transport failures; sticky-disable only after 2 so a
+	 *  single transient blip doesn't permanently drop to server defaults */
+	int _options_transport_failures = 0;
 	bool _rgb48_disabled = false;   ///< sticky off after a server rejection
 	/* T2.31 (shm frame transport) state: sticky off after any shm-request
 	 * failure (an old server drops the connection on the unknown magic; a new

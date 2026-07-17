@@ -87,6 +87,16 @@ public:
 	/** Called when a processing run has finished */
 	void end() override;
 
+#ifdef DCPOMATIC_SLANG
+	/** For an encoder thread that is giving up for good (e.g. the Slang
+	 *  thread refusing to encode with the wrong coder): store its exception
+	 *  where encode()/end() rethrow it.  A J2KSyncEncoderThread's OWN
+	 *  ExceptionStore is never polled by anything, so without this an
+	 *  all-threads-dead export deadlocks on the queue conditions instead of
+	 *  failing with the stored error.  Call from inside a catch block. */
+	void store_encode_thread_exception() { store_current(); }
+#endif
+
 	DCPVideo pop();
 	void retry(DCPVideo frame);
 	void write(std::shared_ptr<const dcp::Data> data, int index, Eyes eyes);

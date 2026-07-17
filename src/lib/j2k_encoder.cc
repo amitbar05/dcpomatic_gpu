@@ -239,7 +239,13 @@ J2KEncoder::end()
 	/* Keep waking workers until the queue is empty */
 	while (!_queue.empty()) {
 		rethrow();
+#ifdef DCPOMATIC_SLANG
+		/* Timed for the same reason as in encode(): all-threads-dead must
+		   surface the stored exception, not deadlock. */
+		_full_condition.timed_wait(lock, boost::posix_time::milliseconds(500));
+#else
 		_full_condition.wait(lock);
+#endif
 	}
 	lock.unlock();
 
@@ -331,10 +337,21 @@ J2KEncoder::encode(shared_ptr<PlayerVideo> pv, DCPTime time)
 
 	/* Wait until the queue has gone down a bit.  Allow one thing in the queue even
 	   when there are no threads.
+
+	   DCPOMATIC_SLANG: the wait must be timed and re-check rethrow() — if every
+	   encoder thread has died with a stored exception (e.g. the Slang thread
+	   refusing to encode with the wrong coder), nothing will ever pop the queue
+	   or signal this condition, and an untimed wait deadlocks the export
+	   instead of failing it with the stored error.
 	*/
 	while (_queue.size() >= (threads * 2) + 1) {
 		LOG_TIMING("decoder-sleep queue={} threads={}", _queue.size(), threads);
+#ifdef DCPOMATIC_SLANG
+		rethrow();
+		_full_condition.timed_wait(queue_lock, boost::posix_time::milliseconds(500));
+#else
 		_full_condition.wait(queue_lock);
+#endif
 		LOG_TIMING("decoder-wake queue={} threads={}", _queue.size(), threads);
 	}
 
