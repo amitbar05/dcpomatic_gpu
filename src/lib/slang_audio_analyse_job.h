@@ -44,8 +44,9 @@ class SlangFrameClient;
  *  @brief Play the film's final audio mix once (video ignored), measure its
  *  true sample peak — on the GPU via the Slang frame server's J2KA analysis
  *  requests, with a local fallback when the server is unreachable — and then
- *  REDUCE every audio content's gain by the same amount so the mix peak lands
- *  just under -3 dBFS.  A mix already at or below the target is left alone.
+ *  NORMALIZE every audio content's gain by the same amount so the mix peak
+ *  lands just under -3.5 dBFS (a quiet mix is boosted up, a loud one turned
+ *  down).
  */
 class SlangAudioAnalyseJob : public Job
 {
@@ -56,13 +57,18 @@ public:
 	std::string name() const override;
 	std::string json_name() const override;
 	void run() override;
+	/** Appends the measured peak / gain-change summary to the base OK/error
+	 *  status once finished, so it shows up inline in the Jobs panel (rather
+	 *  than a separate popup) — the same place the user already watches
+	 *  export progress. */
+	std::string status() const override;
 
-	/** Auto-gain target: "just under -3 dBFS" (the 0.1 dB margin keeps the
-	 *  24-bit-quantised peak strictly below -3.0). */
-	static constexpr double TARGET_PEAK_DBFS = -3.1;
+	/** Auto-gain target peak, in dBFS. */
+	static constexpr double TARGET_PEAK_DBFS = -3.5;
 
-	/** @return gain applied to every audio content, in dB (<= 0; 0 = the
-	 *  mix was already under the target). Valid after the job finished. */
+	/** @return gain applied to every audio content, in dB (0 = the mix was
+	 *  already exactly at the target, or silent). Valid after the job
+	 *  finished. */
 	double gain_applied_db() const {
 		return _gain_applied_db;
 	}

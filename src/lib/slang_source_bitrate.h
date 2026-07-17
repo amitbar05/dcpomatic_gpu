@@ -31,6 +31,7 @@
 
 
 #include "types.h"
+#include <dcp/types.h>
 #include <boost/optional.hpp>
 #include <cstdint>
 
@@ -58,6 +59,15 @@ int64_t constexpr SLANG_J2K_BIT_RATE_UNBOUNDED = INT64_C(1000000000000);
  *  and capping.
  */
 boost::optional<int64_t> slang_equivalent_j2k_bit_rate(ContentList const& content);
+
+
+/** Turn a probed source rate (see slang_equivalent_j2k_bit_rate()) into the
+ *  JPEG2000 bit rate to actually configure: floored at 0.3 bits/pixel of
+ *  the DCP raster (or 10 Mbps, whichever is higher), capped at @p maximum,
+ *  and rounded to the nearest whole Mbps.  Shared by the GPU-export menu's
+ *  explicit probe (dcpomatic.cc) and Film's automatic probe-on-import.
+ */
+int64_t slang_floor_cap_round_j2k_bit_rate(int64_t source_rate, dcp::Size size, int frame_rate, int64_t maximum);
 
 
 #endif

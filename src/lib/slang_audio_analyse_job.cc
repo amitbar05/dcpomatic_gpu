@@ -30,6 +30,7 @@
 #include "film.h"
 #include "player.h"
 #include "playlist.h"
+#include <fmt/format.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -148,12 +149,10 @@ SlangAudioAnalyseJob::run()
 	auto const peak = _used_gpu && !_gpu_failed ? _server_peak : _local_peak;
 	if (peak > 0) {
 		_peak_dbfs = 20 * std::log10(peak);
-		if (_peak_dbfs > TARGET_PEAK_DBFS) {
-			_gain_applied_db = TARGET_PEAK_DBFS - _peak_dbfs;
-			for (auto c: _film->content()) {
-				if (c->audio) {
-					c->audio->set_gain(c->audio->gain() + _gain_applied_db);
-				}
+		_gain_applied_db = TARGET_PEAK_DBFS - _peak_dbfs;
+		for (auto c: _film->content()) {
+			if (c->audio) {
+				c->audio->set_gain(c->audio->gain() + _gain_applied_db);
 			}
 		}
 	} else {
@@ -165,6 +164,30 @@ SlangAudioAnalyseJob::run()
 
 	set_progress(1);
 	set_state(FINISHED_OK);
+}
+
+
+string
+SlangAudioAnalyseJob::status() const
+{
+	auto s = Job::status();
+	if (!finished_ok()) {
+		return s;
+	}
+
+	if (!std::isfinite(_peak_dbfs)) {
+		s += _("; mix was silent, no gain applied");
+	} else if (_gain_applied_db == 0) {
+		s += fmt::format(_("; mix peaked at {:.1f} dB, already at target"), _peak_dbfs);
+	} else {
+		s += fmt::format(
+			_gain_applied_db < 0
+				? _("; mix peaked at {:.1f} dB, gain reduced by {:.1f} dB to {:.1f} dB")
+				: _("; mix peaked at {:.1f} dB, gain increased by {:.1f} dB to {:.1f} dB"),
+			_peak_dbfs, std::abs(_gain_applied_db), TARGET_PEAK_DBFS
+			);
+	}
+	return s;
 }
 
 #endif

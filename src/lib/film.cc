@@ -54,6 +54,10 @@
 #include "playlist.h"
 #include "ratio.h"
 #include "screen.h"
+#ifdef DCPOMATIC_SLANG
+#include "slang_bitrate_probe_job.h"
+#include "slang_source_bitrate.h"
+#endif
 #include "text_content.h"
 #include "transcode_job.h"
 #include "upload_job.h"
@@ -1539,6 +1543,10 @@ Film::maybe_add_content(weak_ptr<Job> j, vector<weak_ptr<Content>> const& weak_c
 
 	add_content(content);
 
+#ifdef DCPOMATIC_SLANG
+	maybe_match_source_bitrate();
+#endif
+
 	for (auto i: content) {
 		if (Config::instance()->automatic_audio_analysis() && !disable_audio_analysis) {
 			if (i->audio) {
@@ -1583,6 +1591,55 @@ Film::add_content(vector<shared_ptr<Content>> const& content)
 		set_interop(false);
 	}
 }
+
+
+#ifdef DCPOMATIC_SLANG
+/** Kick off a background probe of the film's current source content, so
+ *  the JPEG2000 bit rate tracks each newly-imported video automatically
+ *  instead of only when the user explicitly runs "Make DCP using GPU".
+ *  Mirrors that menu action's own probe (dcpomatic.cc); this is the
+ *  content-add-time equivalent, called from maybe_add_content() once the
+ *  new content is actually in the playlist.
+ */
+void
+Film::maybe_match_source_bitrate()
+{
+	if (!Config::instance()->slang().match_source_bitrate) {
+		return;
+	}
+
+	auto probe_job = make_shared<SlangBitrateProbeJob>(shared_from_this());
+	JobManager::instance()->add(probe_job);
+	boost::signals2::connection connection;
+	probe_job->when_finished(
+		connection, bind(&Film::slang_bitrate_probe_finished, this, _1, weak_ptr<SlangBitrateProbeJob>(probe_job))
+		);
+	_job_connections.push_back(connection);
+}
+
+
+/** Finished handler for the probe kicked off by maybe_match_source_bitrate().
+ *  Takes the specific job as a bound weak_ptr (rather than a single Film-level
+ *  member) so that two probes in flight at once -- two quick, separate content
+ *  adds -- can't clobber each other's result.
+ */
+void
+Film::slang_bitrate_probe_finished(Job::Result result, weak_ptr<SlangBitrateProbeJob> weak_job)
+{
+	if (result != Job::Result::RESULT_OK) {
+		return;
+	}
+
+	auto job = weak_job.lock();
+	if (!job || !job->rate()) {
+		return;
+	}
+
+	auto const cap = Config::instance()->maximum_video_bit_rate(VideoEncoding::JPEG2000);
+	auto const new_rate = slang_floor_cap_round_j2k_bit_rate(*job->rate(), frame_size(), video_frame_rate(), cap);
+	set_video_bit_rate(VideoEncoding::JPEG2000, new_rate);
+}
+#endif
 
 
 void

@@ -734,6 +734,9 @@ def build(bld):
     # Same story for the Slang GPU integration's header-only preferences page.
     bld.add_manual_dependency(bld.path.find_node('src/wx/full_config_dialog.cc'), bld.path.find_node('src/wx/slang_gpu_config_panel.h'))
 
+    # ...and its header-only coder-picker dialog, included by the main tool.
+    bld.add_manual_dependency(bld.path.find_node('src/tools/dcpomatic.cc'), bld.path.find_node('src/wx/slang_coder_dialog.h'))
+
     bld.recurse('src')
     bld.recurse('graphics')
     bld.recurse('web')

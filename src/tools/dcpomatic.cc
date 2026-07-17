@@ -62,7 +62,9 @@
 #include "lib/audio_content.h"
 #include "lib/audio_processor.h"
 #ifdef DCPOMATIC_SLANG
+#include "wx/slang_coder_dialog.h"
 #include "lib/slang_audio_analyse_job.h"
+#include "lib/slang_bitrate_probe_job.h"
 #include "lib/slang_source_bitrate.h"
 #endif
 #include "lib/check_content_job.h"
@@ -851,38 +853,76 @@ private:
 		 * on (its HT/MQ coder, frame-server socket and audio automation
 		 * live in Preferences → GPU (Slang)), give mono/stereo sources the
 		 * smart-centre L/C/R mix, run the GPU audio analysis + auto-gain
-		 * pre-pass (mix peak → just under -3 dBFS), then make the DCP as
+		 * pre-pass (mix peak → just under -3.5 dBFS), then make the DCP as
 		 * usual.  A plain "Make DCP" also uses the GPU once the config
 		 * switch is on; this menu item just bundles the whole GPU flow. */
-		auto config = Config::instance();
-		auto slang = config->slang();
-		if (!slang.enable) {
-			slang.enable = true;
-			config->set_slang(slang);
+
+		/* Match the DCP's JPEG2000 bandwidth to the source video's bit rate
+		 * (match_source_bitrate).  The probe behind this opens every FFmpeg
+		 * source and calls avformat_find_stream_info(), which can block for
+		 * several seconds on a real master -- run it as a background Job
+		 * (mirrors the audio-analysis job further down) instead of on the
+		 * UI thread, where it previously made the whole window stop
+		 * responding to X11 for the probe's duration. */
+		if (Config::instance()->slang().match_source_bitrate) {
+			auto probe_job = std::make_shared<SlangBitrateProbeJob>(_film);
+			JobManager::instance()->add(probe_job);
+			_slang_bitrate_job = probe_job;
+			boost::signals2::connection connection;
+			probe_job->when_finished(
+				connection, boost::bind(&DOMFrame::slang_bitrate_probe_finished, this, _1));
+			_slang_bitrate_connection = connection;
+		} else {
+			jobs_make_dcp_gpu_continue(0, false);
+		}
+	}
+
+	/** Finished handler for the background bit-rate probe kicked off by
+	 *  jobs_make_dcp_gpu().  Runs on the UI thread (when_finished()'s
+	 *  Finished signal); does the actual floor/cap/round math and
+	 *  Film::set_video_bit_rate() call here, since those touch live Film
+	 *  state and must stay off the job's background thread. */
+	void slang_bitrate_probe_finished(Job::Result result)
+	{
+		auto job = _slang_bitrate_job.lock();
+		_slang_bitrate_job.reset();
+
+		if (result == Job::Result::RESULT_CANCELLED) {
+			/* The user cancelled the probe; leave the DCP unmade, same as
+			 * cancelling the coder dialog below. */
+			return;
 		}
 
-		/* Match the DCP's JPEG2000 bandwidth to the source video's bit
-		 * rate scaled for its codec's efficiency (intra-only J2K needs
-		 * several bits per long-GOP bit for like quality), floored at
-		 * 0.3 bit/pixel of the DCP raster (below that J2K adds its own
-		 * artifacts regardless of how soft the source is) and at
-		 * create_cli's 10 Mbit/s, capped at the configured maximum, and
-		 * rounded to a whole Mbit/s. */
-		if (slang.match_source_bitrate) {
-			if (auto rate = slang_equivalent_j2k_bit_rate(_film->content())) {
-				auto const size = _film->frame_size();
-				auto const floor = std::max<int64_t>(
-					std::llround(0.3 * size.width * size.height * _film->video_frame_rate()),
-					10000000
-					);
-				auto const cap = config->maximum_video_bit_rate(VideoEncoding::JPEG2000);
-				auto const target = std::min(std::max(*rate, floor), cap);
-				_film->set_video_bit_rate(
-					VideoEncoding::JPEG2000,
-					std::min(std::max<int64_t>(std::llround(target / 1e6), 1) * 1000000, cap)
-					);
+		/* Reported to the coder dialog so the UI can tell the user the DCP
+		 * bandwidth was set for them.  0 = no automatic adjustment (also
+		 * the fallback if the probe errored -- a failed probe shouldn't
+		 * block the export, it just leaves the film's configured rate
+		 * alone, exactly as when no FFmpeg content could be probed). */
+		int adjusted_bit_rate_mbps = 0;
+		bool bit_rate_changed = false;
+		if (result == Job::Result::RESULT_OK && job) {
+			if (auto rate = job->rate()) {
+				auto const cap = Config::instance()->maximum_video_bit_rate(VideoEncoding::JPEG2000);
+				auto const new_rate = slang_floor_cap_round_j2k_bit_rate(*rate, _film->frame_size(), _film->video_frame_rate(), cap);
+				auto const old_rate = _film->video_bit_rate(VideoEncoding::JPEG2000);
+				_film->set_video_bit_rate(VideoEncoding::JPEG2000, new_rate);
+				adjusted_bit_rate_mbps = static_cast<int>(new_rate / 1000000);
+				bit_rate_changed = new_rate != old_rate;
 			}
 		}
+
+		jobs_make_dcp_gpu_continue(adjusted_bit_rate_mbps, bit_rate_changed);
+	}
+
+	/** The rest of the GPU export flow (smart-centre mapping, the GPU audio
+	 *  analysis pre-pass, and the HT/MQ coder dialog), continued once the
+	 *  bit-rate probe above has resolved. */
+	void jobs_make_dcp_gpu_continue(int adjusted_bit_rate_mbps, bool bit_rate_changed)
+	{
+		auto config = Config::instance();
+		auto slang = config->slang();
+		/* enable + the chosen coder are persisted together once the user
+		 * confirms the coder dialog below (so cancelling leaves config as-is). */
 
 		bool any_audio = false;
 		int max_channels = 0;
@@ -895,40 +935,89 @@ private:
 			}
 		}
 
-		/* Mono/stereo sources: mix L+R into a soft-clipped centre. */
+		/* Mono/stereo sources: mix L+R into a soft-clipped centre.
+		 * set_audio_processor() only changes the film-level pointer; it does
+		 * not touch any content's existing AudioMapping.  Content added
+		 * before this switch is still routed with its pre-processor mapping
+		 * (e.g. mono -> DCP centre directly), whose target indices the new
+		 * processor never reads, so the mix would otherwise be silent.
+		 * Reset every content's mapping to the processor's own default here,
+		 * mirroring what content_factory.cc does when content is first
+		 * added with a processor already selected. */
 		if (slang.smart_center && any_audio && max_channels <= 2 && !_film->audio_processor()) {
-			_film->set_audio_processor(AudioProcessor::from_id("smart-center-upmixer"));
+			auto processor = AudioProcessor::from_id("smart-center-upmixer");
+			_film->set_audio_processor(processor);
+			for (auto content: _film->content()) {
+				if (content->audio) {
+					auto mapping = content->audio->mapping();
+					/* filename is only consulted when processor is null (the
+					 * guess-from-filename fallback); irrelevant here. */
+					mapping.make_default(processor);
+					content->audio->set_mapping(mapping);
+				}
+			}
 		}
 
+		/* Kick off the GPU audio analysis + auto-gain pre-pass now, so it runs
+		 * in the background while the user picks the coder below.  It runs on
+		 * the JobManager's own scheduler thread, so the modal coder dialog
+		 * (a nested UI event loop) doesn't hold it up.  We deliberately do NOT
+		 * wire its completion yet — that would race the dialog and start the
+		 * DCP before the user has chosen. */
+		shared_ptr<SlangAudioAnalyseJob> gain_job;
 		if (slang.auto_gain && any_audio) {
-			auto job = std::make_shared<SlangAudioAnalyseJob>(_film);
-			_slang_gain_job = job;
-			_slang_gain_connection = job->Finished.connect(
-				boost::bind(&DOMFrame::slang_gain_job_finished, this, _1));
-			JobManager::instance()->add(job);
+			gain_job = std::make_shared<SlangAudioAnalyseJob>(_film);
+			JobManager::instance()->add(gain_job);
+		}
+
+		/* Ask which Tier-1 coder to use (HT the fast default vs MQ the
+		 * highest-PSNR one), pre-selecting the configured one.  Shown while the
+		 * audio analysis above churns on the GPU. */
+		SlangCoderDialog dialog(
+			this, slang.coder, static_cast<bool>(gain_job),
+			adjusted_bit_rate_mbps, bit_rate_changed
+			);
+		if (dialog.ShowModal() != wxID_OK) {
+			/* Aborted: stop the background analysis and leave the DCP unmade. */
+			if (gain_job) {
+				gain_job->cancel();
+			}
 			return;
 		}
+		slang.coder = dialog.coder();
+		/* Persist the enable flag + chosen coder (mirrors the coder control in
+		 * Preferences → GPU (Slang); remembered for next time). */
+		slang.enable = true;
+		config->set_slang(slang);
 
-		jobs_make_dcp();
+		if (gain_job) {
+			_slang_gain_job = gain_job;
+			/* Now wait for the analysis to finish, then make the DCP.
+			 * when_finished() is race-safe: if the job already finished while
+			 * the dialog was open it invokes the handler synchronously here,
+			 * otherwise it connects for the (UI-thread) Finished signal. */
+			boost::signals2::connection connection;
+			gain_job->when_finished(
+				connection, boost::bind(&DOMFrame::slang_gain_job_finished, this, _1));
+			_slang_gain_connection = connection;
+		} else {
+			jobs_make_dcp();
+		}
 	}
 
 	void slang_gain_job_finished(Job::Result result)
 	{
-		auto job = _slang_gain_job.lock();
 		_slang_gain_job.reset();
-		if (result != Job::Result::RESULT_OK) {
-			error_dialog(this, _("GPU audio analysis failed, so the DCP was not made.  Check that the frame server is running, or disable the automatic gain in Preferences → GPU (Slang)."));
+		if (result == Job::Result::RESULT_CANCELLED) {
+			/* The user cancelled the analysis job; leave the DCP unmade. */
 			return;
 		}
-		if (job && job->gain_applied_db() < 0) {
-			message_dialog(
-				this,
-				wxString::Format(
-					_("The audio mix peaked at %.1f dB; every content's gain was reduced by %.1f dB so the peak now sits just under -3 dB."),
-					job->peak_dbfs(), -job->gain_applied_db()
-					)
-				);
+		if (result != Job::Result::RESULT_OK) {
+			error_dialog(this, _("GPU audio analysis failed, so the DCP was not made.  Check that the frame server is running, or disable the automatic gain in Preferences -> GPU (Slang)."));
+			return;
 		}
+		/* The measured peak and any gain change are reported inline in the
+		 * Jobs panel (SlangAudioAnalyseJob::status()) rather than a popup. */
 		jobs_make_dcp();
 	}
 #endif
@@ -1750,7 +1839,10 @@ private:
 	boost::signals2::scoped_connection _config_changed_connection;
 	boost::signals2::scoped_connection _analytics_message_connection;
 #ifdef DCPOMATIC_SLANG
-	/* GPU export: the auto-gain analysis job chained before make-DCP. */
+	/* GPU export: the source bit-rate probe job chained before the coder
+	 * dialog, and the auto-gain analysis job chained before make-DCP. */
+	std::weak_ptr<SlangBitrateProbeJob> _slang_bitrate_job;
+	boost::signals2::scoped_connection _slang_bitrate_connection;
 	std::weak_ptr<SlangAudioAnalyseJob> _slang_gain_job;
 	boost::signals2::scoped_connection _slang_gain_connection;
 #endif

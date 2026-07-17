@@ -54,15 +54,15 @@ private:
 
 		add_label_to_sizer(table, _panel, _("J2K coder"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
 		_coder = new wxChoice(_panel, wxID_ANY);
-		_coder->Append(_("HT — HTJ2K, fastest (default)"));
-		_coder->Append(_("MQ — classic JPEG2000, highest quality"));
+		_coder->Append(_("HT - HTJ2K, fastest (default)"));
+		_coder->Append(_("MQ - classic JPEG2000, highest quality"));
 		table->Add(_coder, 1, wxEXPAND);
 
 		add_label_to_sizer(table, _panel, _("Frame server socket"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
 		_socket = new wxTextCtrl(_panel, wxID_ANY);
 		table->Add(_socket, 1, wxEXPAND | wxALL);
 
-		_auto_gain = new CheckBox(_panel, _("Analyse audio on the GPU and reduce gain to just under -3dB"));
+		_auto_gain = new CheckBox(_panel, _("Analyse audio on the GPU and normalize gain to just under -3.5dB"));
 		_panel->GetSizer()->Add(_auto_gain, 0, wxALL | wxEXPAND, _border);
 
 		_smart_center = new CheckBox(_panel, _("Mix mono/stereo sources to L/C/R with a smart centre"));

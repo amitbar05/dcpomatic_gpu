@@ -247,4 +247,16 @@ slang_equivalent_j2k_bit_rate(ContentList const& content)
 	return best;
 }
 
+
+int64_t
+slang_floor_cap_round_j2k_bit_rate(int64_t source_rate, dcp::Size size, int frame_rate, int64_t maximum)
+{
+	auto const floor = max<int64_t>(
+		std::llround(0.3 * size.width * size.height * frame_rate),
+		10000000
+		);
+	auto const target = std::min(std::max(source_rate, floor), maximum);
+	return std::min(std::max<int64_t>(std::llround(target / 1e6), 1) * 1000000, maximum);
+}
+
 #endif

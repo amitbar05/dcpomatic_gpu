@@ -688,8 +688,8 @@ public:
 		std::string coder = "ht";
 		/** Unix socket of the frame server (frame_server.py) */
 		std::string socket = "/tmp/j2k_frames.sock";
-		/** analyse the mix on the GPU before encoding and reduce gain so
-		 *  the peak lands just under -3 dBFS */
+		/** analyse the mix on the GPU before encoding and normalize gain
+		 *  so the peak lands just under -3.5 dBFS */
 		bool auto_gain = true;
 		/** when the film's audio is mono/stereo and no audio processor is
 		 *  set, apply the smart-centre upmix (L/R + soft-clipped centre) */

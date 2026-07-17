@@ -77,6 +77,9 @@ class Film;
 class Job;
 class Log;
 class Playlist;
+#ifdef DCPOMATIC_SLANG
+class SlangBitrateProbeJob;
+#endif
 struct atmos_encrypted_passthrough_test;
 struct recover_test_2d_encrypted;
 
@@ -490,6 +493,10 @@ private:
 	void playlist_length_change();
 	void maybe_add_content(std::weak_ptr<Job>, std::vector<std::weak_ptr<Content>> const& weak_content, bool disable_audio_analysis);
 	void audio_analysis_finished();
+#ifdef DCPOMATIC_SLANG
+	void maybe_match_source_bitrate();
+	void slang_bitrate_probe_finished(Job::Result result, std::weak_ptr<SlangBitrateProbeJob> weak_job);
+#endif
 	void check_settings_consistency();
 	void maybe_set_container_and_resolution();
 	void maybe_set_interop();
