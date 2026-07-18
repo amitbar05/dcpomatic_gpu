@@ -121,6 +121,10 @@ private:
 	bool _cache_hit = false;             ///< skipped the replay (mix unchanged)
 	double _gain_applied_db = 0;
 	double _peak_dbfs = 0;
+	/** Absolute slang auto-gain in effect after this run (== the value
+	 *  persisted via Film::set_slang_auto_gain); natural peak + this = the
+	 *  true resulting mix peak, reported by status(). */
+	double _slang_gain_abs_db = 0;
 };
 
 

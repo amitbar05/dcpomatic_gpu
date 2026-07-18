@@ -50,6 +50,11 @@ private:
 	bool maybe_send_tables(ColourConversion const& conversion);
 	void maybe_send_options(DCPVideo const& frame);
 	void verify_encode_contract(std::vector<uint8_t> const& j2c, DCPVideo const& frame) const;
+	/** Per-frame J2K target rate. A 3D film's video_bit_rate() is the TOTAL
+	 *  rate for both eyes, but each eye is a separate frame here, so a stereo
+	 *  eye is halved (mirrors dcp_video.cc's stereo flag to libdcp). 2D
+	 *  (Eyes::BOTH) is returned unchanged. */
+	int64_t effective_bit_rate(DCPVideo const& frame) const;
 
 	std::unique_ptr<SlangFrameClient> _client;
 	int _backoff = 0;
@@ -77,6 +82,14 @@ private:
 	 * path takes over for the rest of the run. DCPOMATIC_SLANG_NO_SHM=1
 	 * disables it up front (the A/B measurement switch). */
 	bool _shm_disabled = false;
+	/* A7: bound the base run() loop's zero-backoff requeue of a frame that
+	 * fails deterministically. A structured (rc>0) encode error returns {}
+	 * with backoff 0, so run() re-pops the SAME frame immediately and would
+	 * spin forever. Track the last frame index that failed this way and the
+	 * consecutive count, so we set a real backoff and, after a threshold of
+	 * failures on the SAME index, throw (stored via encode()'s catch). */
+	int _last_failed_index = -1;
+	int _consecutive_failures = 0;
 };
 
 

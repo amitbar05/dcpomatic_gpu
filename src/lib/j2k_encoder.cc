@@ -30,6 +30,7 @@
 #include "dcpomatic_log.h"
 #include "encode_server_description.h"
 #include "encode_server_finder.h"
+#include "exceptions.h"
 #include "film.h"
 #include "cpu_j2k_encoder_thread.h"
 #ifdef DCPOMATIC_GROK
@@ -134,6 +135,32 @@ J2KEncoder::~J2KEncoder()
 	delete _dcpomatic_context;
 #endif
 }
+
+
+#ifdef DCPOMATIC_SLANG
+/* The effective Slang coder for this encode run: "ht" or "mq".
+ *
+ * A single reel's picture MXF cannot legally mix HTJ2K (Part 15) and
+ * Part-1/MQ essence.  Heterogeneous CPU+GPU encoding (DCPOMATIC_SLANG_HETERO)
+ * keeps OpenJPEG (Part-1/MQ) CPU encoder threads running alongside the Slang
+ * GPU thread(s), so if the configured Slang coder is "ht" the two pools would
+ * write incompatible essence into the same track.  In that case force the
+ * whole track to "mq" so every thread produces consistent Part-1 essence.
+ * This only affects the local value used to build threads / the end() mop-up;
+ * it never persists back to Config.
+ */
+static std::string
+slang_effective_coder()
+{
+	auto const slang = Config::instance()->slang();
+	bool const slang_enable = getenv("DCPOMATIC_SLANG") != nullptr || slang.enable;
+	bool const slang_hetero = slang_enable && getenv("DCPOMATIC_SLANG_HETERO");
+	if (slang_hetero && slang.coder != "mq") {
+		return "mq";
+	}
+	return slang.coder;
+}
+#endif
 
 
 void
@@ -257,6 +284,37 @@ J2KEncoder::end()
 	rethrow();
 
 	LOG_GENERAL(N_("Mopping up {}"), _queue.size());
+
+#ifdef DCPOMATIC_SLANG
+	/* A8: the mop-up loop below encodes any leftover frames locally with
+	 * OpenJPEG (Part-1/MQ).  When the Slang GPU path is active with the HT
+	 * coder, that would inject Part-1 essence into an HTJ2K reel MXF and
+	 * corrupt the track.  The Slang encoder thread has already been terminated
+	 * above, so we can no longer re-dispatch these frames to it; fail loudly
+	 * rather than ship a mixed-essence MXF.  (If HETERO forced the coder to MQ
+	 * (A9), local encoding is correct and the mop-up proceeds normally.  If
+	 * Grok is handling the queue, the loop routes frames to it, not to local
+	 * encoding, so this does not apply.) */
+	{
+		bool grok_handling = false;
+#ifdef DCPOMATIC_GROK
+		grok_handling = Config::instance()->grok().enable;
+#endif
+		auto const slang_config = Config::instance()->slang();
+		bool const slang_enable = getenv("DCPOMATIC_SLANG") != nullptr || slang_config.enable;
+		if (!_queue.empty() && !grok_handling && slang_enable && slang_effective_coder() == "ht") {
+			try {
+				throw EncodeError(fmt::format(
+					N_("GPU (Slang) HT encode left {} frame(s) un-encoded at the end of the run; refusing to encode them with OpenJPEG (Part-1) as that would corrupt the HTJ2K reel."),
+					_queue.size()
+					));
+			} catch (...) {
+				store_encode_thread_exception();
+				throw;
+			}
+		}
+	}
+#endif
 
 	/* The following sequence of events can occur in the above code:
 	     1. a remote worker takes the last image off the queue
@@ -503,8 +561,16 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 		if (pos < s.size()) sockets.push_back(s.substr(pos));
 		if (sockets.empty()) sockets.push_back("/tmp/j2k_frames.sock");
 	}
+	/* A9: heterogeneous CPU+GPU encoding (DCPOMATIC_SLANG_HETERO) shares one
+	 * reel MXF between the OpenJPEG (Part-1/MQ) CPU threads and the Slang GPU
+	 * thread(s).  slang_effective_coder() forces MQ in that case so the whole
+	 * track is consistent Part-1 essence rather than a mix of HT + Part-1. */
+	auto const slang_coder = slang_effective_coder();
+	if (slang_coder != slang_config.coder) {
+		LOG_WARNING(N_("DCPOMATIC_SLANG_HETERO is set: forcing the Slang coder from '{}' to '{}' so CPU (OpenJPEG/Part-1) and GPU threads produce consistent essence in the shared reel MXF."), slang_config.coder, slang_coder);
+	}
 	for (auto i = current_slang_threads; i < gpu; ++i) {
-		auto thread = make_shared<SlangJ2KEncoderThread>(*this, sockets[i % sockets.size()], slang_config.coder);
+		auto thread = make_shared<SlangJ2KEncoderThread>(*this, sockets[i % sockets.size()], slang_coder);
 		thread->start();
 		_threads.push_back(thread);
 	}

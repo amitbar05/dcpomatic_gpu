@@ -980,6 +980,21 @@ private:
 			}
 			return;
 		}
+		/* HTJ2K (JPEG 2000 Part 15) essence is not valid in an Interop DCP
+		 * (Interop predates Part 15).  Rather than silently changing the user's
+		 * container standard, refuse and tell them how to proceed.  MQ (Part 1)
+		 * is fine in Interop, so only block the HT coder. */
+		if (dialog.coder() == "ht" && _film->interop()) {
+			if (gain_job) {
+				gain_job->cancel();
+			}
+			error_dialog(
+				this,
+				_("HTJ2K (JPEG 2000 Part 15) GPU encoding requires a SMPTE DCP; this film is set to Interop.  "
+				  "Switch the film to SMPTE (DCP -> Standard) or use the MQ coder.")
+				);
+			return;
+		}
 		slang.coder = dialog.coder();
 		/* Persist the enable flag + chosen coder (mirrors the coder control in
 		 * Preferences → GPU (Slang); remembered for next time). */

@@ -209,6 +209,18 @@ SlangAudioAnalyseJob::run()
 			new_delta = MAX_BOOST_DB;
 		}
 		_gain_applied_db = new_delta - prior;
+		/* Cap the boost AFTER backing out the prior contribution: on a changed
+		 * content set 'prior' no longer reflects the current mix, so the per-run
+		 * applied change (new_delta - prior) can exceed MAX_BOOST_DB even though
+		 * new_delta itself is capped. Bound the actually-applied POSITIVE boost
+		 * too; a reduction (negative) is left alone. */
+		if (_gain_applied_db > MAX_BOOST_DB) {
+			_gain_applied_db = MAX_BOOST_DB;
+		}
+		/* Absolute slang gain now in effect = what was already applied plus the
+		 * change applied this run; persist THIS (not new_delta) so the stored
+		 * value stays coherent with the gain actually baked into the content. */
+		_slang_gain_abs_db = prior + _gain_applied_db;
 		if (_gain_applied_db != 0) {
 			for (auto c: _film->content()) {
 				if (c->audio) {
@@ -216,7 +228,7 @@ SlangAudioAnalyseJob::run()
 				}
 			}
 		}
-		const_pointer_cast<Film>(_film)->set_slang_auto_gain(new_delta, digest);
+		const_pointer_cast<Film>(_film)->set_slang_auto_gain(_slang_gain_abs_db, digest);
 	} else {
 		_peak_dbfs = -std::numeric_limits<double>::infinity();
 	}
@@ -239,7 +251,18 @@ SlangAudioAnalyseJob::mix_digest() const
 			/* user gain = total gain minus slang's own (uniform) contribution,
 			 * so the key is stable across auto-gain re-normalisations. */
 			key += c->digest();
-			key += fmt::format(":{:.4f};", c->audio->gain() - prior);
+			key += fmt::format(":{:.4f}", c->audio->gain() - prior);
+			/* Position/trim/fade/mapping all change the resulting mix (hence its
+			 * peak) without touching the content digest -- fold them in so a
+			 * re-trim/move/re-map invalidates the cache instead of shipping a
+			 * stale (possibly clipped) gain. */
+			key += fmt::format(":pos={};ts={};te={};fi={};fo={};map={};",
+					   c->position().get(),
+					   c->trim_start().get(),
+					   c->trim_end().get(),
+					   c->audio->fade_in().get(),
+					   c->audio->fade_out().get(),
+					   c->audio->mapping().digest());
 		}
 	}
 	auto proc = _film->audio_processor();
@@ -266,8 +289,10 @@ SlangAudioAnalyseJob::status() const
 		s += fmt::format(_("; mix peaked at {:.1f} dB, already at target"), _peak_dbfs);
 	} else {
 		/* Report the ACTUAL resulting peak, not TARGET_PEAK_DBFS -- a boost
-		 * capped by MAX_BOOST_DB may land short of target. */
-		double const peak_after = _peak_dbfs + _gain_applied_db;
+		 * capped by MAX_BOOST_DB may land short of target. The resulting peak
+		 * is the natural peak plus the ABSOLUTE slang gain now in effect (not
+		 * the per-run change), so it stays correct across re-runs. */
+		double const peak_after = _peak_dbfs + _slang_gain_abs_db;
 		bool const capped = _gain_applied_db > 0
 			&& peak_after < TARGET_PEAK_DBFS - 0.05;
 		s += fmt::format(

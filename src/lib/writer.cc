@@ -729,6 +729,25 @@ Writer::can_fake_write(Frame frame) const
 
 	/* Make frame relative to the start of the reel */
 	frame -= reel.start();
+
+#ifdef DCPOMATIC_SLANG
+	/* The Slang GPU coder's rate control is history-dependent (its cross-frame
+	   body-budget seed), so re-encoding frame 0 of a partially-written reel on
+	   resume can produce a different byte size than the original run.  Frame 0 is
+	   always really re-written (never fake-written), but frames 1..N would be
+	   fake-written reusing their stored offsets/sizes from the info file - which,
+	   after a differently-sized frame 0, no longer match the essence byte layout.
+	   That silently desyncs the MXF while leaving a valid-looking CPL/PKL hash.
+	   To stay always-correct, disable fake-write for the whole reel whenever the
+	   Slang coder is enabled and we are resuming a partial reel (first non-existent
+	   frame > 0), forcing a full re-encode of the reel.  Deterministic coders
+	   (OpenJPEG / Grok, i.e. Slang disabled) keep the fast fake-write resume.
+	*/
+	if (Config::instance()->slang().enable && reel.first_nonexistent_frame() > 0) {
+		return false;
+	}
+#endif
+
 	return (frame != 0 && frame < reel.first_nonexistent_frame());
 }
 

@@ -94,7 +94,7 @@ SlangJ2KEncoderThread::maybe_send_options(DCPVideo const& frame)
 	}
 	std::vector<uint8_t> err;
 	auto const rc = _client->set_options(
-		_coder, frame.video_bit_rate() / 1e6, frame.frames_per_second(), err);
+		_coder, effective_bit_rate(frame) / 1e6, frame.frames_per_second(), err);
 	if (rc == 0) {
 		_options_generation = _client->generation();
 		_options_transport_failures = 0;
@@ -128,6 +128,22 @@ SlangJ2KEncoderThread::maybe_send_options(DCPVideo const& frame)
 				_coder, message, _coder));
 		}
 	}
+}
+
+
+int64_t
+SlangJ2KEncoderThread::effective_bit_rate(DCPVideo const& frame) const
+{
+	/* A 3D film's video_bit_rate() is the TOTAL J2K rate for both eyes, but
+	 * each eye is encoded here as its own frame, so the per-frame budget for a
+	 * stereo eye is half. This mirrors DCPVideo::encode_locally (dcp_video.cc),
+	 * which passes eyes()==LEFT||RIGHT as libdcp compress_j2k's stereo flag.
+	 * 2D (Eyes::BOTH) is returned unchanged, so 2D behaviour is byte-identical. */
+	auto rate = frame.video_bit_rate();
+	if (frame.eyes() == Eyes::LEFT || frame.eyes() == Eyes::RIGHT) {
+		rate /= 2;
+	}
+	return rate;
 }
 
 
@@ -166,8 +182,9 @@ SlangJ2KEncoderThread::verify_encode_contract(std::vector<uint8_t> const& j2c, D
 		}
 	}
 	auto const fps = frame.frames_per_second();
-	if (fps > 0 && frame.video_bit_rate() > 0) {
-		auto const max_bytes = static_cast<size_t>(frame.video_bit_rate() / 8.0 / fps) + 64;
+	auto const bit_rate = effective_bit_rate(frame);
+	if (fps > 0 && bit_rate > 0) {
+		auto const max_bytes = static_cast<size_t>(bit_rate / 8.0 / fps) + 64;
 		if (j2c.size() > max_bytes) {
 			LOG_ERROR(N_("Slang encoder: frame {} is {} bytes but the film's bit rate allows at most {}"),
 				  frame_index, j2c.size(), max_bytes);
@@ -273,14 +290,19 @@ SlangJ2KEncoderThread::encode_locked(DCPVideo const& frame)
 					int rc;
 					if (use_shm) {
 						rc = _client->encode_rgb48_shm(H, W, index, data);
-						if (rc != 0) {
-							/* A pre-T2.31 server drops the connection on the
-							 * unknown "J2KH" magic (losing the tables), a new
-							 * one reports a segment error — either way, retry
-							 * this frame as a payload (`dst` still points into
-							 * the mapping). Disable shm only if the retry shows
-							 * the server alive, so a dead server doesn't cost
-							 * the optimization once it comes back. */
+						if (rc < 0) {
+							/* rc<0 ONLY: a transport/setup failure (a pre-T2.31
+							 * server drops the connection on the unknown "J2KH"
+							 * magic, losing the tables; a new one reports a
+							 * no-segment/too-small error). rc>0 means the shm
+							 * frame WAS delivered and the server returned a
+							 * structured per-frame error — that is not an shm
+							 * problem, so it must fall through to the rc>0 branch
+							 * below WITHOUT sticky-disabling shm. Retry this frame
+							 * as a payload (`dst` still points into the mapping);
+							 * disable shm only if the retry shows the server
+							 * alive, so a dead server doesn't cost the
+							 * optimization once it comes back. */
 							maybe_send_options(frame);   // the retry runs on a fresh connection
 							if (maybe_send_tables(*conversion)) {
 								rc = _client->encode_rgb48(H, W, index, dst, data);
@@ -339,7 +361,10 @@ SlangJ2KEncoderThread::encode_locked(DCPVideo const& frame)
 	int rc;
 	if (xyz_shm) {
 		rc = _client->encode_shm(H, W, index, data);
-		if (rc != 0) {
+		if (rc < 0) {
+			/* rc<0 ONLY (transport/setup): rc>0 is a structured per-frame
+			 * server error over a delivered shm frame — let it fall through to
+			 * the rc>0 branch below without sticky-disabling shm for the run. */
 			maybe_send_options(frame);   // the payload retry runs on a fresh connection
 			rc = _client->encode(H, W, index, xdst, data);
 			if (rc >= 0) {
@@ -362,9 +387,29 @@ SlangJ2KEncoderThread::encode_locked(DCPVideo const& frame)
 		return {};
 	}
 	if (rc > 0) {
-		LOG_ERROR(N_("Slang encode failed for frame {}: {}"), frame.index(),
-			  string(reinterpret_cast<char const*>(data.data()), data.size()));
-		_backoff = 0;
+		auto const message = string(reinterpret_cast<char const*>(data.data()), data.size());
+		LOG_ERROR(N_("Slang encode failed for frame {}: {}"), frame.index(), message);
+		/* A7: a structured server error normally means "retry this frame" —
+		 * the base run() loop requeues it. But backoff 0 makes it re-pop
+		 * immediately, so a frame that fails DETERMINISTICALLY (e.g. malformed
+		 * input the server can never encode) would busy-spin forever. Bound it:
+		 * count consecutive failures on the SAME frame index, back off a real
+		 * second so we don't hammer the server, and after a threshold give up
+		 * loudly. The throw is stored on the J2KEncoder by encode()'s catch
+		 * (same mechanism as maybe_send_options/verify_encode_contract). */
+		auto const frame_index = frame.index();
+		if (frame_index != _last_failed_index) {
+			_last_failed_index = frame_index;
+			_consecutive_failures = 0;
+		}
+		++_consecutive_failures;
+		_backoff = 1;
+		if (_consecutive_failures >= 3) {
+			throw std::runtime_error(fmt::format(
+				"The GPU frame server failed to encode frame {} on {} consecutive "
+				"attempts ({}).  Aborting the export rather than retrying forever.",
+				frame_index, _consecutive_failures, message));
+		}
 		return {};
 	}
 

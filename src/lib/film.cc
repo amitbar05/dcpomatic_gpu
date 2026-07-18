@@ -287,6 +287,22 @@ Film::video_identifier() const
 		s += "_R";
 	}
 
+#ifdef DCPOMATIC_SLANG
+	/* The Slang GPU J2K encoder, and its block coder (HTJ2K vs MQ), change the
+	   produced codestream, so they MUST be part of the video identity. Without
+	   this, a cancelled export resumed after toggling Slang on/off or switching
+	   the coder (HT<->MQ) reuses cached frames from the OTHER coder and splices
+	   Part-15 and Part-1 frames into one MXF whose descriptor claims a single
+	   coder (verify_encode_contract only checks frames it actually encodes, so
+	   it is blind to the fake-written resumed ones). */
+	{
+		auto const slang = Config::instance()->slang();
+		if (slang.enable && _video_encoding == VideoEncoding::JPEG2000) {
+			s += "_slang_" + slang.coder;
+		}
+	}
+#endif
+
 	return s;
 }
 
@@ -1597,7 +1613,7 @@ Film::maybe_add_content(weak_ptr<Job> j, vector<weak_ptr<Content>> const& weak_c
 
 	bool const analyse_audio = Config::instance()->automatic_audio_analysis()
 #ifdef DCPOMATIC_SLANG
-		|| Config::instance()->slang().auto_gain
+		|| (Config::instance()->slang().enable && Config::instance()->slang().auto_gain)
 #endif
 		;
 
@@ -1658,6 +1674,10 @@ Film::add_content(vector<shared_ptr<Content>> const& content)
 void
 Film::maybe_match_source_bitrate()
 {
+	if (!Config::instance()->slang().enable) {
+		return;
+	}
+
 	if (!Config::instance()->slang().match_source_bitrate) {
 		return;
 	}
@@ -1708,6 +1728,10 @@ Film::slang_bitrate_probe_finished(Job::Result result, weak_ptr<SlangBitrateProb
 void
 Film::maybe_analyse_audio_gain()
 {
+	if (!Config::instance()->slang().enable) {
+		return;
+	}
+
 	if (!Config::instance()->slang().auto_gain) {
 		return;
 	}
