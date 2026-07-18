@@ -130,6 +130,14 @@ Hints::check_upmixers()
 				  "resulting DCP in a cinema to make sure that it sounds good.")
 				)
 		    );
+	} else if (ap && ap->id() == "smart-center-upmixer") {
+		hint(variant::insert_dcpomatic(
+				_("You are using {}'s \"Smart centre\" processor.  This extracts a centre "
+				  "channel from your stereo mix and removes it from left/right, so the left "
+				  "and right channels no longer carry your original stereo signal.  You should "
+				  "listen to the resulting DCP to make sure it still sounds good.")
+				)
+		    );
 	}
 }
 

@@ -22,7 +22,7 @@
 /** Preferences page for the Slang/Vulkan GPU J2K encoder (frame-server
  *  integration): enable the GPU export, pick the Tier-1 coder (HT default
  *  vs MQ), point at the frame server's socket, and control the audio
- *  automation (GPU auto-gain to just under -3 dBFS; smart-centre upmix for
+ *  automation (GPU auto-gain to just under -3.5 dBFS; smart-centre upmix for
  *  mono/stereo sources).  Mirrors the Grok GPUPage next door. */
 
 #pragma once

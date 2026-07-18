@@ -692,7 +692,8 @@ public:
 		 *  so the peak lands just under -3.5 dBFS */
 		bool auto_gain = true;
 		/** when the film's audio is mono/stereo and no audio processor is
-		 *  set, apply the smart-centre upmix (L/R + soft-clipped centre) */
+		 *  set, apply the smart-centre mid/side-extraction upmix (derives a
+		 *  centre from L/R and removes it from them, rather than summing) */
 		bool smart_center = true;
 		/** probe the source video's real bit rate when making the DCP and
 		 *  set the film's JPEG2000 bandwidth to match it */

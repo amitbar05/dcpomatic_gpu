@@ -50,9 +50,11 @@ public:
 private:
 	void show_clicked ();
 	void gain_calculate_button_clicked ();
+	void add_centre_channel_clicked ();
 	void mapping_changed (AudioMapping);
 	void setup_description ();
 	void setup_peak ();
+	void setup_add_centre_channel_sensitivity ();
 	void active_jobs_changed (boost::optional<std::string>, boost::optional<std::string>);
 	void setup_sensitivity ();
 	void add_to_grid () override;
@@ -66,6 +68,7 @@ private:
 	wxStaticText* _gain_db_label;
 	ContentSpinCtrlDouble<AudioContent>* _gain;
 	wxButton* _gain_calculate_button;
+	wxButton* _add_centre_channel;
 	wxStaticText* _peak;
 	wxStaticText* _delay_label;
 	wxStaticText* _delay_ms_label;

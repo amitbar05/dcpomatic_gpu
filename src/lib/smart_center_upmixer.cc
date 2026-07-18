@@ -34,29 +34,10 @@ using std::string;
 using std::vector;
 
 
-/* Soft-clip knee: linear below -3 dBFS, tanh knee above, asymptote 1.0.
- * Matches encoder/src/dcp/audio_mix.py (CLIP_KNEE / soft_clip). */
-static float constexpr CLIP_KNEE = 0.70794578f;      /* 10^(-3/20) */
-static float const INV_SQRT2 = 1.0f / std::sqrt(2.0f);
-
-
-float
-SmartCenterUpmixer::soft_clip(float x)
-{
-	auto const a = std::fabs(x);
-	if (a <= CLIP_KNEE) {
-		return x;
-	}
-	auto const span = 1.0f - CLIP_KNEE;
-	auto const y = CLIP_KNEE + span * std::tanh((a - CLIP_KNEE) / span);
-	return x < 0 ? -y : y;
-}
-
-
 string
 SmartCenterUpmixer::name() const
 {
-	return _("Smart centre (L/R + soft-clipped C)");
+	return _("Smart centre (dialogue extraction to L/C/R)");
 }
 
 
@@ -90,14 +71,23 @@ SmartCenterUpmixer::do_run(shared_ptr<const AudioBuffers> in, int channels)
 	for (int i = 0; i < in->frames(); ++i) {
 		auto const left = in->data()[0][i];
 		auto const right = in->data()[1][i];
-		if (N > 0) {
-			out->data()[0][i] = left;
-		}
-		if (N > 1) {
-			out->data()[1][i] = right;
-		}
-		if (N > 2) {
-			out->data()[2][i] = soft_clip((left + right) * INV_SQRT2);
+		if (N >= 3) {
+			/* Centre extraction: dialogue -> C, removed from L/R.
+			 * L'+C=L, R'+C=R; |C|,|L'|,|R'| <= 1 by construction. */
+			auto const mid = 0.5f * (left + right);
+			out->data()[0][i] = left - mid;   /* (L - R) / 2 */
+			out->data()[1][i] = right - mid;  /* (R - L) / 2 */
+			out->data()[2][i] = mid;
+		} else {
+			/* No centre slot (film pinned < 3 channels): pass L/R
+			 * through so dialogue survives as a phantom centre rather
+			 * than vanishing into an unwritten mid. */
+			if (N > 0) {
+				out->data()[0][i] = left;
+			}
+			if (N > 1) {
+				out->data()[1][i] = right;
+			}
 		}
 	}
 
@@ -113,10 +103,11 @@ SmartCenterUpmixer::make_audio_mapping_default(AudioMapping& mapping) const
 	auto const inputs = mapping.input_channels();
 
 	if (inputs == 1) {
-		/* Mono: feed both inputs at half gain — the synthesized centre
-		 * gets M/sqrt(2) and L/R get M/2 (gentle width, no doubling). */
-		mapping.set(0, 0, 0.5);
-		mapping.set(0, 1, 0.5);
+		/* Mono: feed BOTH input legs at unity so the extraction matrix
+		 * (mid = (L+R)/2 = M) puts the whole mono signal in the centre
+		 * (C = M) with L' = R' = 0 — mono belongs in the centre alone. */
+		mapping.set(0, 0, 1);
+		mapping.set(0, 1, 1);
 		return;
 	}
 

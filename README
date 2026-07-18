@@ -1,3 +1,10 @@
 DCP-o-matic is a program to generate DCPs (digital cinema packages).
 
-Please see [dcpomatic.com](https://dcpomatic.com/) for details.
+Please see [dcpomatic.com](https://dcpomatic.com/) for the upstream project.
+
+This is the GPU JPEG2000 fork: it adds a Slang/Vulkan GPU encode path (HT/MQ
+coders via an external frame server), cinema audio automation (smart-centre 5.1
+upmix + GPU auto-gain on import), source bit-rate matching, a GPU-export GUI,
+and HTJ2K conformance fixes. See README.md for the full list of added features,
+and encoder/integration/dcpomatic/ in the jpeg2000-gpu-encoder repository for
+the integration patch and technical details.

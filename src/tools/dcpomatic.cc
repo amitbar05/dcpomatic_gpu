@@ -935,26 +935,22 @@ private:
 			}
 		}
 
-		/* Mono/stereo sources: mix L+R into a soft-clipped centre.
-		 * set_audio_processor() only changes the film-level pointer; it does
-		 * not touch any content's existing AudioMapping.  Content added
-		 * before this switch is still routed with its pre-processor mapping
-		 * (e.g. mono -> DCP centre directly), whose target indices the new
-		 * processor never reads, so the mix would otherwise be silent.
-		 * Reset every content's mapping to the processor's own default here,
-		 * mirroring what content_factory.cc does when content is first
-		 * added with a processor already selected. */
+		/* Mono/stereo sources: extract a discrete centre (dialogue) via the
+		 * smart-centre mid/side matrix (L/C/R, LFE/Ls/Rs silent = a 5.1-shaped
+		 * mix).  Film::set_audio_processor() itself resets every content's
+		 * AudioMapping to the processor's own default and raises the film to
+		 * the processor's minimum channel count (4, for our 3-output
+		 * processor) -- see its definition for why that reset has to live
+		 * there and not here (this used to be the only call site that did
+		 * it, which left every OTHER way of selecting a processor, e.g. the
+		 * DCP audio panel's dropdown, silently unfixed).  Bump further to a
+		 * full 5.1-wide essence here so the extracted centre -- and the
+		 * other 5.1 slots -- always has somewhere conformant to land, rather
+		 * than just the processor's own minimum. */
 		if (slang.smart_center && any_audio && max_channels <= 2 && !_film->audio_processor()) {
-			auto processor = AudioProcessor::from_id("smart-center-upmixer");
-			_film->set_audio_processor(processor);
-			for (auto content: _film->content()) {
-				if (content->audio) {
-					auto mapping = content->audio->mapping();
-					/* filename is only consulted when processor is null (the
-					 * guess-from-filename fallback); irrelevant here. */
-					mapping.make_default(processor);
-					content->audio->set_mapping(mapping);
-				}
+			_film->set_audio_processor(AudioProcessor::from_id("smart-center-upmixer"));
+			if (_film->audio_channels() < 6) {
+				_film->set_audio_channels(6);
 			}
 		}
 

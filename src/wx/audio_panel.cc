@@ -30,6 +30,7 @@
 #include "static_text.h"
 #include "wx_util.h"
 #include "lib/audio_content.h"
+#include "lib/audio_processor.h"
 #include "lib/cinema_sound_processor.h"
 #include "lib/config.h"
 #include "lib/dcp_content.h"
@@ -109,6 +110,9 @@ AudioPanel::create ()
 
 	_use_same_fades_as_video = new CheckBox(this, _("Use same fades as video"));
 
+	_add_centre_channel = new Button (this, _("Add centre channel"));
+	_sizer->Add (_add_centre_channel, 0, wxALL, 6);
+
 	_mapping = new AudioMappingView (this, _("Content"), _("content"), _("DCP"), _("DCP"));
 	_sizer->Add (_mapping, 1, wxEXPAND | wxALL, 6);
 
@@ -131,6 +135,7 @@ AudioPanel::create ()
 
 	_show->Bind                  (wxEVT_BUTTON,   boost::bind (&AudioPanel::show_clicked, this));
 	_gain_calculate_button->Bind (wxEVT_BUTTON,   boost::bind (&AudioPanel::gain_calculate_button_clicked, this));
+	_add_centre_channel->Bind    (wxEVT_BUTTON,   boost::bind (&AudioPanel::add_centre_channel_clicked, this));
 
 	_fade_in->Changed.connect (boost::bind(&AudioPanel::fade_in_changed, this));
 	_fade_out->Changed.connect (boost::bind(&AudioPanel::fade_out_changed, this));
@@ -199,6 +204,7 @@ AudioPanel::film_changed (FilmProperty property)
 		_mapping->set_top_label(std_to_wx(_parent->film()->audio_output_name()));
 		setup_peak ();
 		setup_sensitivity();
+		setup_add_centre_channel_sensitivity ();
 		break;
 	case FilmProperty::VIDEO_FRAME_RATE:
 		setup_description ();
@@ -336,6 +342,60 @@ AudioPanel::gain_calculate_button_clicked ()
 }
 
 
+/** Bump the film's audio channel count up to the smallest configuration that
+ *  includes a centre channel (4 - L/C/R/Lfe), so a Centre column appears in
+ *  the mapping grid without going via Preferences or the DCP tab.
+ */
+void
+AudioPanel::add_centre_channel_clicked ()
+{
+	if (!_parent->film()) {
+		return;
+	}
+
+	if (_parent->film()->audio_channels() <= static_cast<int>(dcp::Channel::CENTRE)) {
+		_parent->film()->set_audio_channels(static_cast<int>(dcp::Channel::CENTRE) + 2);
+	}
+}
+
+
+void
+AudioPanel::setup_add_centre_channel_sensitivity ()
+{
+	auto const film = _parent->film();
+	auto const processor = film ? film->audio_processor() : nullptr;
+
+	if (processor) {
+		/* With a processor active, the grid above always shows the
+		 * PROCESSOR's own input channels (e.g. Left/Right for the smart
+		 * centre upmixer), not the film's raw DCP channel count, so bumping
+		 * audio_channels() would not add a visible Centre column here; the
+		 * processor is what actually derives C internally.
+		 */
+		_add_centre_channel->Enable (false);
+		_add_centre_channel->SetLabel (wxString::Format(_("Centre added by \"%s\""), std_to_wx(processor->name())));
+		_add_centre_channel->SetToolTip (_(
+			"This processor derives a centre channel internally from the routing above, and "
+			"may also replace the left/right channels shown here with its own internal mix "
+			"(e.g. \"Smart centre\" removes the derived centre from left/right, leaving an "
+			"anti-phase residual rather than your original signal) -- the gains in the grid "
+			"above show routing INTO the processor, not what comes out of it."
+			));
+		return;
+	}
+
+	bool const has_centre = film && film->audio_channels() > static_cast<int>(dcp::Channel::CENTRE);
+
+	_add_centre_channel->Enable (film && !has_centre);
+	_add_centre_channel->SetLabel (_("Add centre channel"));
+	_add_centre_channel->SetToolTip (
+		has_centre ?
+			_("This film's DCP audio already includes a centre channel") :
+			_("Increase the number of DCP audio channels so a centre channel is available to route to")
+		);
+}
+
+
 void
 AudioPanel::setup_description ()
 {
@@ -402,6 +462,8 @@ AudioPanel::setup_sensitivity ()
 	_fade_in->Enable (!_use_same_fades_as_video->GetValue());
 	_fade_out->Enable (!_use_same_fades_as_video->GetValue());
 	_use_same_fades_as_video->Enable (!ref && all_have_video);
+
+	setup_add_centre_channel_sensitivity ();
 }
 
 

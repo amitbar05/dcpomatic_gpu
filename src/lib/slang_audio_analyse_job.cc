@@ -24,6 +24,7 @@
 #include "slang_frame_client.h"
 #include "audio_buffers.h"
 #include "audio_content.h"
+#include "audio_processor.h"
 #include "config.h"
 #include "content.h"
 #include "dcpomatic_log.h"
@@ -34,14 +35,22 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 
 #include "i18n.h"
 
 
+using std::const_pointer_cast;
 using std::make_shared;
 using std::shared_ptr;
 using std::string;
 using namespace dcpomatic;
+
+/* Accumulate roughly this many seconds of audio per J2KA request, rather than
+ * one request per Player callback: a larger, less frequent GPU dispatch (and
+ * socket round-trip) amortises the fixed per-dispatch overhead ~3x while
+ * keeping the peak exact (a max/sum reduction is partition-independent). */
+static int const AUDIO_BATCH_SECONDS = 4;
 #if BOOST_VERSION >= 106100
 using namespace boost::placeholders;
 #endif
@@ -98,26 +107,19 @@ SlangAudioAnalyseJob::analyse(shared_ptr<const AudioBuffers> b, DCPTime time)
 	}
 
 	if (!_gpu_failed) {
-		_interleave.resize(static_cast<size_t>(frames) * channels);
+		/* Interleave this callback's planar samples onto the tail of the
+		 * batch buffer (frame-major, the J2KA wire layout). */
+		auto const base = static_cast<size_t>(_batch_frames) * channels;
+		_batch.resize(base + static_cast<size_t>(frames) * channels);
 		for (int c = 0; c < channels; ++c) {
 			auto const* d = b->data()[c];
 			for (int i = 0; i < frames; ++i) {
-				_interleave[static_cast<size_t>(i) * channels + c] = d[i];
+				_batch[base + static_cast<size_t>(i) * channels + c] = d[i];
 			}
 		}
-		SlangFrameClient::AudioStats stats;
-		std::vector<uint8_t> err;
-		auto const rc = _client->analyze_audio(
-			_interleave.data(), frames, channels,
-			_film->audio_frame_rate(), _seq++, stats, err);
-		if (rc == 0) {
-			_server_peak = stats.overall_peak();
-			_used_gpu = true;
-		} else {
-			LOG_GENERAL(N_("Slang audio analysis: server unavailable ({}); measuring locally"),
-				    rc > 0 ? string(reinterpret_cast<char const*>(err.data()), err.size()) : "transport error");
-			_gpu_failed = true;
-			_used_gpu = false;
+		_batch_frames += frames;
+		if (_batch_frames >= static_cast<int64_t>(AUDIO_BATCH_SECONDS) * _film->audio_frame_rate()) {
+			flush_audio_batch();
 		}
 	}
 
@@ -125,9 +127,61 @@ SlangAudioAnalyseJob::analyse(shared_ptr<const AudioBuffers> b, DCPTime time)
 }
 
 
+/** Send whatever audio has accumulated in _batch to the GPU as one J2KA
+ *  request. Fewer, larger dispatches than one-per-callback; the peak is exact
+ *  regardless of how the stream is partitioned. */
+void
+SlangAudioAnalyseJob::flush_audio_batch()
+{
+	if (_gpu_failed || _batch_frames == 0) {
+		return;
+	}
+	auto const channels = static_cast<int>(_batch.size() / _batch_frames);
+	SlangFrameClient::AudioStats stats;
+	std::vector<uint8_t> err;
+	auto const rc = _client->analyze_audio(
+		_batch.data(), static_cast<uint32_t>(_batch_frames), channels,
+		_film->audio_frame_rate(), _seq++, stats, err);
+	if (rc == 0) {
+		_server_peak = stats.overall_peak();
+		_used_gpu = true;
+	} else {
+		LOG_GENERAL(N_("Slang audio analysis: server unavailable ({}); measuring locally"),
+			    rc > 0 ? string(reinterpret_cast<char const*>(err.data()), err.size()) : "transport error");
+		_gpu_failed = true;
+		_used_gpu = false;
+	}
+	_batch.clear();
+	_batch_frames = 0;
+}
+
+
 void
 SlangAudioAnalyseJob::run()
 {
+	bool has_any_audio = false;
+	for (auto c: _film->content()) {
+		if (c->audio) {
+			has_any_audio = true;
+			break;
+		}
+	}
+
+	/* Idempotency short-circuit: if the natural mix is byte-for-byte the same
+	 * as when we last normalised it, the gain already applied is still correct
+	 * — skip the whole (expensive) audio replay. Guarded on a prior run having
+	 * happened (slang_auto_gain_db != 0 OR a stored digest), so the first-ever
+	 * analysis always runs. */
+	auto const digest = mix_digest();
+	if (has_any_audio && !_film->slang_audio_digest().empty()
+	    && digest == _film->slang_audio_digest()) {
+		_cache_hit = true;
+		_gain_applied_db = 0;
+		set_progress(1);
+		set_state(FINISHED_OK);
+		return;
+	}
+
 	auto player = make_shared<Player>(_film, _film->playlist(), false);
 	player->set_ignore_video();
 	player->set_ignore_text();
@@ -135,35 +189,64 @@ SlangAudioAnalyseJob::run()
 	player->set_play_referenced();
 	player->Audio.connect(bind(&SlangAudioAnalyseJob::analyse, this, _1, _2));
 
-	bool has_any_audio = false;
-	for (auto c: _film->content()) {
-		if (c->audio) {
-			has_any_audio = true;
-		}
-	}
-
 	if (has_any_audio) {
 		while (!player->pass()) {}
+		flush_audio_batch();                 /* the last partial batch */
 	}
 
 	auto const peak = _used_gpu && !_gpu_failed ? _server_peak : _local_peak;
 	if (peak > 0) {
-		_peak_dbfs = 20 * std::log10(peak);
-		_gain_applied_db = TARGET_PEAK_DBFS - _peak_dbfs;
-		for (auto c: _film->content()) {
-			if (c->audio) {
-				c->audio->set_gain(c->audio->gain() + _gain_applied_db);
+		/* Absolute (idempotent) apply: back out the contribution slang itself
+		 * already baked into the measured mix, then normalise the *natural*
+		 * peak to the target and apply only the difference vs what is already
+		 * applied. A no-change re-run therefore adjusts by exactly 0 dB. */
+		double const prior = _film->slang_auto_gain_db();
+		double const measured_dbfs = 20 * std::log10(peak);
+		_peak_dbfs = measured_dbfs - prior;                  /* natural peak, for reporting */
+		double new_delta = TARGET_PEAK_DBFS - _peak_dbfs;
+		if (new_delta > MAX_BOOST_DB) {
+			/* Cap the BOOST only -- a reduction (new_delta < 0) is left alone. */
+			new_delta = MAX_BOOST_DB;
+		}
+		_gain_applied_db = new_delta - prior;
+		if (_gain_applied_db != 0) {
+			for (auto c: _film->content()) {
+				if (c->audio) {
+					c->audio->set_gain(c->audio->gain() + _gain_applied_db);
+				}
 			}
 		}
+		const_pointer_cast<Film>(_film)->set_slang_auto_gain(new_delta, digest);
 	} else {
 		_peak_dbfs = -std::numeric_limits<double>::infinity();
 	}
 
-	LOG_GENERAL(N_("Slang audio analysis: mix peak {} dBFS ({}), gain change {} dB"),
+	LOG_GENERAL(N_("Slang audio analysis: natural peak {} dBFS ({}), gain change {} dB"),
 		    _peak_dbfs, _used_gpu ? "GPU" : "local", _gain_applied_db);
 
 	set_progress(1);
 	set_state(FINISHED_OK);
+}
+
+
+string
+SlangAudioAnalyseJob::mix_digest() const
+{
+	double const prior = _film->slang_auto_gain_db();
+	string key;
+	for (auto c: _film->content()) {
+		if (c->audio) {
+			/* user gain = total gain minus slang's own (uniform) contribution,
+			 * so the key is stable across auto-gain re-normalisations. */
+			key += c->digest();
+			key += fmt::format(":{:.4f};", c->audio->gain() - prior);
+		}
+	}
+	auto proc = _film->audio_processor();
+	key += fmt::format("|proc={}|ch={}|rate={}",
+			   proc ? proc->id() : string("none"),
+			   _film->audio_channels(), _film->audio_frame_rate());
+	return key;
 }
 
 
@@ -175,16 +258,25 @@ SlangAudioAnalyseJob::status() const
 		return s;
 	}
 
-	if (!std::isfinite(_peak_dbfs)) {
+	if (_cache_hit) {
+		s += _("; audio unchanged, gain already normalised");
+	} else if (!std::isfinite(_peak_dbfs)) {
 		s += _("; mix was silent, no gain applied");
 	} else if (_gain_applied_db == 0) {
 		s += fmt::format(_("; mix peaked at {:.1f} dB, already at target"), _peak_dbfs);
 	} else {
+		/* Report the ACTUAL resulting peak, not TARGET_PEAK_DBFS -- a boost
+		 * capped by MAX_BOOST_DB may land short of target. */
+		double const peak_after = _peak_dbfs + _gain_applied_db;
+		bool const capped = _gain_applied_db > 0
+			&& peak_after < TARGET_PEAK_DBFS - 0.05;
 		s += fmt::format(
 			_gain_applied_db < 0
 				? _("; mix peaked at {:.1f} dB, gain reduced by {:.1f} dB to {:.1f} dB")
-				: _("; mix peaked at {:.1f} dB, gain increased by {:.1f} dB to {:.1f} dB"),
-			_peak_dbfs, std::abs(_gain_applied_db), TARGET_PEAK_DBFS
+				: capped
+					? _("; mix peaked at {:.1f} dB, gain increased by {:.1f} dB (boost capped) to {:.1f} dB")
+					: _("; mix peaked at {:.1f} dB, gain increased by {:.1f} dB to {:.1f} dB"),
+			_peak_dbfs, std::abs(_gain_applied_db), peak_after
 			);
 	}
 	return s;

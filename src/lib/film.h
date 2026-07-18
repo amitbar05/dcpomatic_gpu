@@ -79,6 +79,7 @@ class Log;
 class Playlist;
 #ifdef DCPOMATIC_SLANG
 class SlangBitrateProbeJob;
+class SlangAudioAnalyseJob;
 #endif
 struct atmos_encrypted_passthrough_test;
 struct recover_test_2d_encrypted;
@@ -262,6 +263,21 @@ public:
 	int audio_channels() const {
 		return _audio_channels;
 	}
+
+#ifdef DCPOMATIC_SLANG
+	/** @return the uniform gain (dB) the Slang auto-gain pre-pass currently
+	 *  has baked into every audio content, so a re-run can back it out and
+	 *  apply an ABSOLUTE correction instead of accumulating (idempotent). */
+	double slang_auto_gain_db() const {
+		return _slang_auto_gain_db;
+	}
+	/** Record the Slang auto-gain contribution (+ the audio-mix digest it was
+	 *  computed for). Called by SlangAudioAnalyseJob after it applies gain. */
+	void set_slang_auto_gain(double db, std::string digest);
+	std::string slang_audio_digest() const {
+		return _slang_audio_digest;
+	}
+#endif
 
 	bool three_d() const {
 		return _three_d;
@@ -496,6 +512,8 @@ private:
 #ifdef DCPOMATIC_SLANG
 	void maybe_match_source_bitrate();
 	void slang_bitrate_probe_finished(Job::Result result, std::weak_ptr<SlangBitrateProbeJob> weak_job);
+	void maybe_analyse_audio_gain();
+	void slang_audio_gain_finished(Job::Result result, std::weak_ptr<SlangAudioAnalyseJob> weak_job);
 #endif
 	void check_settings_consistency();
 	void maybe_set_container_and_resolution();
@@ -607,6 +625,18 @@ private:
 	boost::signals2::scoped_connection _playlist_length_change_connection;
 	std::list<boost::signals2::connection> _job_connections;
 	std::list<boost::signals2::connection> _audio_analysis_connections;
+
+#ifdef DCPOMATIC_SLANG
+	/** dB the Slang auto-gain pre-pass currently has baked into every audio
+	 *  content (0 = none). Persisted so idempotency survives save/reload. */
+	double _slang_auto_gain_db = 0;
+	/** audio-mix digest _slang_auto_gain_db was computed for; a re-run whose
+	 *  digest matches skips the (expensive) audio replay. */
+	std::string _slang_audio_digest;
+	/** the in-flight content-add-time gain job, so a second content add can
+	 *  cancel-and-restart it instead of racing two additive mutations. */
+	std::weak_ptr<SlangAudioAnalyseJob> _slang_audio_gain_job;
+#endif
 
 };
 

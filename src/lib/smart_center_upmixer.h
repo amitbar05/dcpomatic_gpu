@@ -28,16 +28,20 @@
 
 
 /** @class SmartCenterUpmixer
- *  @brief Mono/stereo -> L/C/R with a synthesized, soft-clipped centre.
+ *  @brief Mono/stereo -> L/C/R with a mid/side centre-EXTRACTION matrix.
  *
- *  Cinema dialogue lives in the CENTRE speaker, but mono/stereo sources have
- *  no centre channel.  This processor passes L and R through and synthesizes
- *  C = softclip((L + R) / sqrt(2)) — the constant-power mono sum, so
- *  correlated (dialogue) content lands ~+3 dB in the centre while
- *  uncorrelated (wide) content stays at its natural level and out-of-phase
- *  content cancels.  Two full-scale correlated channels would sum to
- *  ~+3 dBFS, so the centre is soft-CLIPPED: exactly linear below the -3 dBFS
- *  knee, then a smooth tanh knee that can never reach full scale.
+ *  Cinema dialogue belongs in the CENTRE speaker, but mono/stereo sources have
+ *  no discrete centre.  This processor derives one and REMOVES it from L/R, so
+ *  dialogue plays from the centre alone rather than the centre plus a phantom
+ *  in L+R ("doubling"):
+ *
+ *      mid = (L + R) / 2 ;  C = mid ;  L' = L - mid ;  R' = R - mid
+ *
+ *  L' + C = L and R' + C = R exactly (the stereo image is preserved for an
+ *  equidistant listener); fully-correlated content lands in C with |C| <= 1 by
+ *  construction (no clipping needed); out-of-phase content cancels in C.  This
+ *  is DCP-o-matic's own Mid/Side decode routed to L/C/R.  A mono source goes to
+ *  C alone (L' = R' = 0).  LFE/Ls/Rs are left silent.
  *
  *  Mirrors encoder/src/dcp/audio_mix.py (the GPU export's Python reference).
  */
@@ -50,8 +54,6 @@ public:
 	std::shared_ptr<AudioProcessor> clone(int) const override;
 	void make_audio_mapping_default(AudioMapping& mapping) const override;
 	std::vector<NamedChannel> input_names() const override;
-
-	static float soft_clip(float x);
 
 protected:
 	std::shared_ptr<AudioBuffers> do_run(std::shared_ptr<const AudioBuffers>, int channels) override;

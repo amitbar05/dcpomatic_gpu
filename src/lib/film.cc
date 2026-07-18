@@ -55,6 +55,7 @@
 #include "ratio.h"
 #include "screen.h"
 #ifdef DCPOMATIC_SLANG
+#include "slang_audio_analyse_job.h"
 #include "slang_bitrate_probe_job.h"
 #include "slang_source_bitrate.h"
 #endif
@@ -420,6 +421,15 @@ Film::metadata(bool with_content_paths) const
 	cxml::add_text_child(root, "AudioFrameRate", fmt::to_string(_audio_frame_rate));
 	cxml::add_text_child(root, "ISDCFDate", boost::gregorian::to_iso_string(_isdcf_date));
 	cxml::add_text_child(root, "AudioChannels", fmt::to_string(_audio_channels));
+#ifdef DCPOMATIC_SLANG
+	/* Persisted so the Slang auto-gain stays idempotent across save/reload:
+	 * without the baked-in contribution, a reopened film would treat slang's
+	 * own gain as user gain and mis-normalise on the next analysis. */
+	cxml::add_text_child(root, "SlangAutoGainDB", fmt::to_string(_slang_auto_gain_db));
+	if (!_slang_audio_digest.empty()) {
+		cxml::add_text_child(root, "SlangAudioDigest", _slang_audio_digest);
+	}
+#endif
 	cxml::add_text_child(root, "ThreeD", _three_d ? "1" : "0");
 	cxml::add_text_child(root, "Sequence", _sequence ? "1" : "0");
 	cxml::add_text_child(root, "Interop", _interop ? "1" : "0");
@@ -620,6 +630,10 @@ Film::read_metadata(optional<boost::filesystem::path> path)
 	} else if ((_audio_channels % 2) == 1) {
 		_audio_channels++;
 	}
+#ifdef DCPOMATIC_SLANG
+	_slang_auto_gain_db = f.optional_number_child<double>("SlangAutoGainDB").get_value_or(0);
+	_slang_audio_digest = f.optional_string_child("SlangAudioDigest").get_value_or("");
+#endif
 
 	if (f.optional_bool_child("SequenceVideo")) {
 		_sequence = f.bool_child("SequenceVideo");
@@ -1319,9 +1333,42 @@ Film::set_limit_to_smpte_bv20(bool limit)
 void
 Film::set_audio_processor(AudioProcessor const * processor)
 {
+	if (processor == _audio_processor) {
+		return;
+	}
+
 	FilmChangeSignaller ch1(this, FilmProperty::AUDIO_PROCESSOR);
 	FilmChangeSignaller ch2(this, FilmProperty::AUDIO_CHANNELS);
 	_audio_processor = processor;
+
+	if (processor) {
+		/* Make sure the film has enough channels for this processor's output
+		 * (e.g. the smart-centre upmixer needs a discrete Centre slot at
+		 * index 2), and reset every content's routing to the processor's own
+		 * default.  Without this, content whose mapping was computed for the
+		 * PREVIOUS processor (or no processor at all) keeps routing to
+		 * indices the new processor never reads -- for a mono stream, whose
+		 * no-processor default routes it straight to the DCP's Centre
+		 * channel, that silences the ENTIRE mix once a processor that only
+		 * reads channels 0/1 is selected, with no error shown anywhere.
+		 * Doing the reset here (rather than ad-hoc in individual callers,
+		 * e.g. the GPU export menu item) means every caller -- the DCP audio
+		 * panel's processor dropdown included -- gets it for free. */
+		auto min_channels = processor->out_channels();
+		if (min_channels % 2 == 1) {
+			++min_channels;
+		}
+		if (_audio_channels < min_channels) {
+			_audio_channels = min_channels;
+		}
+		for (auto content: _playlist->content()) {
+			if (content->audio) {
+				auto mapping = content->audio->mapping();
+				mapping.make_default(processor);
+				content->audio->set_mapping(mapping);
+			}
+		}
+	}
 }
 
 void
@@ -1545,10 +1592,17 @@ Film::maybe_add_content(weak_ptr<Job> j, vector<weak_ptr<Content>> const& weak_c
 
 #ifdef DCPOMATIC_SLANG
 	maybe_match_source_bitrate();
+	maybe_analyse_audio_gain();
 #endif
 
+	bool const analyse_audio = Config::instance()->automatic_audio_analysis()
+#ifdef DCPOMATIC_SLANG
+		|| Config::instance()->slang().auto_gain
+#endif
+		;
+
 	for (auto i: content) {
-		if (Config::instance()->automatic_audio_analysis() && !disable_audio_analysis) {
+		if (analyse_audio && !disable_audio_analysis) {
 			if (i->audio) {
 				auto playlist = make_shared<Playlist>();
 				playlist->add(shared_from_this(), i);
@@ -1638,6 +1692,73 @@ Film::slang_bitrate_probe_finished(Job::Result result, weak_ptr<SlangBitrateProb
 	auto const cap = Config::instance()->maximum_video_bit_rate(VideoEncoding::JPEG2000);
 	auto const new_rate = slang_floor_cap_round_j2k_bit_rate(*job->rate(), frame_size(), video_frame_rate(), cap);
 	set_video_bit_rate(VideoEncoding::JPEG2000, new_rate);
+}
+
+
+/** Kick off the GPU audio analysis + auto-gain pre-pass as soon as content is
+ *  added (mirroring maybe_match_source_bitrate), so the mix is normalised to
+ *  just under -3.5 dBFS on import rather than only at "Make DCP using GPU"
+ *  time.  The job applies an ABSOLUTE, idempotent correction (it backs out its
+ *  own previously-baked contribution via slang_auto_gain_db()), so running it
+ *  now AND again at export never accumulates.  A second content add cancels the
+ *  in-flight job and restarts it (the job only mutates gain at the very end of
+ *  run(), so a superseded one never reaches the set_gain loop) — two additive
+ *  gain jobs racing is the one genuinely unsafe case.
+ */
+void
+Film::maybe_analyse_audio_gain()
+{
+	if (!Config::instance()->slang().auto_gain) {
+		return;
+	}
+
+	bool any_audio = false;
+	for (auto c: content()) {
+		if (c->audio) {
+			any_audio = true;
+			break;
+		}
+	}
+	if (!any_audio) {
+		return;
+	}
+
+	if (auto existing = _slang_audio_gain_job.lock()) {
+		if (!existing->finished()) {
+			existing->cancel();
+		}
+	}
+
+	auto gain_job = make_shared<SlangAudioAnalyseJob>(shared_from_this());
+	_slang_audio_gain_job = gain_job;
+	JobManager::instance()->add(gain_job);
+	boost::signals2::connection connection;
+	gain_job->when_finished(
+		connection, bind(&Film::slang_audio_gain_finished, this, _1, weak_ptr<SlangAudioAnalyseJob>(gain_job))
+		);
+	_job_connections.push_back(connection);
+}
+
+
+/** Finished handler for the content-add-time gain job.  The job itself applies
+ *  the gain + records slang_auto_gain_db(), so there is nothing to do here on
+ *  success; this exists for the bound-weak_ptr race-safety pattern (a cancelled
+ *  or superseded job must not act) that mirrors slang_bitrate_probe_finished.
+ */
+void
+Film::slang_audio_gain_finished(Job::Result, weak_ptr<SlangAudioAnalyseJob>)
+{
+}
+
+
+void
+Film::set_slang_auto_gain(double db, string digest)
+{
+	/* No FilmProperty / signal: the gain application (AudioContent::set_gain)
+	 * that precedes this already marked the film changed, so these fields are
+	 * persisted with it; a no-change re-run leaves everything untouched. */
+	_slang_auto_gain_db = db;
+	_slang_audio_digest = digest;
 }
 #endif
 
