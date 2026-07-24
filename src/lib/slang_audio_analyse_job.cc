@@ -51,6 +51,103 @@ using namespace dcpomatic;
  * socket round-trip) amortises the fixed per-dispatch overhead ~3x while
  * keeping the peak exact (a max/sum reduction is partition-independent). */
 static int const AUDIO_BATCH_SECONDS = 4;
+
+/* SLANG_AUTO_GAIN_MATH_BEGIN (kept dependency-free and inside these markers:
+ * tests/test_slang_audio_gain_math.py slices it out and compiles it standalone,
+ * so the case table below is executed rather than merely asserted in prose). */
+
+/** The ABSOLUTE slang auto-gain, in dB, that should be in effect given the
+ *  mix's NATURAL peak (i.e. with any previously-applied slang gain already
+ *  backed out). This -- not the per-run change -- is the quantity `max_boost`
+ *  bounds, mirroring audio_gpu.auto_gain_db, which likewise returns an
+ *  absolute, capped gain.
+ *
+ *  The caller derives the per-run change as `result - prior` and must NOT clamp
+ *  it again. An earlier version did, and that second clamp bounded the wrong
+ *  quantity: `result - prior` is a boost above natural only when `prior` is
+ *  zero; when `prior` is negative it is the CORRECTION of a previously-applied
+ *  reduction, and the clamp fired spuriously. The failure it caused: a hot
+ *  master (natural +2.5 dBFS) gets prior = -6.0; the operator then trims their
+ *  own content gain by -12 dB (a normal edit -- mix_digest folds content gain
+ *  in, so the idempotency cache correctly invalidates and the job re-runs).
+ *  Effective natural is now -9.5 dBFS, so the absolute gain wanted is
+ *  -3.5 - (-9.5) = +6.0 -- exactly AT and within the legal cap. But the per-run
+ *  change is 6.0 - (-6.0) = 12.0, which the old clamp cut to 6.0: only half the
+ *  correction was applied, the soundtrack shipped at -9.5 dBFS instead of -3.5,
+ *  the shortfall was persisted in _slang_gain_abs_db AND the digest was stored,
+ *  so every re-run hit the cache and the mix stayed 6 dB quiet permanently.
+ *
+ *  Case table (target -3.5, cap +6; N = natural peak, D = this function's
+ *  result, applied = D - prior, stored absolute = D):
+ *    prior  0.0, N -3.5 (first run, already at target) -> D   0.0, applied   0.0
+ *    prior  0.0, N +2.5 (hot master)                   -> D  -6.0, applied  -6.0
+ *    prior -6.0, mix unchanged                         -> D  -6.0, applied   0.0 (idempotent)
+ *    prior -6.0, operator trims content -12 dB         -> D  +6.0, applied +12.0 (the bug case)
+ *    prior -6.0, operator raises content +12 dB        -> D -18.0, applied -12.0 (reduction, uncapped)
+ *    prior +6.0, mix unchanged (boost capped short)    -> D  +6.0, applied   0.0 (idempotent)
+ *    prior +6.0, content raised until N 0.0            -> D  -3.5, applied  -9.5
+ *    prior +3.0, content now much quieter, N -30       -> D  +6.0, applied  +3.0 (capped short)
+ *  In every row the absolute slang gain ending in effect is D, which is capped,
+ *  so the boost-above-natural bound still holds -- it is now enforced on the
+ *  quantity it actually describes.
+ *
+ *  NB the "changed content set" the removed clamp cited is NOT covered by a
+ *  delta clamp, so nothing was lost: when content is added or removed, `prior`
+ *  no longer describes the surviving content's baked gain, and a uniform
+ *  set_gain() over the new set converges to the same wrong peak with or without
+ *  the clamp (the clamp only spread the same error over more runs). Nor can it
+ *  be fixed by invalidating `prior` whenever mix_digest changes -- the digest
+ *  changes on every legitimate re-run too (that is what makes the job re-run at
+ *  all), and dropping `prior` there would break the absolute/idempotent
+ *  semantics for the ordinary trim-and-re-run case above. Tracking slang's
+ *  contribution as one per-film scalar is the real limitation; it is left
+ *  visible rather than papered over. */
+static double
+slang_auto_gain_absolute_db(double natural_peak_dbfs, double target_dbfs, double max_boost_db)
+{
+	double const want = target_dbfs - natural_peak_dbfs;
+	/* Cap the BOOST only -- a reduction (want < 0) is left alone: a mix that is
+	 * too hot must always be brought down, however far. */
+	return want > max_boost_db ? max_boost_db : want;
+}
+
+/* SLANG_AUTO_GAIN_MATH_END */
+
+/* SLANG_PEAK_SOURCE_BEGIN -- kept dependency-free and sliced out for a
+ * standalone test the same way as the block just above (see
+ * test_slang_audio_gain_math.py, which extracts both). Which peak source
+ * `run()` trusts: the server's cumulative J2KA answer, or the local ground-
+ * truth accumulator computed unconditionally over every sample regardless of
+ * server reachability. `peak_mismatch` must override `used_gpu` even when the
+ * server is (as far as `used_gpu`/`gpu_failed` can tell) healthy -- that is
+ * the entire point of the cross-check in flush_audio_batch(): a server that
+ * ANSWERED is not the same as a server that measured what was sent. */
+static double
+slang_selected_peak(bool used_gpu, bool gpu_failed, bool peak_mismatch,
+		    double server_peak, double local_peak)
+{
+	return (used_gpu && !gpu_failed && !peak_mismatch) ? server_peak : local_peak;
+}
+
+/* A finite peak grossly above full scale (1.0) is upstream corruption -- a
+ * decoder fault, an uninitialised/aliased buffer, an int reinterpreted as
+ * float -- not a hot master. Auto-gain must REFUSE it: normalising a 1e12 peak
+ * to target computes an enormous negative gain that scales the real mix to ~0,
+ * shipping a valid-but-silent soundtrack off one garbage sample. This mirrors
+ * audio_gpu.SANE_PEAK_MAX on the Python side; the C++ mirror is load-bearing
+ * because rejecting the J2KA request there just makes this job fall back to its
+ * own _local_peak, which carries the same huge value. Full scale is 1.0, so
+ * ~60 dB of headroom is far beyond any real pre-normalise content. */
+static double const SLANG_SANE_PEAK_MAX = 1.0e3;
+
+static bool
+slang_peak_is_sane(double peak)
+{
+	return peak > 0.0 && peak <= SLANG_SANE_PEAK_MAX;
+}
+
+/* SLANG_PEAK_SOURCE_END */
+
 #if BOOST_VERSION >= 106100
 using namespace boost::placeholders;
 #endif
@@ -93,9 +190,14 @@ SlangAudioAnalyseJob::analyse(shared_ptr<const AudioBuffers> b, DCPTime time)
 		return;
 	}
 
-	/* Local peak: the fallback when the server is unreachable (and a free
-	 * cross-check when it isn't — the wire carries float32 of the same
-	 * samples, so the two agree exactly). */
+	/* Local peak: the fallback when the server is unreachable, AND the
+	 * ground-truth cross-check when it isn't -- the wire carries float32 of
+	 * the same samples, so the two are expected to agree EXACTLY (mirrors
+	 * audio_gpu.py's proven GPU==CPU peak guarantee). flush_audio_batch()
+	 * below actually performs that comparison on every batch; this used to be
+	 * computed and never checked against anything -- an ACK ("the server
+	 * answered") standing in for verification ("the server measured what we
+	 * sent"), the same gap the coder-switch incident found in J2KO. */
 	for (int c = 0; c < channels; ++c) {
 		auto const* d = b->data()[c];
 		for (int i = 0; i < frames; ++i) {
@@ -145,6 +247,24 @@ SlangAudioAnalyseJob::flush_audio_batch()
 	if (rc == 0) {
 		_server_peak = stats.overall_peak();
 		_used_gpu = true;
+		/* Ground-truth check: _local_peak was updated over exactly the
+		 * samples just flushed (and nothing more -- analyse() updates it and
+		 * appends to _batch from the same callback, and this flush runs
+		 * synchronously before the next callback can add anything past what
+		 * was just sent), so the two are cumulative peaks over the identical
+		 * sample set and must match bit-for-bit. A mismatch is only possible
+		 * if the server is not actually measuring what this connection sent
+		 * it -- exactly the failure an ACK cannot rule out. Sticky: once
+		 * caught, stop trusting this run's server peak even if a later batch
+		 * happens to agree again. */
+		if (_server_peak != _local_peak) {
+			LOG_GENERAL(N_("Slang audio analysis: server/local peak MISMATCH "
+				       "({} vs {}) -- the GPU path is not measuring the "
+				       "samples this connection sent; the server's peak is "
+				       "no longer trusted for the rest of this run"),
+				    _server_peak, _local_peak);
+			_peak_mismatch = true;
+		}
 	} else {
 		LOG_GENERAL(N_("Slang audio analysis: server unavailable ({}); measuring locally"),
 			    rc > 0 ? string(reinterpret_cast<char const*>(err.data()), err.size()) : "transport error");
@@ -194,7 +314,24 @@ SlangAudioAnalyseJob::run()
 		flush_audio_batch();                 /* the last partial batch */
 	}
 
-	auto const peak = _used_gpu && !_gpu_failed ? _server_peak : _local_peak;
+	auto const peak = slang_selected_peak(_used_gpu, _gpu_failed, _peak_mismatch,
+					      _server_peak, _local_peak);
+	if (peak > 0 && !slang_peak_is_sane(peak)) {
+		/* Corruption, not a hot master (see slang_peak_is_sane): refuse to
+		 * apply auto-gain -- an enormous reduction would silence the whole
+		 * film. Leave the content gain untouched and make it LOUD in the log
+		 * rather than shipping a silent soundtrack off one bad sample. */
+		LOG_GENERAL(N_("Slang audio analysis: peak {} is far above full scale "
+			       "-- a grossly-out-of-range sample (source/decode "
+			       "corruption); NOT applying auto-gain, which would "
+			       "silence the soundtrack. Fix the source and re-run."),
+			    peak);
+		_peak_dbfs = 20 * std::log10(peak);
+		_gain_applied_db = 0;
+		set_progress(1);
+		set_state(FINISHED_OK);
+		return;
+	}
 	if (peak > 0) {
 		/* Absolute (idempotent) apply: back out the contribution slang itself
 		 * already baked into the measured mix, then normalise the *natural*
@@ -203,24 +340,9 @@ SlangAudioAnalyseJob::run()
 		double const prior = _film->slang_auto_gain_db();
 		double const measured_dbfs = 20 * std::log10(peak);
 		_peak_dbfs = measured_dbfs - prior;                  /* natural peak, for reporting */
-		double new_delta = TARGET_PEAK_DBFS - _peak_dbfs;
-		if (new_delta > MAX_BOOST_DB) {
-			/* Cap the BOOST only -- a reduction (new_delta < 0) is left alone. */
-			new_delta = MAX_BOOST_DB;
-		}
-		_gain_applied_db = new_delta - prior;
-		/* Cap the boost AFTER backing out the prior contribution: on a changed
-		 * content set 'prior' no longer reflects the current mix, so the per-run
-		 * applied change (new_delta - prior) can exceed MAX_BOOST_DB even though
-		 * new_delta itself is capped. Bound the actually-applied POSITIVE boost
-		 * too; a reduction (negative) is left alone. */
-		if (_gain_applied_db > MAX_BOOST_DB) {
-			_gain_applied_db = MAX_BOOST_DB;
-		}
-		/* Absolute slang gain now in effect = what was already applied plus the
-		 * change applied this run; persist THIS (not new_delta) so the stored
-		 * value stays coherent with the gain actually baked into the content. */
-		_slang_gain_abs_db = prior + _gain_applied_db;
+		_slang_gain_abs_db = slang_auto_gain_absolute_db(
+			_peak_dbfs, TARGET_PEAK_DBFS, MAX_BOOST_DB);
+		_gain_applied_db = _slang_gain_abs_db - prior;
 		if (_gain_applied_db != 0) {
 			for (auto c: _film->content()) {
 				if (c->audio) {
@@ -233,8 +355,16 @@ SlangAudioAnalyseJob::run()
 		_peak_dbfs = -std::numeric_limits<double>::infinity();
 	}
 
+	/* Report which source the applied peak actually came from -- not just
+	 * whether the server was reachable. "GPU-mismatch->local" makes a caught
+	 * cross-check failure visible in the same log line an operator already
+	 * checks for used_gpu(), rather than only in the WARNING a few lines up
+	 * (which is easy to miss in a busy log and does not by itself say what
+	 * the job then did about it). */
+	char const* peak_source = !_used_gpu ? "local"
+		: _peak_mismatch ? "GPU-mismatch->local" : "GPU";
 	LOG_GENERAL(N_("Slang audio analysis: natural peak {} dBFS ({}), gain change {} dB"),
-		    _peak_dbfs, _used_gpu ? "GPU" : "local", _gain_applied_db);
+		    _peak_dbfs, peak_source, _gain_applied_db);
 
 	set_progress(1);
 	set_state(FINISHED_OK);

@@ -48,6 +48,15 @@ class SlangFrameClient;
  *  NORMALIZE every audio content's gain so the mix peak lands just under
  *  -3.5 dBFS (a quiet mix is boosted up, a loud one turned down).
  *
+ *  The local peak is computed unconditionally over every sample regardless of
+ *  server reachability, so it doubles as a GROUND-TRUTH cross-check on the
+ *  server's answer (see analyse()/flush_audio_batch()): the wire carries
+ *  float32 of the exact same samples, so the two are expected to agree
+ *  EXACTLY, and a disagreement makes the run fall back to the (always-correct)
+ *  local peak rather than trust a server that has just been caught not
+ *  measuring what was sent — the same "verify, don't just trust the ACK"
+ *  discipline the coder-switch path applies to J2KO (see verify_encode_contract).
+ *
  *  Runs both at content-add time (Film::maybe_analyse_audio_gain) and at
  *  "Make DCP using GPU". The gain change is ABSOLUTE and idempotent: the job
  *  backs out its own previously-baked contribution (Film::slang_auto_gain_db)
@@ -95,9 +104,23 @@ public:
 	}
 
 	/** @return true if the peak was measured on the GPU (false = the frame
-	 *  server was unreachable and the local fallback measured it). */
+	 *  server was unreachable and the local fallback measured it). NOTE this
+	 *  only means the server ANSWERED -- see peak_verified() for whether its
+	 *  answer was actually checked against the same samples measured locally. */
 	bool used_gpu() const {
 		return _used_gpu;
+	}
+
+	/** @return false if the server's peak ever DISAGREED with the local
+	 *  cross-check over the run (see analyse()/flush_audio_batch()). The two
+	 *  are computed from the same float32 samples and are expected to agree
+	 *  EXACTLY (mirrors audio_gpu.py's proven GPU==CPU peak guarantee); a
+	 *  mismatch means the server's own dispatch is not trustworthy this run
+	 *  (protocol desync, a device fault the server didn't report, a genuine
+	 *  miscompute) and run() has already fallen back to the local peak.
+	 *  Always true when used_gpu() is false (nothing to disagree with). */
+	bool peak_verified() const {
+		return !_peak_mismatch;
 	}
 
 private:
@@ -110,12 +133,12 @@ private:
 	std::string mix_digest() const;
 
 	std::unique_ptr<SlangFrameClient> _client;
-	std::vector<float> _interleave;      ///< reused per-block scratch
 	std::vector<float> _batch;           ///< accumulated interleaved samples
 	int64_t _batch_frames = 0;           ///< frames buffered in _batch
 	double _local_peak = 0;              ///< fallback / cross-check accumulator
 	double _server_peak = 0;             ///< latest cumulative GPU peak
 	bool _gpu_failed = false;            ///< sticky local fallback
+	bool _peak_mismatch = false;         ///< sticky: server/local disagreed at least once
 	uint32_t _seq = 0;
 	bool _used_gpu = false;
 	bool _cache_hit = false;             ///< skipped the replay (mix unchanged)

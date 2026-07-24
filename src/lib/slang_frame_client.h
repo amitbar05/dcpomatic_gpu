@@ -42,13 +42,19 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
+#include <random>
 #include <string>
 #include <vector>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
+#include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -60,7 +66,17 @@ class SlangFrameClient
 {
 public:
 	explicit SlangFrameClient(std::string socket_path)
-		: _path(std::move(socket_path)) {}
+		: _path(std::move(socket_path))
+	{
+		/* Reap /dev/shm segments leaked by dead clients (see
+		 * cleanup_stale_shm_once): a SIGKILL/OOM-kill/segfault runs no
+		 * destructor, so each aborted 8-thread 4K export can pin ~414 MB of
+		 * tmpfs -- which is charged to RAM -- until reboot. Mirrors the Python
+		 * reference client (frame_protocol.ShmSegment.__init__ →
+		 * cleanup_stale_shm), and the two name formats agree on the
+		 * "j2ks_<pid>_<suffix>" shape so either side reaps either's leak. */
+		cleanup_stale_shm_once();
+	}
 
 	~SlangFrameClient()
 	{
@@ -153,24 +169,44 @@ public:
 			return static_cast<uint16_t*>(_shm_ptr);
 		}
 		drop_shm();
+		/* The name carries RANDOMNESS, not just pid+counter, and O_EXCL failures
+		 * are retried. With a purely deterministic "j2ks_<pid>_<counter>" name a
+		 * single leaked segment was a permanent, silent transport regression: the
+		 * leak survives, Linux recycles the pid, the new process rebuilds the
+		 * identical name, shm_open(O_EXCL) returns EEXIST, and -- because the
+		 * counter is only bumped on the next call -- EVERY later call collides
+		 * with the same name, so the whole export falls back to 52 MB/frame
+		 * socket payloads, exactly the cost this transport exists to remove. */
 		static std::atomic<uint64_t> counter{0};
 		char name[64];
-		snprintf(name, sizeof(name), "/j2ks_%d_%llu",
-			 static_cast<int>(getpid()),
-			 static_cast<unsigned long long>(counter++));
-		int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
+		int fd = -1;
+		for (int attempt = 0; attempt < 8 && fd < 0; ++attempt) {
+			snprintf(name, sizeof(name), "/j2ks_%d_%llu%08x",
+				 static_cast<int>(getpid()),
+				 static_cast<unsigned long long>(counter++),
+				 shm_name_salt());
+			fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
+			if (fd < 0 && errno != EEXIST) {
+				break;             /* ENOSPC/EACCES etc: retrying won't help */
+			}
+		}
 		if (fd < 0) {
+			warn_shm_unavailable("shm_open", errno);
 			return nullptr;
 		}
 		if (ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+			int const err = errno;     /* before close/shm_unlink clobber it */
 			::close(fd);
 			shm_unlink(name);
+			warn_shm_unavailable("ftruncate", err);
 			return nullptr;
 		}
 		void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		int const map_err = errno;         /* before ::close/shm_unlink */
 		::close(fd);
 		if (p == MAP_FAILED) {
 			shm_unlink(name);
+			warn_shm_unavailable("mmap", map_err);
 			return nullptr;
 		}
 		_shm_ptr = p;
@@ -178,6 +214,11 @@ public:
 		_shm_name = name + 1;              /* wire name has no slash */
 		return static_cast<uint16_t*>(p);
 	}
+
+	/** The current segment's wire name (no leading slash), empty if there is
+	 *  none. The name is randomised per segment, so this is also the only way
+	 *  to know which /dev/shm file this client owns. */
+	std::string const& shm_name() const { return _shm_name; }
 
 	/** T2.31: encode the XYZ frame currently in the shm segment (written via
 	 *  shm_pixels). Same return convention as encode(). */
@@ -328,6 +369,80 @@ public:
 	}
 
 private:
+	/** 32 random bits for the segment name. std::random_device is seeded from
+	 *  the OS, so two processes that happen to share a recycled pid (and hence
+	 *  the whole deterministic part of the name) still get distinct names. */
+	static uint32_t shm_name_salt()
+	{
+		static std::mt19937 gen(std::random_device{}());
+		static std::mutex m;
+		std::lock_guard<std::mutex> lock(m);
+		return static_cast<uint32_t>(gen());
+	}
+
+	/** Say ONCE (per process) that the shm transport is unavailable. Without
+	 *  this the fallback to 52 MB-per-frame socket payloads is completely
+	 *  silent -- the export just gets slower with no way to tell why. Once,
+	 *  not per frame: at 24 fps a per-call message would itself be the
+	 *  performance problem. This header stays free of DCP-o-matic's logger
+	 *  (it must compile standalone), hence stderr. */
+	/*  `err` is the errno CAPTURED AT THE FAILURE SITE, not read here: the
+	 *  ftruncate and mmap paths run ::close()/shm_unlink() before warning, and
+	 *  POSIX permits even a SUCCESSFUL call to set errno, so reading the global
+	 *  here can name an unrelated error. This single line is the only signal an
+	 *  operator ever gets that the export silently dropped to 52 MB/frame
+	 *  socket payloads — a wrong cause sends them down the wrong path. */
+	static void warn_shm_unavailable(char const* what, int err)
+	{
+		static std::atomic<bool> warned{false};
+		if (!warned.exchange(true)) {
+			fprintf(stderr,
+				"slang: /dev/shm frame transport unavailable (%s: %s); "
+				"falling back to socket payloads\n",
+				what, strerror(err));
+		}
+	}
+
+	/** Unlink leaked "j2ks_<pid>_<suffix>" segments whose owning process is
+	 *  gone; runs once per process (every client thread constructs one of
+	 *  these, and one readdir scan is enough). Port of
+	 *  frame_protocol.cleanup_stale_shm. A live owner's segment is always
+	 *  kept, so a recycled pid costs at most a wasted segment, never another
+	 *  process's live frame buffer. Best-effort throughout: never throws,
+	 *  never reports failure -- an un-reapable segment is a leak, not a
+	 *  correctness problem. */
+	static void cleanup_stale_shm_once()
+	{
+		static std::once_flag once;
+		std::call_once(once, [] {
+			DIR* d = opendir("/dev/shm");
+			if (!d) {
+				return;
+			}
+			while (auto* e = readdir(d)) {
+				std::string const name(e->d_name);
+				if (name.compare(0, 5, "j2ks_") != 0) {
+					continue;
+				}
+				/* j2ks_<pid>_<suffix>: pid is between the 1st and 2nd '_'. */
+				auto const sep = name.find('_', 5);
+				if (sep == std::string::npos || sep == 5) {
+					continue;
+				}
+				char* end = nullptr;
+				auto const pid = strtol(name.c_str() + 5, &end, 10);
+				if (end != name.c_str() + sep || pid <= 0) {
+					continue;
+				}
+				if (kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH) {
+					continue;      /* owner alive, or we can't tell: keep */
+				}
+				shm_unlink(("/" + name).c_str());
+			}
+			closedir(d);
+		});
+	}
+
 	int shm_request(char const magic[4], uint32_t H, uint32_t W, uint32_t index,
 			std::vector<uint8_t>& out)
 	{
