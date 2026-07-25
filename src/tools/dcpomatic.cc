@@ -1255,9 +1255,25 @@ private:
 				connection, boost::bind(&DOMFrame::slang_gain_job_finished, this, _1));
 			_slang_gain_connection = connection;
 		} else {
-			slang_export_end();
-			jobs_make_dcp();
+			slang_export_finish();
 		}
+	}
+
+	/** Hand the chain off to jobs_make_dcp(), holding the pending-export gate
+	 *  until it returns.
+	 *
+	 *  The gate must NOT be released first: jobs_make_dcp() opens modal dialogs
+	 *  (the overwrite prompt, the hints dialog), a modal runs a nested event
+	 *  loop, and with the gate released Make DCP and the simplified panel's own
+	 *  buttons would be live again for as long as that prompt is up -- the exact
+	 *  double-export window the gate exists to close.  ScopeGuard, so a throw
+	 *  out of jobs_make_dcp() cannot leave the menus disabled with nothing
+	 *  running.
+	 */
+	void slang_export_finish()
+	{
+		dcp::ScopeGuard sg([this]() { slang_export_end(); });
+		jobs_make_dcp();
 	}
 
 	void slang_gain_job_finished(Job::Result result)
@@ -1278,14 +1294,9 @@ private:
 			error_dialog(this, _("GPU audio analysis failed, so the DCP was not made.  Check that the frame server is running, or disable the automatic gain in Preferences -> GPU (Slang)."));
 			return;
 		}
-		/* Released before jobs_make_dcp(), not after: from here the real
-		 * DCPTranscodeJob is what set_menu_sensitivity() gates on, and
-		 * jobs_make_dcp() opens modal dialogs of its own -- holding the gate
-		 * across those would leave the menus disabled if one of them threw. */
-		slang_export_end();
 		/* The measured peak and any gain change are reported inline in the
 		 * Jobs panel (SlangAudioAnalyseJob::status()) rather than a popup. */
-		jobs_make_dcp();
+		slang_export_finish();
 	}
 #endif
 
