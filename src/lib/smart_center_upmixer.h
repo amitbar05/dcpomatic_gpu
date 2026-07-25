@@ -40,8 +40,28 @@
  *  L' + C = L and R' + C = R exactly (the stereo image is preserved for an
  *  equidistant listener); fully-correlated content lands in C with |C| <= 1 by
  *  construction (no clipping needed); out-of-phase content cancels in C.  This
- *  is DCP-o-matic's own Mid/Side decode routed to L/C/R.  A mono source goes to
- *  C alone (L' = R' = 0).  LFE/Ls/Rs are left silent.
+ *  is DCP-o-matic's own Mid/Side decode routed to L/C/R.  LFE/Ls/Rs are left
+ *  silent -- cinema surrounds are calibrated lower and are an array with their
+ *  own delay, and LFE is a dedicated effects channel, so neither is derived
+ *  from front content (ISDCF Doc4 Note 1: not all channels need to be present).
+ *
+ *  MONO sources take the third input leg (MONO_INPUT) instead of being fed to
+ *  both of the L/R legs, and are SPREAD across the three front channels:
+ *
+ *      C = M ;  L = R = MONO_SIDE_GAIN * M
+ *
+ *  This is a deliberate departure from cinema practice, made on the project
+ *  owner's instruction (2026-07-25): mono belongs in the centre ALONE, because
+ *  one signal from three physically separated speakers reaches every off-centre
+ *  seat three times and combs.  The centre is kept dominant so dialogue stays
+ *  anchored, which is the part that must not be given up.
+ *
+ *  Why a third input leg rather than a signal test: with the mono source fed to
+ *  both L/R legs the matrix above yields L' = -R' identically, so NO linear
+ *  matrix on (L, R) can produce L' = R' = M/2 for mono while still extracting a
+ *  real stereo pair (a + b would have to be both 0 and 1/2).  The extra leg
+ *  carries the missing information, keeps the processor linear and
+ *  time-invariant, and leaves the stereo path bit-identical.
  *
  *  Mirrors encoder/src/dcp/audio_mix.py (the GPU export's Python reference).
  */
@@ -54,6 +74,13 @@ public:
 	std::shared_ptr<AudioProcessor> clone(int) const override;
 	void make_audio_mapping_default(AudioMapping& mapping) const override;
 	std::vector<NamedChannel> input_names() const override;
+
+	/** Input leg a mono source is routed to (the L/R legs stay for stereo). */
+	static constexpr int MONO_INPUT = 2;
+
+	/** Level the mono signal reaches L and R at, relative to the centre:
+	 *  -6 dB.  The centre stays at unity. */
+	static constexpr float MONO_SIDE_GAIN = 0.5f;
 
 protected:
 	std::shared_ptr<AudioBuffers> do_run(std::shared_ptr<const AudioBuffers>, int channels) override;

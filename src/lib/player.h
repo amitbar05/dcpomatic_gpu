@@ -146,6 +146,22 @@ private:
 	void construct();
 	void connect();
 	void setup_pieces();
+	/** Undo one suspend(), never going below zero.
+	 *
+	 *  A Player constructed between a content change's PENDING and its matching
+	 *  DONE only ever sees the DONE, and a bare `--_suspended` then leaves the
+	 *  counter at -1.  Since `if (_suspended)` tests for non-zero, that Player
+	 *  is suspended FOREVER: pass() and seek() do nothing, so the
+	 *  `while (!player->pass()) {}` loops in AnalyseAudioJob and
+	 *  SlangAudioAnalyseJob spin at 100% CPU and never finish.  The window is
+	 *  small but real -- content changes are emitted from job threads and
+	 *  delivered one at a time on the UI thread, so a job that starts in
+	 *  between (e.g. the audio analysis that follows the GPU auto-gain's
+	 *  set_gain) constructs its Player right inside the gap. */
+	void resume() {
+		auto suspended = _suspended.load();
+		while (suspended > 0 && !_suspended.compare_exchange_weak(suspended, suspended - 1)) {}
+	}
 	void film_change(ChangeType, FilmProperty);
 	void playlist_change(ChangeType);
 	void playlist_content_change(ChangeType, int, bool);

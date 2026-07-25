@@ -426,9 +426,9 @@ Player::playlist_content_change(ChangeType type, int property, bool frequent)
 			} else if (type == ChangeType::DONE) {
 				/* A change in our content has gone through.  Re-build our pieces. */
 				setup_pieces();
-				--_suspended;
+				resume();
 			} else if (type == ChangeType::CANCELLED) {
-				--_suspended;
+				resume();
 			}
 		}
 	}

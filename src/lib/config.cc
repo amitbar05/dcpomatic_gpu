@@ -201,6 +201,13 @@ Config::set_defaults()
 	_initial_paths["Preferences"] = boost::none;
 	_initial_paths["SaveVerificationReport"] = boost::none;
 	_initial_paths["CopySettingsPath"] = boost::none;
+#ifdef DCPOMATIC_SLANG
+	/* The simplified interface's output-folder chooser.  Registering it is not
+	 * optional: set_initial_path() ASSERTS the key is known (the getter, by
+	 * contrast, quietly returns none), so an unregistered key opens the dialog
+	 * happily and then throws "Programming error" the moment OK is pressed. */
+	_initial_paths["SlangSimpleOutput"] = boost::none;
+#endif
 	_use_isdcf_name_by_default = true;
 	_write_kdms_to_disk = true;
 	_email_kdms = false;
@@ -1802,6 +1809,7 @@ Config::Slang::Slang(cxml::ConstNodePtr node)
 	, auto_gain(node->optional_bool_child("AutoGain").get_value_or(true))
 	, smart_center(node->optional_bool_child("SmartCentre").get_value_or(true))
 	, match_source_bitrate(node->optional_bool_child("MatchSourceBitrate").get_value_or(true))
+	, simple_ui(node->optional_bool_child("SimpleUI").get_value_or(false))
 {
 	if (coder != "ht" && coder != "mq") {
 		coder = "ht";
@@ -1818,6 +1826,7 @@ Config::Slang::as_xml(xmlpp::Element* node) const
 	cxml::add_text_child(node, "AutoGain", auto_gain ? "1" : "0");
 	cxml::add_text_child(node, "SmartCentre", smart_center ? "1" : "0");
 	cxml::add_text_child(node, "MatchSourceBitrate", match_source_bitrate ? "1" : "0");
+	cxml::add_text_child(node, "SimpleUI", simple_ui ? "1" : "0");
 }
 
 

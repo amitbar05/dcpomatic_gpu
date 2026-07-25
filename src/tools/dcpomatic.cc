@@ -63,6 +63,7 @@
 #include "lib/audio_processor.h"
 #ifdef DCPOMATIC_SLANG
 #include "wx/slang_coder_dialog.h"
+#include "wx/slang_simple_panel.h"
 #include "lib/slang_audio_analyse_job.h"
 #include "lib/slang_bitrate_probe_job.h"
 #include "lib/slang_source_bitrate.h"
@@ -255,6 +256,7 @@ enum {
 	ID_jobs_open_dcp_in_player,
 	ID_view_closed_captions,
 	ID_view_video_waveform,
+	ID_view_simple_mode,
 	ID_tools_version_file,
 	ID_tools_hints,
 	ID_tools_encoding_servers,
@@ -370,6 +372,9 @@ public:
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::jobs_open_dcp_in_player, this), ID_jobs_open_dcp_in_player);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::view_closed_captions, this),    ID_view_closed_captions);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::view_video_waveform, this),     ID_view_video_waveform);
+#ifdef DCPOMATIC_SLANG
+		Bind(wxEVT_MENU, boost::bind(&DOMFrame::view_simple_mode, this),        ID_view_simple_mode);
+#endif
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::tools_version_file, this),      ID_tools_version_file);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::tools_hints, this),             ID_tools_hints);
 		Bind(wxEVT_MENU, boost::bind(&DOMFrame::tools_encoding_servers, this),  ID_tools_encoding_servers);
@@ -407,6 +412,23 @@ public:
 		_right_panel->SetSizer(right_sizer);
 
 		_splitter->SplitVertically(left_panel, _right_panel, Config::instance()->main_divider_sash_position().get_value_or(left_panel->GetSize().GetWidth() + 8));
+
+#ifdef DCPOMATIC_SLANG
+		/* The two interfaces are siblings in one sizer rather than separate
+		 * frames, so switching between them keeps the same Film, the same jobs
+		 * and the same window; only which child is shown changes. */
+		_simple_panel = new SlangSimplePanel(this);
+		_simple_panel->Advanced.connect(boost::bind(&DOMFrame::set_simple_mode, this, false));
+		_simple_panel->NewFilm.connect(boost::bind(&DOMFrame::simple_new_film, this, _1));
+		_simple_panel->MakeDCP.connect(boost::bind(&DOMFrame::jobs_make_dcp_gpu_with_options, this, false));
+
+		auto frame_sizer = new wxBoxSizer(wxVERTICAL);
+		frame_sizer->Add(_splitter, 1, wxEXPAND);
+		frame_sizer->Add(_simple_panel, 1, wxEXPAND);
+		SetSizer(frame_sizer);
+
+		set_simple_mode(Config::instance()->slang().simple_ui);
+#endif
 
 		set_menu_sensitivity();
 
@@ -533,6 +555,11 @@ public:
 		_film_viewer.set_film(_film);
 		_film_editor->set_film(_film);
 		_controls->set_film(_film);
+#ifdef DCPOMATIC_SLANG
+		if (_simple_panel) {
+			_simple_panel->set_film(_film);
+		}
+#endif
 		_video_waveform_dialog.reset();
 		set_menu_sensitivity();
 		if (_film && _film->directory()) {
@@ -847,8 +874,86 @@ private:
 	}
 
 #ifdef DCPOMATIC_SLANG
+	/** Switch between the simplified interface and the full film editor.  The
+	 *  choice is remembered, and entering the simplified screen switches the
+	 *  GPU encoder on: that screen has no coder controls of its own, and its
+	 *  whole flow (the instant audio measurement it shows, the one-button
+	 *  export) is the GPU one.  Leaving it does NOT switch the encoder back
+	 *  off -- that would silently undo a setting the user can see and change
+	 *  in Preferences.
+	 */
+	void set_simple_mode(bool simple)
+	{
+		if (!_simple_panel) {
+			return;
+		}
+
+		_simple_mode = simple;
+		_splitter->Show(!simple);
+		_simple_panel->Show(simple);
+		_simple_panel->set_active(simple);
+		if (simple) {
+			_simple_panel->set_film(_film);
+		}
+		Layout();
+
+		if (_simple_mode_item) {
+			_simple_mode_item->Check(simple);
+		}
+
+		auto config = Config::instance();
+		auto slang = config->slang();
+		if (slang.simple_ui != simple || (simple && !slang.enable)) {
+			slang.simple_ui = simple;
+			if (simple) {
+				slang.enable = true;
+			}
+			config->set_slang(slang);
+		}
+	}
+
+	void view_simple_mode()
+	{
+		set_simple_mode(!_simple_mode);
+	}
+
+	/** The simplified screen has nowhere to put a project until the user adds
+	 *  something, so it asks for a film to be made at a folder it picked. */
+	void simple_new_film(boost::filesystem::path path)
+	{
+		if (!maybe_save_then_delete_film<FilmChangedClosingDialog>()) {
+			return;
+		}
+
+		try {
+			new_film(path, {});
+		} catch (std::exception& e) {
+			error_dialog(this, _("Could not create a folder to store the project."), std_to_wx(e.what()));
+		}
+	}
+
 	void jobs_make_dcp_gpu()
 	{
+		jobs_make_dcp_gpu_with_options(true);
+	}
+
+	/** @param ask_coder true to ask which Tier-1 coder to use (the Jobs menu
+	 *  item), false to just use the configured one.  The simplified interface
+	 *  passes false: it deliberately asks the user nothing that Preferences
+	 *  already answers.
+	 */
+	void jobs_make_dcp_gpu_with_options(bool ask_coder)
+	{
+		if (!_film) {
+			/* The menu items are gated on NEEDS_FILM, but the simplified
+			 * interface's Create DCP button is not a menu item, and the frame
+			 * can end up with no film while that screen is still showing one
+			 * (see maybe_save_then_delete_film). */
+			return;
+		}
+
+		_slang_ask_coder = ask_coder;
+
 		/* The "export using GPU" button: switch the Slang GPU encode path
 		 * on (its HT/MQ coder, frame-server socket and audio automation
 		 * live in Preferences → GPU (Slang)), give mono/stereo sources the
@@ -960,6 +1065,12 @@ private:
 		 * (a nested UI event loop) doesn't hold it up.  We deliberately do NOT
 		 * wire its completion yet — that would race the dialog and start the
 		 * DCP before the user has chosen. */
+		/* Before the analysis, never after: it measures the mix this changes.
+		 * A project made before the mono L/C/R spread still routes its mono
+		 * stream to the upmixer's L/R legs, and the peak of the OLD mix would
+		 * be the one normalised. */
+		_film->migrate_smart_center_mono_mapping();
+
 		shared_ptr<SlangAudioAnalyseJob> gain_job;
 		if (slang.auto_gain && any_audio) {
 			gain_job = std::make_shared<SlangAudioAnalyseJob>(_film);
@@ -968,23 +1079,28 @@ private:
 
 		/* Ask which Tier-1 coder to use (HT the fast default vs MQ the
 		 * highest-PSNR one), pre-selecting the configured one.  Shown while the
-		 * audio analysis above churns on the GPU. */
-		SlangCoderDialog dialog(
-			this, slang.coder, static_cast<bool>(gain_job),
-			adjusted_bit_rate_mbps, bit_rate_changed
-			);
-		if (dialog.ShowModal() != wxID_OK) {
-			/* Aborted: stop the background analysis and leave the DCP unmade. */
-			if (gain_job) {
-				gain_job->cancel();
+		 * audio analysis above churns on the GPU.  The simplified interface
+		 * skips this and takes the configured coder as-is. */
+		auto chosen_coder = slang.coder;
+		if (_slang_ask_coder) {
+			SlangCoderDialog dialog(
+				this, slang.coder, static_cast<bool>(gain_job),
+				adjusted_bit_rate_mbps, bit_rate_changed
+				);
+			if (dialog.ShowModal() != wxID_OK) {
+				/* Aborted: stop the background analysis and leave the DCP unmade. */
+				if (gain_job) {
+					gain_job->cancel();
+				}
+				return;
 			}
-			return;
+			chosen_coder = dialog.coder();
 		}
 		/* HTJ2K (JPEG 2000 Part 15) essence is not valid in an Interop DCP
 		 * (Interop predates Part 15).  Rather than silently changing the user's
 		 * container standard, refuse and tell them how to proceed.  MQ (Part 1)
 		 * is fine in Interop, so only block the HT coder. */
-		if (dialog.coder() == "ht" && _film->interop()) {
+		if (chosen_coder == "ht" && _film->interop()) {
 			if (gain_job) {
 				gain_job->cancel();
 			}
@@ -995,7 +1111,7 @@ private:
 				);
 			return;
 		}
-		slang.coder = dialog.coder();
+		slang.coder = chosen_coder;
 		/* Persist the enable flag + chosen coder (mirrors the coder control in
 		 * Preferences → GPU (Slang); remembered for next time). */
 		slang.enable = true;
@@ -1004,9 +1120,17 @@ private:
 		if (gain_job) {
 			_slang_gain_job = gain_job;
 			/* Now wait for the analysis to finish, then make the DCP.
-			 * when_finished() is race-safe: if the job already finished while
-			 * the dialog was open it invokes the handler synchronously here,
-			 * otherwise it connects for the (UI-thread) Finished signal. */
+			 * when_finished() is race-safe: if the job already finished it
+			 * invokes the handler synchronously here, otherwise it connects
+			 * for the (UI-thread) Finished signal.  A repeat export always
+			 * takes the synchronous branch -- the mix digest short-circuits
+			 * the analysis to FINISHED_OK in microseconds, while this thread
+			 * is still building job views and writing the config.  That call
+			 * is made with the job's _state_mutex RELEASED (see
+			 * Job::when_finished), which is what makes it legal for
+			 * slang_gain_job_finished() to open jobs_make_dcp()'s modal
+			 * dialogs: a modal runs a nested event loop, and everything it
+			 * dispatches from there reads job state. */
 			boost::signals2::connection connection;
 			gain_job->when_finished(
 				connection, boost::bind(&DOMFrame::slang_gain_job_finished, this, _1));
@@ -1478,6 +1602,18 @@ private:
 			[](shared_ptr<const Job> job) {
 				return dynamic_pointer_cast<const DCPTranscodeJob>(job) && !job->finished();
 			});
+#ifdef DCPOMATIC_SLANG
+		/* The simplified interface has no menu of its own, so the
+		 * NOT_DURING_DCP_CREATION rule below would never reach its buttons.
+		 * Without this its "Create DCP" stays live during an export and a
+		 * second press deletes the very directory the Writer is filling, and
+		 * "Change..." would move the project out from under it.  This runs from
+		 * active_jobs_changed()'s idle callback, so it is off the JobManager
+		 * mutex -- which matters, since it walks the job list again. */
+		if (_simple_panel) {
+			_simple_panel->set_general_sensitivity(!dcp_creation);
+		}
+#endif
 		bool const have_cpl = _film && !_film->cpls().empty();
 		bool const have_single_selected_content = _film_editor->content_panel()->selected().size() == 1;
 		bool const have_selected_content = !_film_editor->content_panel()->selected().empty();
@@ -1572,6 +1708,17 @@ private:
 		bool const r = maybe_save_film<T>();
 		if (r) {
 			_film.reset();
+#ifdef DCPOMATIC_SLANG
+			/* Tell the simplified screen too.  The caller normally follows this
+			 * with set_film(), but not on its failure paths -- file_new() with
+			 * a folder it cannot create, for one -- and a screen still showing
+			 * the discarded film would offer a Create DCP that has no film to
+			 * make. */
+			if (_simple_panel) {
+				_simple_panel->set_film({});
+			}
+#endif
+			set_menu_sensitivity();
 		}
 		return r;
 	}
@@ -1665,6 +1812,12 @@ private:
 		auto view = new wxMenu;
 		add_item(view, _("Closed captions..."), ID_view_closed_captions, NEEDS_FILM);
 		add_item(view, _("Video waveform..."), ID_view_video_waveform, NEEDS_FILM);
+#ifdef DCPOMATIC_SLANG
+		view->AppendSeparator();
+		/* [Shortcut] Ctrl+Shift+S:Switch between the simplified and full interfaces */
+		_simple_mode_item = view->AppendCheckItem(ID_view_simple_mode, _("Simplified interface\tShift-Ctrl-S"));
+		_simple_mode_item->Check(_simple_mode);
+#endif
 
 		auto tools = new wxMenu;
 		add_item(tools, _("Version File (VF)..."), ID_tools_version_file, NEEDS_FILM | NEEDS_DCP_CONTENT);
@@ -1852,6 +2005,11 @@ private:
 #ifdef DCPOMATIC_SLANG
 	/* GPU export: the source bit-rate probe job chained before the coder
 	 * dialog, and the auto-gain analysis job chained before make-DCP. */
+	SlangSimplePanel* _simple_panel = nullptr;
+	wxMenuItem* _simple_mode_item = nullptr;
+	bool _simple_mode = false;
+	/** whether the GPU export currently in flight should show the coder dialog */
+	bool _slang_ask_coder = true;
 	std::weak_ptr<SlangBitrateProbeJob> _slang_bitrate_job;
 	boost::signals2::scoped_connection _slang_bitrate_connection;
 	std::weak_ptr<SlangAudioAnalyseJob> _slang_gain_job;
@@ -2072,9 +2230,17 @@ private:
 
 	void report_exception()
 	{
+		/* ALSO to stderr, always: this handler is reached when the exception is
+		 * about to terminate the program, and a dialog the user then dismisses
+		 * is the only record of what happened -- so a GUI death leaves nothing
+		 * behind to diagnose it with (an empty log and a bare exit code is
+		 * exactly what one such death cost us on 2026-07-25).  Cheap, and the
+		 * one line is what a bug report actually needs. */
 		try {
 			throw;
 		} catch (FileError& e) {
+			std::cerr << "dcpomatic2: unhandled FileError: " << e.what()
+				  << " (" << e.file().string() << ")\n";
 			error_dialog(
 				nullptr,
 				wxString::Format(
@@ -2085,6 +2251,8 @@ private:
 					)
 				);
 		} catch (boost::filesystem::filesystem_error& e) {
+			std::cerr << "dcpomatic2: unhandled filesystem_error: " << e.what()
+				  << " (" << e.path1().string() << ") (" << e.path2().string() << ")\n";
 			error_dialog(
 				nullptr,
 				wxString::Format(
@@ -2096,6 +2264,7 @@ private:
 					)
 				);
 		} catch (exception& e) {
+			std::cerr << "dcpomatic2: unhandled exception: " << e.what() << "\n";
 			error_dialog(
 				nullptr,
 				wxString::Format(
@@ -2105,6 +2274,7 @@ private:
 					)
 				);
 		} catch (...) {
+			std::cerr << "dcpomatic2: unhandled exception of unknown type\n";
 			error_dialog(nullptr, wxString::Format(_("An unknown exception occurred. %s"), dcpomatic::wx::report_problem()));
 		}
 	}

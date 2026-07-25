@@ -58,6 +58,7 @@
 #include "slang_audio_analyse_job.h"
 #include "slang_bitrate_probe_job.h"
 #include "slang_source_bitrate.h"
+#include "smart_center_upmixer.h"
 #endif
 #include "text_content.h"
 #include "transcode_job.h"
@@ -438,12 +439,42 @@ Film::metadata(bool with_content_paths) const
 	cxml::add_text_child(root, "ISDCFDate", boost::gregorian::to_iso_string(_isdcf_date));
 	cxml::add_text_child(root, "AudioChannels", fmt::to_string(_audio_channels));
 #ifdef DCPOMATIC_SLANG
+	/* Copy under the lock, then emit from the copies: these four are written on
+	 * the analysis job's thread, and the ContentChange it posts just before them
+	 * can have us here walking the peak vector while run() is still assigning
+	 * it.  Don't hold the lock across the xmlpp calls. */
+	double slang_gain;
+	string slang_digest;
+	vector<float> slang_peak;
+	vector<float> slang_rms;
+	{
+		boost::mutex::scoped_lock lm(_slang_audio_mutex);
+		slang_gain = _slang_auto_gain_db;
+		slang_digest = _slang_audio_digest;
+		slang_peak = _slang_audio_channel_peak;
+		slang_rms = _slang_audio_channel_rms;
+	}
 	/* Persisted so the Slang auto-gain stays idempotent across save/reload:
 	 * without the baked-in contribution, a reopened film would treat slang's
 	 * own gain as user gain and mis-normalise on the next analysis. */
-	cxml::add_text_child(root, "SlangAutoGainDB", fmt::to_string(_slang_auto_gain_db));
-	if (!_slang_audio_digest.empty()) {
-		cxml::add_text_child(root, "SlangAudioDigest", _slang_audio_digest);
+	cxml::add_text_child(root, "SlangAutoGainDB", fmt::to_string(slang_gain));
+	if (!slang_digest.empty()) {
+		cxml::add_text_child(root, "SlangAudioDigest", slang_digest);
+	}
+	/* Per-DCP-channel result of the last GPU audio analysis, so the simplified
+	 * UI's audio-pipeline display survives a save/reload without re-running the
+	 * (expensive) replay -- which the mix digest above deliberately skips when
+	 * nothing has changed. */
+	if (!slang_peak.empty()) {
+		auto stats = cxml::add_child(root, "SlangAudioStats");
+		for (size_t i = 0; i < slang_peak.size(); ++i) {
+			auto channel = cxml::add_child(stats, "Channel");
+			cxml::add_text_child(channel, "Peak", fmt::to_string(slang_peak[i]));
+			cxml::add_text_child(
+				channel, "RMS",
+				fmt::to_string(i < slang_rms.size() ? slang_rms[i] : 0.0f)
+				);
+		}
 	}
 #endif
 	cxml::add_text_child(root, "ThreeD", _three_d ? "1" : "0");
@@ -647,8 +678,21 @@ Film::read_metadata(optional<boost::filesystem::path> path)
 		_audio_channels++;
 	}
 #ifdef DCPOMATIC_SLANG
-	_slang_auto_gain_db = f.optional_number_child<double>("SlangAutoGainDB").get_value_or(0);
-	_slang_audio_digest = f.optional_string_child("SlangAudioDigest").get_value_or("");
+	{
+		/* For symmetry with the setters; nothing else should be looking at this
+		 * film yet, but the members are guarded, so guard them here too. */
+		boost::mutex::scoped_lock lm(_slang_audio_mutex);
+		_slang_auto_gain_db = f.optional_number_child<double>("SlangAutoGainDB").get_value_or(0);
+		_slang_audio_digest = f.optional_string_child("SlangAudioDigest").get_value_or("");
+		_slang_audio_channel_peak.clear();
+		_slang_audio_channel_rms.clear();
+		if (auto stats = f.optional_node_child("SlangAudioStats")) {
+			for (auto channel: stats->node_children("Channel")) {
+				_slang_audio_channel_peak.push_back(channel->number_child<float>("Peak"));
+				_slang_audio_channel_rms.push_back(channel->number_child<float>("RMS"));
+			}
+		}
+	}
 #endif
 
 	if (f.optional_bool_child("SequenceVideo")) {
@@ -1608,6 +1652,7 @@ Film::maybe_add_content(weak_ptr<Job> j, vector<weak_ptr<Content>> const& weak_c
 
 #ifdef DCPOMATIC_SLANG
 	maybe_match_source_bitrate();
+	maybe_smart_center_upmix();
 	maybe_analyse_audio_gain();
 #endif
 
@@ -1715,6 +1760,108 @@ Film::slang_bitrate_probe_finished(Job::Result result, weak_ptr<SlangBitrateProb
 }
 
 
+/** Give a mono/stereo source the smart-centre L/C/R mix, for the simplified
+ *  interface only.
+ *
+ *  This lives here, and specifically on the line BEFORE
+ *  maybe_analyse_audio_gain(), because the upmix changes the mix whose peak
+ *  that analysis measures.  Choosing it afterwards (from the UI's own
+ *  content-change handler, which is where it started out) measured the wrong
+ *  mix and then had to cancel the running analysis and start another -- churn
+ *  that is both wasteful and, with the JobManager's one-job-at-a-time
+ *  scheduler, a way to leave the queue with a job that never gets picked up.
+ *
+ *  The full interface makes the same choice at export time instead (see
+ *  DOMFrame::jobs_make_dcp_gpu_continue), so gating on simple_ui leaves every
+ *  other route -- the CLI included -- behaving exactly as it did.
+ */
+void
+Film::maybe_smart_center_upmix()
+{
+	auto const slang = Config::instance()->slang();
+	if (!slang.enable || !slang.simple_ui || !slang.smart_center) {
+		return;
+	}
+
+	/* Before the early return below: a project that already HAS the processor
+	 * still needs its mono mapping brought forward (see the method's comment). */
+	migrate_smart_center_mono_mapping();
+
+	if (_audio_processor) {
+		/* Never override a processor the user (or a template) chose. */
+		return;
+	}
+
+	bool any_audio = false;
+	int max_channels = 0;
+	for (auto c: content()) {
+		if (c->audio) {
+			any_audio = true;
+			for (auto stream: c->audio->streams()) {
+				max_channels = std::max(max_channels, stream->channels());
+			}
+		}
+	}
+
+	if (!any_audio || max_channels == 0 || max_channels > 2) {
+		return;
+	}
+
+	/* set_audio_processor() resets every content's mapping to the processor's
+	 * default and raises the film to the processor's minimum channel count;
+	 * widen to a full 5.1 essence so the extracted centre -- and the other 5.1
+	 * slots -- have somewhere conformant to land. */
+	set_audio_processor(AudioProcessor::from_id("smart-center-upmixer"));
+	if (_audio_channels < 6) {
+		set_audio_channels(6);
+	}
+}
+
+
+/** Bring a mono source that predates the L/C/R spread (2026-07-25) onto the
+ *  upmixer's mono leg.
+ *
+ *  The mapping is persisted per content in metadata.xml, so a project analysed
+ *  before that change still routes its mono stream to the L and R legs -- the
+ *  old default, which puts everything in C and leaves L' = R' = 0.  Changing
+ *  the processor's default alone would therefore be invisible on every existing
+ *  project, which is exactly the class of silent no-op the auto-gain digest had.
+ *
+ *  ONLY the exact old default is rewritten (mono in, both legs at unity,
+ *  nothing on the mono leg).  Any other mapping is somebody's deliberate
+ *  routing and is left alone.  Idempotent: once moved, the pattern no longer
+ *  matches.
+ */
+bool
+Film::migrate_smart_center_mono_mapping()
+{
+	if (!_audio_processor || _audio_processor->id() != "smart-center-upmixer") {
+		return false;
+	}
+
+	auto changed = false;
+	for (auto c: content()) {
+		if (!c->audio) {
+			continue;
+		}
+		auto mapping = c->audio->mapping();
+		if (mapping.input_channels() != 1 || mapping.output_channels() <= SmartCenterUpmixer::MONO_INPUT) {
+			continue;
+		}
+		if (mapping.get(0, 0) != 1 || mapping.get(0, 1) != 1 || mapping.get(0, SmartCenterUpmixer::MONO_INPUT) != 0) {
+			continue;
+		}
+		mapping.set(0, 0, 0);
+		mapping.set(0, 1, 0);
+		mapping.set(0, SmartCenterUpmixer::MONO_INPUT, 1);
+		c->audio->set_mapping(mapping);
+		changed = true;
+	}
+
+	return changed;
+}
+
+
 /** Kick off the GPU audio analysis + auto-gain pre-pass as soon as content is
  *  added (mirroring maybe_match_source_bitrate), so the mix is normalised to
  *  just under -3.5 dBFS on import rather than only at "Make DCP using GPU"
@@ -1781,8 +1928,26 @@ Film::set_slang_auto_gain(double db, string digest)
 	/* No FilmProperty / signal: the gain application (AudioContent::set_gain)
 	 * that precedes this already marked the film changed, so these fields are
 	 * persisted with it; a no-change re-run leaves everything untouched. */
+	boost::mutex::scoped_lock lm(_slang_audio_mutex);
 	_slang_auto_gain_db = db;
 	_slang_audio_digest = digest;
+}
+
+
+/** Record the per-DCP-channel peak/RMS the last GPU audio analysis measured, so
+ *  the simplified UI can draw the audio pipeline for a film it did not analyse
+ *  in this session.  Like set_slang_auto_gain() this deliberately emits no
+ *  FilmProperty change: it is written from the analysis job's own thread
+ *  alongside the gain it belongs to, and the gain application that precedes it
+ *  has already marked the film changed.  Values are the NATURAL (pre-auto-gain)
+ *  levels, linear.
+ */
+void
+Film::set_slang_audio_stats(vector<float> peak, vector<float> rms)
+{
+	boost::mutex::scoped_lock lm(_slang_audio_mutex);
+	_slang_audio_channel_peak = std::move(peak);
+	_slang_audio_channel_rms = std::move(rms);
 }
 #endif
 
@@ -1851,6 +2016,9 @@ void
 Film::remove_content(shared_ptr<Content> c)
 {
 	_playlist->remove(c);
+#ifdef DCPOMATIC_SLANG
+	slang_forget_auto_gain_if_no_audio();
+#endif
 	maybe_set_container_and_resolution();
 }
 
@@ -2262,8 +2430,43 @@ void
 Film::remove_content(ContentList c)
 {
 	_playlist->remove(c);
+#ifdef DCPOMATIC_SLANG
+	slang_forget_auto_gain_if_no_audio();
+#endif
 	maybe_set_container_and_resolution();
 }
+
+
+#ifdef DCPOMATIC_SLANG
+/** slang_auto_gain_db() describes a gain baked into content that may have just
+ *  been removed.  A surviving value is backed out of the NEXT analysis as if it
+ *  were still applied, so the natural peak that analysis reports -- and the
+ *  absolute gain it stores -- drift by that amount, compounding on every
+ *  remove/add cycle: remove a -30 dBFS source, add a -1 dBFS one, and the jobs
+ *  panel claims "mix peaked at -27.5 dB, gain increased by 24.0 dB" (in the
+ *  success colour) for a run that in fact REDUCED the mix. Nothing is left to
+ *  back out once no audio content remains, so forget it.
+ *
+ *  This is not the same case as the digest changing (a trim, a gain edit): there
+ *  the content -- and the gain baked into it -- is still present, which is why
+ *  SlangAudioAnalyseJob's idempotency depends on the value surviving that.
+ */
+void
+Film::slang_forget_auto_gain_if_no_audio()
+{
+	for (auto i: _playlist->content()) {
+		if (i->audio) {
+			return;
+		}
+	}
+
+	boost::mutex::scoped_lock lm(_slang_audio_mutex);
+	_slang_auto_gain_db = 0;
+	_slang_audio_digest.clear();
+	_slang_audio_channel_peak.clear();
+	_slang_audio_channel_rms.clear();
+}
+#endif
 
 void
 Film::audio_analysis_finished()

@@ -763,7 +763,23 @@ Job::when_finished(boost::signals2::connection& connection, function<void(Result
 {
 	boost::mutex::scoped_lock lm(_state_mutex);
 	if (_state == FINISHED_OK || _state == FINISHED_ERROR || _state == FINISHED_CANCELLED) {
-		finished(state_to_result(_state));
+		/* Already finished, so call the handler now rather than connecting.
+		 *
+		 * Drop _state_mutex FIRST.  Calling the handler under the lock
+		 * deadlocked the UI thread against itself: a handler that opens a modal
+		 * dialog (jobs_make_dcp()'s "overwrite the existing DCP?" is the one
+		 * that bit) starts a nested event loop, wxWidgets fires an idle event
+		 * inside it, and a queued Progress signal reaches JobView::progress() ->
+		 * Job::status() -> Job::finished(), which locks this same non-recursive
+		 * mutex on this same thread.  Nothing can ever release it, since the
+		 * thread holding it is the one that is blocked.
+		 *
+		 * The state read above is terminal, so nothing can change it between the
+		 * unlock and the call; the result is captured under the lock regardless.
+		 */
+		auto const result = state_to_result(_state);
+		lm.unlock();
+		finished(result);
 	} else {
 		connection = Finished.connect(finished);
 	}

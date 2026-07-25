@@ -77,8 +77,10 @@ static int const AUDIO_BATCH_SECONDS = 4;
  *  the shortfall was persisted in _slang_gain_abs_db AND the digest was stored,
  *  so every re-run hit the cache and the mix stayed 6 dB quiet permanently.
  *
- *  Case table (target -3.5, cap +6; N = natural peak, D = this function's
- *  result, applied = D - prior, stored absolute = D):
+ *  Case table for a FINITE cap (target -3.5, cap +6 -- the shipped cap is now
+ *  infinite, see MAX_BOOST_DB, but the capping behaviour is what needs a table
+ *  and the test compiles this block with cap 6 to execute it; N = natural peak,
+ *  D = this function's result, applied = D - prior, stored absolute = D):
  *    prior  0.0, N -3.5 (first run, already at target) -> D   0.0, applied   0.0
  *    prior  0.0, N +2.5 (hot master)                   -> D  -6.0, applied  -6.0
  *    prior -6.0, mix unchanged                         -> D  -6.0, applied   0.0 (idempotent)
@@ -198,15 +200,32 @@ SlangAudioAnalyseJob::analyse(shared_ptr<const AudioBuffers> b, DCPTime time)
 	 * computed and never checked against anything -- an ACK ("the server
 	 * answered") standing in for verification ("the server measured what we
 	 * sent"), the same gap the coder-switch incident found in J2KO. */
+	/* Per-channel peak/RMS accumulate alongside, for the simplified UI's
+	 * audio-pipeline meters. Kept in the same loop (and _local_peak updated by
+	 * the identical comparison it always was) so the cross-check above stays
+	 * bit-for-bit the quantity it has always compared. */
+	if (static_cast<int>(_local_channel_peak.size()) < channels) {
+		_local_channel_peak.resize(channels, 0);
+		_local_channel_sumsq.resize(channels, 0);
+	}
 	for (int c = 0; c < channels; ++c) {
 		auto const* d = b->data()[c];
+		auto channel_peak = _local_channel_peak[c];
+		auto channel_sumsq = _local_channel_sumsq[c];
 		for (int i = 0; i < frames; ++i) {
 			auto const a = std::fabs(d[i]);
 			if (a > _local_peak) {
 				_local_peak = a;
 			}
+			if (a > channel_peak) {
+				channel_peak = a;
+			}
+			channel_sumsq += static_cast<double>(d[i]) * static_cast<double>(d[i]);
 		}
+		_local_channel_peak[c] = channel_peak;
+		_local_channel_sumsq[c] = channel_sumsq;
 	}
+	_local_frames += frames;
 
 	if (!_gpu_failed) {
 		/* Interleave this callback's planar samples onto the tail of the
@@ -246,6 +265,9 @@ SlangAudioAnalyseJob::flush_audio_batch()
 		_film->audio_frame_rate(), _seq++, stats, err);
 	if (rc == 0) {
 		_server_peak = stats.overall_peak();
+		_server_channel_peak = stats.peak;
+		_server_channel_sumsq = stats.sumsq;
+		_server_frames = stats.frames;
 		_used_gpu = true;
 		/* Ground-truth check: _local_peak was updated over exactly the
 		 * samples just flushed (and nothing more -- analyse() updates it and
@@ -332,12 +354,16 @@ SlangAudioAnalyseJob::run()
 		set_state(FINISHED_OK);
 		return;
 	}
+	/* Read once, BEFORE the branch below overwrites it via set_slang_auto_gain:
+	 * both the gain maths and the per-channel stats describe the *natural* mix,
+	 * i.e. with this contribution backed out. */
+	double const prior = _film->slang_auto_gain_db();
+
 	if (peak > 0) {
 		/* Absolute (idempotent) apply: back out the contribution slang itself
 		 * already baked into the measured mix, then normalise the *natural*
 		 * peak to the target and apply only the difference vs what is already
 		 * applied. A no-change re-run therefore adjusts by exactly 0 dB. */
-		double const prior = _film->slang_auto_gain_db();
 		double const measured_dbfs = 20 * std::log10(peak);
 		_peak_dbfs = measured_dbfs - prior;                  /* natural peak, for reporting */
 		_slang_gain_abs_db = slang_auto_gain_absolute_db(
@@ -355,6 +381,12 @@ SlangAudioAnalyseJob::run()
 		_peak_dbfs = -std::numeric_limits<double>::infinity();
 	}
 
+	/* Per-channel levels for the simplified UI's audio pipeline. Persisted on
+	 * the film so a reopened project (or a run that short-circuits on the mix
+	 * digest) can still draw them. */
+	finish_channel_stats(prior);
+	const_pointer_cast<Film>(_film)->set_slang_audio_stats(_channel_peak, _channel_rms);
+
 	/* Report which source the applied peak actually came from -- not just
 	 * whether the server was reachable. "GPU-mismatch->local" makes a caught
 	 * cross-check failure visible in the same log line an operator already
@@ -368,6 +400,45 @@ SlangAudioAnalyseJob::run()
 
 	set_progress(1);
 	set_state(FINISHED_OK);
+}
+
+
+/** Reduce the run's accumulators to the per-channel natural peak/RMS the
+ *  simplified UI draws.  The GPU's own per-channel reduction is used only when
+ *  this run's server peak was trusted -- the same condition slang_selected_peak()
+ *  applies to the overall peak, so a server caught not measuring what we sent
+ *  cannot slip in through the per-channel door either -- and only when it
+ *  describes the same number of channels the local accumulator saw.
+ */
+void
+SlangAudioAnalyseJob::finish_channel_stats(double prior)
+{
+	auto const trust_server =
+		_used_gpu && !_gpu_failed && !_peak_mismatch
+		&& !_local_channel_peak.empty()
+		&& _server_channel_peak.size() == _local_channel_peak.size()
+		&& _server_channel_sumsq.size() == _local_channel_peak.size()
+		&& _server_frames > 0;
+
+	auto const& peak = trust_server ? _server_channel_peak : _local_channel_peak;
+	auto const& sumsq = trust_server ? _server_channel_sumsq : _local_channel_sumsq;
+	auto const frames = trust_server
+		? static_cast<double>(_server_frames)
+		: static_cast<double>(_local_frames);
+
+	/* Back out slang's own contribution so the reported levels are the natural
+	 * ones (matching peak_dbfs()); the UI adds the absolute gain back to show
+	 * the resulting mix. */
+	auto const back_out = std::pow(10.0, -prior / 20.0);
+
+	_channel_peak.clear();
+	_channel_rms.clear();
+	for (size_t c = 0; c < peak.size(); ++c) {
+		_channel_peak.push_back(static_cast<float>(peak[c] * back_out));
+		_channel_rms.push_back(
+			frames > 0 ? static_cast<float>(std::sqrt(sumsq[c] / frames) * back_out) : 0.0f
+			);
+	}
 }
 
 
@@ -399,6 +470,13 @@ SlangAudioAnalyseJob::mix_digest() const
 	key += fmt::format("|proc={}|ch={}|rate={}",
 			   proc ? proc->id() : string("none"),
 			   _film->audio_channels(), _film->audio_frame_rate());
+	/* The gain POLICY, not just the mix: a stored gain is only still correct if
+	 * the rule that produced it is the rule in force now. Without this, changing
+	 * the target or the boost cap would be silently ignored on every project
+	 * that had already been analysed -- the short-circuit above would keep
+	 * returning the gain computed under the old policy, for good (the mix has
+	 * not changed, so nothing else in this key ever would). */
+	key += fmt::format("|target={:.4f}|maxboost={:.4f}", TARGET_PEAK_DBFS, MAX_BOOST_DB);
 	return key;
 }
 

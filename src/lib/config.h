@@ -698,6 +698,12 @@ public:
 		/** probe the source video's real bit rate when making the DCP and
 		 *  set the film's JPEG2000 bandwidth to match it */
 		bool match_source_bitrate = true;
+		/** show the simplified interface (add video + subtitles, pick an
+		 *  output folder, watch the audio pipeline, make the DCP) rather
+		 *  than the full film editor.  Remembered across restarts; the
+		 *  simplified screen's "Advanced" button and View -> Simplified
+		 *  interface both toggle it. */
+		bool simple_ui = false;
 	};
 
 	Slang slang() const {

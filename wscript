@@ -737,6 +737,14 @@ def build(bld):
     # ...and its header-only coder-picker dialog, included by the main tool.
     bld.add_manual_dependency(bld.path.find_node('src/tools/dcpomatic.cc'), bld.path.find_node('src/wx/slang_coder_dialog.h'))
 
+    # ...and the header-only look-and-feel toolkit the simplified interface is
+    # drawn with, which has no .cc of its own to hang the dependency off.
+    for dep in (
+            'src/wx/slang_simple_panel.cc',
+            'src/wx/slang_audio_pipeline_view.cc',
+    ):
+        bld.add_manual_dependency(bld.path.find_node(dep), bld.path.find_node('src/wx/slang_ui_theme.h'))
+
     bld.recurse('src')
     bld.recurse('graphics')
     bld.recurse('web')

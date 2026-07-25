@@ -269,14 +269,42 @@ public:
 	 *  has baked into every audio content, so a re-run can back it out and
 	 *  apply an ABSOLUTE correction instead of accumulating (idempotent). */
 	double slang_auto_gain_db() const {
+		boost::mutex::scoped_lock lm(_slang_audio_mutex);
 		return _slang_auto_gain_db;
 	}
 	/** Record the Slang auto-gain contribution (+ the audio-mix digest it was
 	 *  computed for). Called by SlangAudioAnalyseJob after it applies gain. */
 	void set_slang_auto_gain(double db, std::string digest);
 	std::string slang_audio_digest() const {
+		boost::mutex::scoped_lock lm(_slang_audio_mutex);
 		return _slang_audio_digest;
 	}
+	/** @return per-DCP-channel NATURAL (pre-auto-gain) sample peak measured by
+	 *  the last GPU audio analysis, linear; empty if never analysed. */
+	std::vector<float> slang_audio_channel_peak() const {
+		boost::mutex::scoped_lock lm(_slang_audio_mutex);
+		return _slang_audio_channel_peak;
+	}
+	/** @return per-DCP-channel NATURAL (pre-auto-gain) RMS, linear; empty if
+	 *  never analysed. */
+	std::vector<float> slang_audio_channel_rms() const {
+		boost::mutex::scoped_lock lm(_slang_audio_mutex);
+		return _slang_audio_channel_rms;
+	}
+	void set_slang_audio_stats(std::vector<float> peak, std::vector<float> rms);
+	/** Move a mono source still mapped to the smart-centre upmixer's L/R legs
+	 *  onto its own leg, so an already-analysed project picks up the L/C/R
+	 *  spread. Idempotent, and only rewrites the exact pre-2026-07-25 default.
+	 *  Public because the export path runs it before measuring the mix.
+	 *  @return true if a mapping was actually changed -- in which case the mix
+	 *  has changed and its measured peak is stale. */
+	bool migrate_smart_center_mono_mapping();
+	/** Kick off the GPU audio analysis + auto-gain pre-pass for the film's
+	 *  current content.  Called automatically when content is added; also
+	 *  callable from the UI after it changes something the mix depends on (the
+	 *  simplified interface does this when it selects the smart-centre upmix),
+	 *  which supersedes any in-flight run rather than racing it. */
+	void maybe_analyse_audio_gain();
 #endif
 
 	bool three_d() const {
@@ -511,8 +539,8 @@ private:
 	void audio_analysis_finished();
 #ifdef DCPOMATIC_SLANG
 	void maybe_match_source_bitrate();
+	void maybe_smart_center_upmix();
 	void slang_bitrate_probe_finished(Job::Result result, std::weak_ptr<SlangBitrateProbeJob> weak_job);
-	void maybe_analyse_audio_gain();
 	void slang_audio_gain_finished(Job::Result result, std::weak_ptr<SlangAudioAnalyseJob> weak_job);
 #endif
 	void check_settings_consistency();
@@ -630,9 +658,23 @@ private:
 	/** dB the Slang auto-gain pre-pass currently has baked into every audio
 	 *  content (0 = none). Persisted so idempotency survives save/reload. */
 	double _slang_auto_gain_db = 0;
+	/** per-DCP-channel natural peak/RMS from the last analysis (linear) */
+	std::vector<float> _slang_audio_channel_peak;
+	std::vector<float> _slang_audio_channel_rms;
 	/** audio-mix digest _slang_auto_gain_db was computed for; a re-run whose
 	 *  digest matches skips the (expensive) audio replay. */
 	std::string _slang_audio_digest;
+	/** Drop the recorded auto-gain once the film has no audio content left to
+	 *  have it baked into; see the definition for why removal invalidates it
+	 *  while an ordinary edit does not. */
+	void slang_forget_auto_gain_if_no_audio();
+	/** Guards the four members above.  They are written from
+	 *  SlangAudioAnalyseJob::run() on the job's own thread and read on the UI
+	 *  thread (metadata(), the getters, SlangAudioPipelineView) -- the set_gain()
+	 *  calls the job makes just before these post a ContentChange that has the UI
+	 *  thread walking _slang_audio_channel_peak in metadata() while run() is
+	 *  still assigning it. */
+	mutable boost::mutex _slang_audio_mutex;
 	/** the in-flight content-add-time gain job, so a second content add can
 	 *  cancel-and-restart it instead of racing two additive mutations. */
 	std::weak_ptr<SlangAudioAnalyseJob> _slang_audio_gain_job;

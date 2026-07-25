@@ -234,16 +234,36 @@ JobManager::analyse_audio(
 	function<void (Job::Result)> ready
 	)
 {
+	/* Look for an existing job under the lock, but attach to it OUTSIDE the lock.
+	 * Job::when_finished() calls the handler synchronously when the job has
+	 * already finished, and these handlers ask JobManager questions:
+	 * AudioDialog::analysis_finished() -> try_to_load_analysis() -> get(), which
+	 * takes this same non-recursive _mutex (and TextPanel's opens a modal dialog
+	 * on top of that).  Calling out under the lock is an immediate self-deadlock
+	 * -- the same reason Job::when_finished() drops _state_mutex before it calls
+	 * the handler.
+	 *
+	 * The job is held by shared_ptr so it cannot be destroyed in the gap; it may
+	 * be cancelled or removed from _jobs, which is the race the second half of
+	 * this function has always had between its own two locked sections.
+	 */
+	shared_ptr<Job> existing;
+
 	{
 		boost::mutex::scoped_lock lm(_mutex);
 
 		for (auto i: _jobs) {
 			auto a = dynamic_pointer_cast<AnalyseAudioJob>(i);
 			if (a && a->path() == film->audio_analysis_path(playlist) && !i->finished_cancelled()) {
-				i->when_finished(connection, ready);
-				return;
+				existing = i;
+				break;
 			}
 		}
+	}
+
+	if (existing) {
+		existing->when_finished(connection, ready);
+		return;
 	}
 
 	shared_ptr<AnalyseAudioJob> job;
@@ -269,16 +289,24 @@ JobManager::analyse_subtitles(
 	function<void (Job::Result)> ready
 	)
 {
+	/* Attach outside the lock; see analyse_audio() above for why. */
+	shared_ptr<Job> existing;
+
 	{
 		boost::mutex::scoped_lock lm(_mutex);
 
 		for (auto i: _jobs) {
 			auto a = dynamic_pointer_cast<AnalyseSubtitlesJob>(i);
 			if (a && a->path() == film->subtitle_analysis_path(content) && !i->finished_cancelled()) {
-				i->when_finished(connection, ready);
-				return;
+				existing = i;
+				break;
 			}
 		}
+	}
+
+	if (existing) {
+		existing->when_finished(connection, ready);
+		return;
 	}
 
 	shared_ptr<AnalyseSubtitlesJob> job;

@@ -161,3 +161,43 @@ BOOST_AUTO_TEST_CASE(cancel_job_test)
 	BOOST_CHECK(jobs[1]->finished_cancelled());
 }
 
+
+/** Job::when_finished() must not hold _state_mutex while it calls the handler.
+ *
+ *  It used to.  A handler that opens a modal dialog -- jobs_make_dcp()'s
+ *  "overwrite the existing DCP?" is the one that bit, on 2026-07-25 -- starts a
+ *  nested event loop, and everything wxWidgets dispatches from there reads job
+ *  state: JobView::maybe_pulse() calls Job::running(), JobView::progress() calls
+ *  Job::status(), and the idle-drained panel updates walk JobManager::get().
+ *  boost::mutex is not recursive, so the UI thread parked in futex_wait holding
+ *  the lock that it was itself waiting for, with no way out but SIGKILL.
+ *
+ *  This reproduces the re-entry without wx: if the handler can read the job back
+ *  and ask JobManager for its list, the lock is not held.  Run under a timeout;
+ *  a regression hangs rather than fails.
+ */
+BOOST_AUTO_TEST_CASE(when_finished_does_not_hold_state_mutex)
+{
+	shared_ptr<Film> film;
+
+	auto job = make_shared<TestJob>(film);
+	job->set_finished_ok();
+	BOOST_REQUIRE(job->finished_ok());
+
+	int calls = 0;
+	boost::signals2::connection connection;
+	job->when_finished(connection, [&job, &calls](Job::Result result) {
+		++calls;
+		BOOST_CHECK(result == Job::Result::RESULT_OK);
+		/* Exactly what a modal dialog's nested event loop ends up doing. */
+		job->running();
+		job->finished();
+		job->status();
+		/* ...and the reverse of the order the scheduler takes the two locks. */
+		JobManager::instance()->get();
+	});
+
+	/* Called synchronously, exactly once: the terminal branch does not connect,
+	   so a later Finished emission cannot reach this handler as well. */
+	BOOST_CHECK_EQUAL(calls, 1);
+}
