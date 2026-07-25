@@ -65,7 +65,14 @@ smart_center_sample(float left, float right, float mono, float side_gain,
 string
 SmartCenterUpmixer::name() const
 {
-	return _("Smart centre (dialogue extraction to L/C/R)");
+	/* NOT "dialogue extraction", which this was called until 2026-07-25: nothing
+	 * here separates dialogue from anything else.  It is a fixed matrix on the
+	 * front channels, and what lands in the centre is whatever L and R have in
+	 * common -- usually the dialogue, but a centred music stem or a mono effect
+	 * just as much.  Naming it after a source-separation it does not perform
+	 * promised the user an algorithm, and left them reading the maths below to
+	 * find out what actually happens.  Say what goes in and what comes out. */
+	return _("Smart centre (mono/stereo to L, C, R)");
 }
 
 

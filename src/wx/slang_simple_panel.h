@@ -86,6 +86,12 @@ public:
 
 	/** The user wants the full interface. */
 	boost::signals2::signal<void ()> Advanced;
+	/** The user pressed New: start a fresh project, asking them where it goes
+	 *  and offering to save the current one first.  Distinct from @ref NewFilm,
+	 *  which is this panel's own plumbing for a destination it has ALREADY
+	 *  chosen; this one asks the host to run its full New Film flow, because
+	 *  with no menu bar in this mode the button is the only way to reach it. */
+	boost::signals2::signal<void ()> NewProject;
 	/** Asks the host to create a film in this directory and hand it back via
 	 *  set_film(); the panel needs a film before it can hold any content. */
 	boost::signals2::signal<void (boost::filesystem::path)> NewFilm;
@@ -176,6 +182,8 @@ private:
 
 	SlangCard* _audio_card = nullptr;
 	SlangAudioPipelineView* _pipeline = nullptr;
+
+	SlangFlatButton* _new = nullptr;
 
 	SlangFlatButton* _create = nullptr;
 	wxStaticText* _create_note = nullptr;

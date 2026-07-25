@@ -419,6 +419,11 @@ public:
 		 * and the same window; only which child is shown changes. */
 		_simple_panel = new SlangSimplePanel(this);
 		_simple_panel->Advanced.connect(boost::bind(&DOMFrame::set_simple_mode, this, false));
+		/* The header's New button IS File -> New -- the same handler, so the
+		 * name/location dialog, the template, the offer to save the open
+		 * project and the error paths are the menu item's, not a copy of
+		 * them that can drift from it. */
+		_simple_panel->NewProject.connect(boost::bind(&DOMFrame::file_new, this));
 		_simple_panel->NewFilm.connect(boost::bind(&DOMFrame::simple_new_film, this, _1));
 		_simple_panel->MakeDCP.connect(boost::bind(&DOMFrame::jobs_make_dcp_gpu_with_options, this, false));
 
@@ -929,6 +934,39 @@ private:
 		if (simple) {
 			_simple_panel->set_film(_film);
 		}
+
+#ifndef __WXOSX__
+		/* The menu bar is the full interface's control surface; this screen's
+		 * is the screen.  Leaving a File/Edit/Jobs/View/Tools/Help strip above
+		 * a page whose whole claim is "add your video and press Create DCP"
+		 * puts thirty-odd commands one click from a user who was promised
+		 * three, so it goes away with the rest of the full interface.
+		 *
+		 * SHOWN/HIDDEN rather than SetMenuBar(nullptr): the frame keeps
+		 * ownership (nothing to leak or re-attach), and -- the part that
+		 * matters -- GTK's accelerator group stays bound to the window, so
+		 * Ctrl+N, Ctrl+M and Shift+Ctrl+S still work from this screen even
+		 * though there is no bar to read them off.  Detaching would silently
+		 * take the keyboard away with the menu.
+		 *
+		 * Not on macOS, where the menu bar belongs to the screen rather than
+		 * the window: there is no clutter to remove, and hiding it would take
+		 * the application menu -- Quit, About, Preferences -- with it. */
+		if (auto bar = GetMenuBar()) {
+			/* Show() reports whether the visibility actually changed, so the
+			 * resize below is skipped on the calls that are already in the
+			 * right state (set_simple_mode runs on every toggle AND from the
+			 * constructor). */
+			if (bar->Show(!simple)) {
+				/* wxGTK subtracts the menu bar's height from the client area
+				 * only while it IsShown(), but nothing recomputes that on a
+				 * plain Show(); without this the reclaimed strip stays blank
+				 * until the next resize. */
+				SendSizeEvent();
+			}
+		}
+#endif
+
 		Layout();
 
 		if (_simple_mode_item) {

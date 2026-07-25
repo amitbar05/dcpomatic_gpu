@@ -139,6 +139,9 @@ private:
 	std::string _processor_id;
 	/** short description lines for the processing box */
 	std::vector<wxString> _processor_lines;
+	/** the exact matrix behind those lines, shown on hover rather than on
+	 *  screen; empty when there is no processor to describe */
+	wxString _processor_tooltip;
 
 	/** the auto-gain currently baked into the mix, dB */
 	double _gain_db = 0;

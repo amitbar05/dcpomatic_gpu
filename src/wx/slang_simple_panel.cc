@@ -237,8 +237,18 @@ SlangSimplePanel::build_header(wxWindow* parent)
 
 	sizer->Add(titles, 1, wxALIGN_CENTRE_VERTICAL);
 
+	/* This screen runs without the menu bar (DOMFrame::set_simple_mode hides
+	 * it), so File -> New has to exist somewhere on the screen itself or a user
+	 * who has finished one DCP has no way to start the next one.  It is the
+	 * host's own New Film flow, not a second implementation of it: the same
+	 * name/location dialog, the same offer to save the project that is open. */
+	_new = new SlangFlatButton(header, _("New..."), SlangFlatButton::Kind::SECONDARY);
+	_new->SetToolTip(_("Start a new project, saving this one first if you want."));
+	_new->on_click([this]() { NewProject(); });
+	sizer->Add(_new, 0, wxALIGN_CENTRE_VERTICAL | wxLEFT, FromDIP(12));
+
 	auto advanced = new SlangFlatButton(header, _("Advanced..."), SlangFlatButton::Kind::SECONDARY);
-	advanced->SetToolTip(_("Switch to the full interface, with every setting."));
+	advanced->SetToolTip(_("Switch to the full interface, with every setting and the menu bar."));
 	advanced->on_click([this]() { Advanced(); });
 	sizer->Add(advanced, 0, wxALIGN_CENTRE_VERTICAL | wxLEFT, FromDIP(12));
 
@@ -519,6 +529,16 @@ SlangSimplePanel::set_general_sensitivity(bool sensitive)
 		/* Moving the project out from under a running job would strand its
 		 * output; the full interface disables the same class of control. */
 		_output_change->Enable(sensitive && static_cast<bool>(_film));
+	}
+	if (_new) {
+		/* Same class: starting a new project discards the current film, and
+		 * discarding the one an export is writing strands it.  Deliberately
+		 * STRICTER than the File -> New menu item this button stands in for,
+		 * which upstream leaves ALWAYS enabled -- a menu item two clicks deep
+		 * is not the same hazard as a button sitting beside Advanced for the
+		 * forty minutes an export runs.  Nothing is lost by it: Advanced
+		 * brings the menu bar back, with its own New. */
+		_new->Enable(sensitive);
 	}
 }
 

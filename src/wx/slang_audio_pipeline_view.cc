@@ -144,6 +144,7 @@ SlangAudioPipelineView::refresh_state()
 	_processor_name.clear();
 	_processor_id.clear();
 	_processor_lines.clear();
+	_processor_tooltip.clear();
 	_gain_db = 0;
 	_natural_peak_dbfs = {};
 	_have_measurement = false;
@@ -202,24 +203,55 @@ SlangAudioPipelineView::refresh_state()
 				}
 			}
 
+			/* Plain sentences on screen, the exact matrix in the tooltip.  This
+			 * box used to show the matrix itself ("C = (L + R) / 2", "L' = L -
+			 * C"), on the reasoning that an operator has to be able to SEE that
+			 * this is centre EXTRACTION and not a downmix that doubles dialogue
+			 * into a phantom centre as well.  That reasoning still holds, but
+			 * not on THIS screen: the simplified interface is the one whose
+			 * whole promise is "add your video and press Create DCP", and it was
+			 * answering a question its reader had not asked in a notation they
+			 * had no reason to know.  The maths has not been hidden -- it moved
+			 * one hover away, where the person who wants it will look and the
+			 * person who does not is no longer confronted by it. */
 			if (mono_leg_fed) {
-				_processor_lines.push_back(_("Mono source: C = M"));
-				_processor_lines.push_back(_("L = R = M / 2     (6 dB below the centre)"));
+				_processor_lines.push_back(_("Your mono sound becomes the centre"));
+				_processor_lines.push_back(_("Left and right get it 6 dB quieter"));
 			}
 			if (stereo_legs_fed) {
-				/* Spelling the matrix out is the point: an operator needs to see
-				 * that this is centre EXTRACTION (L'+C == L) and not a downmix
-				 * that doubles dialogue into a phantom centre as well. */
-				_processor_lines.push_back(_("C = (L + R) / 2"));
-				_processor_lines.push_back(_("L' = L - C     R' = R - C"));
+				_processor_lines.push_back(_("What left and right share becomes the centre"));
+				_processor_lines.push_back(_("and is then taken back out of left and right"));
 			}
 			if (mono_leg_fed && stereo_legs_fed) {
-				_processor_lines.push_back(_("Both matrices are running (mixed routing)"));
+				_processor_lines.push_back(_("Both apply: some content is mono, some stereo"));
 			} else if (mono_leg_fed) {
 				_processor_lines.push_back(_("Dialogue stays anchored to the centre speaker"));
 			} else if (stereo_legs_fed) {
 				_processor_lines.push_back(_("Dialogue plays from the centre speaker alone"));
 			}
+
+			_processor_tooltip = _("Smart centre builds the centre channel a mono or stereo source does not have.");
+			if (stereo_legs_fed) {
+				_processor_tooltip += char_to_wx("\n\n");
+				_processor_tooltip += _(
+					"Stereo:  C = (L + R) / 2,  L' = L - C,  R' = R - C\n"
+					"L' + C is exactly your original left, and R' + C your original right, "
+					"so the stereo image is unchanged -- the centre is moved there, not copied there."
+					);
+			}
+			if (mono_leg_fed) {
+				_processor_tooltip += char_to_wx("\n\n");
+				_processor_tooltip += _(
+					"Mono:  C = M,  L = R = M / 2\n"
+					"The centre carries the whole signal and stays 6 dB above the sides, "
+					"so dialogue is anchored to the centre speaker."
+					);
+			}
+			_processor_tooltip += char_to_wx("\n\n");
+			_processor_tooltip += _(
+				"The surrounds and the LFE are never invented from front content, so they stay "
+				"silent unless your source already has them."
+				);
 		}
 	}
 
@@ -342,6 +374,13 @@ SlangAudioPipelineView::refresh_state()
 		if (GetContainingSizer()) {
 			GetContainingSizer()->Layout();
 		}
+	}
+
+	/* The exact matrix, for the reader who wants it (see the lines above). */
+	if (_processor_tooltip.IsEmpty()) {
+		UnsetToolTip();
+	} else {
+		SetToolTip(_processor_tooltip);
 	}
 
 	Refresh();
