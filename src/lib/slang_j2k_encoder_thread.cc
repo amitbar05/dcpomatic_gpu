@@ -26,6 +26,13 @@
     A/B measurement switch).
 */
 
+/* The whole translation unit is Slang-only.  wscript lists this .cc
+   unconditionally (as it does every other source), so without the guard a
+   plain upstream build -- one that never defines DCPOMATIC_SLANG -- fails
+   here on J2KEncoder members that only exist under the flag.  Every other
+   slang_*.cc already brackets itself this way. */
+#ifdef DCPOMATIC_SLANG
+
 #include "slang_j2k_encoder_thread.h"
 #include "slang_frame_client.h"
 #include "cross.h"
@@ -417,3 +424,5 @@ SlangJ2KEncoderThread::encode_locked(DCPVideo const& frame)
 	_backoff = 0;
 	return make_shared<dcp::ArrayData>(data.data(), static_cast<int>(data.size()));
 }
+
+#endif
