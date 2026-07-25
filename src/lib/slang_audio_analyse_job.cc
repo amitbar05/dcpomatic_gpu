@@ -142,10 +142,27 @@ slang_selected_peak(bool used_gpu, bool gpu_failed, bool peak_mismatch,
  * ~60 dB of headroom is far beyond any real pre-normalise content. */
 static double const SLANG_SANE_PEAK_MAX = 1.0e3;
 
+/* ...and the symmetric floor. A peak below -60 dBFS is not quiet programme
+ * material, it is silence: room tone, 24-bit dither, or a mis-mapped/empty
+ * channel. MAX_BOOST_DB is infinite (deliberately -- see the header), so
+ * without a floor such a mix is boosted by 60..140 dB, which
+ *   (a) ships the noise floor at the target level as if it were the programme,
+ *       reported in the success colour because nothing was "capped"; and
+ *   (b) produces a per-content gain the rest of the application cannot hold --
+ *       AudioPanel's gain control is SetRange(-60, 60), so the film stores
+ *       e.g. +81.5 dB while the panel displays 60.0, and one touch of that
+ *       control writes 60 back, silently dropping 21.5 dB.
+ * -60 dBFS is the largest floor that keeps every applied boost inside that
+ * +-60 dB range (target - (-60) = 56.5 dB), so a gain that IS applied is always
+ * one the user can see and round-trip. Refusing is the same policy the
+ * huge-peak branch above already follows: leave the content gain alone and say
+ * so loudly, rather than shipping a confidently-wrong soundtrack. */
+static double const SLANG_SANE_PEAK_MIN = 1.0e-3;
+
 static bool
 slang_peak_is_sane(double peak)
 {
-	return peak > 0.0 && peak <= SLANG_SANE_PEAK_MAX;
+	return peak >= SLANG_SANE_PEAK_MIN && peak <= SLANG_SANE_PEAK_MAX;
 }
 
 /* SLANG_PEAK_SOURCE_END */
@@ -339,21 +356,58 @@ SlangAudioAnalyseJob::run()
 	auto const peak = slang_selected_peak(_used_gpu, _gpu_failed, _peak_mismatch,
 					      _server_peak, _local_peak);
 	if (peak > 0 && !slang_peak_is_sane(peak)) {
-		/* Corruption, not a hot master (see slang_peak_is_sane): refuse to
-		 * apply auto-gain -- an enormous reduction would silence the whole
-		 * film. Leave the content gain untouched and make it LOUD in the log
-		 * rather than shipping a silent soundtrack off one bad sample. */
-		LOG_GENERAL(N_("Slang audio analysis: peak {} is far above full scale "
-			       "-- a grossly-out-of-range sample (source/decode "
-			       "corruption); NOT applying auto-gain, which would "
-			       "silence the soundtrack. Fix the source and re-run."),
-			    peak);
+		/* Out of range in either direction (see slang_peak_is_sane): refuse to
+		 * apply auto-gain. Too high is corruption, not a hot master, and an
+		 * enormous reduction would silence the whole film; too low is silence
+		 * or a noise floor, and an enormous boost would ship that noise floor
+		 * at programme level. Leave the content gain untouched and make it LOUD
+		 * in the log rather than shipping a confidently-wrong soundtrack. */
+		if (peak > SLANG_SANE_PEAK_MAX) {
+			LOG_GENERAL(N_("Slang audio analysis: peak {} is far above full scale "
+				       "-- a grossly-out-of-range sample (source/decode "
+				       "corruption); NOT applying auto-gain, which would "
+				       "silence the soundtrack. Fix the source and re-run."),
+				    peak);
+		} else {
+			LOG_GENERAL(N_("Slang audio analysis: peak {} dBFS is below the -60 dBFS "
+				       "floor -- the mix is silence or a noise floor, not "
+				       "programme material; NOT applying auto-gain, which would "
+				       "boost that noise to the target level. Check the audio "
+				       "mapping and the source, then re-run."),
+				    20 * std::log10(peak));
+		}
 		_peak_dbfs = 20 * std::log10(peak);
+		_gain_applied_db = 0;
+		_refused_out_of_range = true;
+		set_progress(1);
+		set_state(FINISHED_OK);
+		return;
+	}
+	/* Re-check for audio content rather than trusting the sample taken at the
+	 * top of run(): the user can remove the last audio content while the replay
+	 * is going.  Film::slang_forget_auto_gain_if_no_audio() cancels us when that
+	 * happens, but only up to the last interruption point, and recording a gain
+	 * + digest for a mix that no longer exists is exactly what that function
+	 * clears -- the next analysis would then back out a contribution nothing
+	 * carries and misreport the natural peak by that many dB.
+	 */
+	bool still_has_audio = false;
+	for (auto c: _film->content()) {
+		if (c->audio) {
+			still_has_audio = true;
+			break;
+		}
+	}
+	if (has_any_audio && !still_has_audio) {
+		LOG_GENERAL_NC(N_("Slang audio analysis: the audio content went away mid-run; "
+				  "discarding the measurement rather than recording a gain "
+				  "for a mix that no longer exists."));
 		_gain_applied_db = 0;
 		set_progress(1);
 		set_state(FINISHED_OK);
 		return;
 	}
+
 	/* Read once, BEFORE the branch below overwrites it via set_slang_auto_gain:
 	 * both the gain maths and the per-channel stats describe the *natural* mix,
 	 * i.e. with this contribution backed out. */
@@ -453,16 +507,22 @@ SlangAudioAnalyseJob::mix_digest() const
 			 * so the key is stable across auto-gain re-normalisations. */
 			key += c->digest();
 			key += fmt::format(":{:.4f}", c->audio->gain() - prior);
-			/* Position/trim/fade/mapping all change the resulting mix (hence its
-			 * peak) without touching the content digest -- fold them in so a
-			 * re-trim/move/re-map invalidates the cache instead of shipping a
-			 * stale (possibly clipped) gain. */
-			key += fmt::format(":pos={};ts={};te={};fi={};fo={};map={};",
+			/* Position/trim/fade/mapping/delay and the content's own frame rate
+			 * all change the resulting mix (hence its peak) without touching the
+			 * content digest -- fold them in so a re-trim/move/re-map/re-time
+			 * invalidates the cache instead of shipping a stale (possibly
+			 * clipped) gain.  delay() in particular slides one content against
+			 * the others, so on any film with overlapping audio it changes which
+			 * peaks coincide; active_video_frame_rate() drives the resampling
+			 * that stretches a content's audio in time. */
+			key += fmt::format(":pos={};ts={};te={};fi={};fo={};dly={};vfr={:.6f};map={};",
 					   c->position().get(),
 					   c->trim_start().get(),
 					   c->trim_end().get(),
 					   c->audio->fade_in().get(),
 					   c->audio->fade_out().get(),
+					   c->audio->delay(),
+					   c->active_video_frame_rate(_film),
 					   c->audio->mapping().digest());
 		}
 	}
@@ -491,6 +551,14 @@ SlangAudioAnalyseJob::status() const
 
 	if (_cache_hit) {
 		s += _("; audio unchanged, gain already normalised");
+	} else if (_refused_out_of_range) {
+		/* Must not fall through to "already at target": the gain change is 0
+		 * because the measurement was rejected, not because the mix was right.
+		 * See the log line for which end of the range it fell off. */
+		s += fmt::format(
+			_("; mix peaked at {:.1f} dB, outside the usable range -- no gain applied (see log)"),
+			_peak_dbfs
+			);
 	} else if (!std::isfinite(_peak_dbfs)) {
 		s += _("; mix was silent, no gain applied");
 	} else if (_gain_applied_db == 0) {

@@ -37,16 +37,19 @@ class SlangCoderDialog : public wxDialog
 {
 public:
 	/** @param current_coder "ht" or "mq" - the option to pre-select.
-	 *  @param audio_running true when the GPU audio-analysis job is churning
-	 *  in the background behind this dialog (adds the explanatory footnote).
-	 *  @param bit_rate_mbps if > 0, the DCP video bit rate that was set
-	 *  automatically to match the source video (adds a note); 0 disables it.
-	 *  @param bit_rate_changed true if that automatic value differs from the
-	 *  film's previous bit rate (so the note says "adjusted" rather than
-	 *  "already matches").
+	 *  @param audio_will_be_analysed true when confirming this dialog will run
+	 *  the GPU audio-analysis pre-pass (adds the explanatory footnote).  Future
+	 *  tense on purpose: the dialog is shown BEFORE anything is started or
+	 *  changed, so that cancelling leaves the film exactly as it was found.
+	 *  @param bit_rate_mbps if > 0, the DCP video bit rate that WILL be set to
+	 *  match the source video when this dialog is confirmed (adds a note);
+	 *  0 disables it.
+	 *  @param bit_rate_changed true if that value differs from the film's
+	 *  current bit rate (so the note says it will be adjusted rather than that
+	 *  it already matches).
 	 */
 	SlangCoderDialog(
-		wxWindow* parent, std::string current_coder, bool audio_running,
+		wxWindow* parent, std::string current_coder, bool audio_will_be_analysed,
 		int bit_rate_mbps, bool bit_rate_changed
 		)
 		: wxDialog(parent, wxID_ANY, _("Make DCP using GPU"))
@@ -85,7 +88,7 @@ public:
 				this, wxID_ANY,
 				bit_rate_changed
 				? wxString::Format(
-					_("The DCP's video bit rate was automatically adjusted to %d Mbit/s to match the source video."),
+					_("The DCP's video bit rate will be set to %d Mbit/s to match the source video."),
 					bit_rate_mbps)
 				: wxString::Format(
 					_("The DCP's video bit rate already matches the source video (%d Mbit/s)."),
@@ -138,11 +141,11 @@ public:
 			_ht->SetValue(true);
 		}
 
-		if (audio_running) {
+		if (audio_will_be_analysed) {
 			auto note = new wxStaticText(
 				this, wxID_ANY,
-				_("Meanwhile the audio is being analysed on the GPU in the background. The DCP "
-				  "will start once you have chosen and that analysis has finished.")
+				_("Once you have chosen, the audio will be analysed on the GPU and its level "
+				  "set automatically; the DCP starts when that has finished.")
 				);
 			auto note_font = note->GetFont();
 			note_font.SetStyle(wxFONTSTYLE_ITALIC);

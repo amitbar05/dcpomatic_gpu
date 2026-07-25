@@ -30,6 +30,15 @@ public:
 
 	std::string head_and_tail(int amount = 1024) const override;
 
+	/** Re-point this log at another file.  Needed because the log object
+	 *  outlives the path it was built from: Film hands the same shared_ptr to
+	 *  the global dcpomatic_log and to every job, so moving a project (see
+	 *  Film::set_directory) has to change the destination of the EXISTING log
+	 *  rather than swap in a new one, or those holders keep writing to the old
+	 *  -- by then deleted -- directory.
+	 */
+	void set_file(boost::filesystem::path file);
+
 private:
 	void do_log(std::shared_ptr<const LogEntry> entry) override;
 

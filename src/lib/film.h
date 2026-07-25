@@ -678,6 +678,31 @@ private:
 	/** the in-flight content-add-time gain job, so a second content add can
 	 *  cancel-and-restart it instead of racing two additive mutations. */
 	std::weak_ptr<SlangAudioAnalyseJob> _slang_audio_gain_job;
+	/** True once this film has been offered the smart-centre upmixer, whatever
+	 *  it did with the offer.
+	 *
+	 *  Needed because "the user chose no processor" and "nobody has ever
+	 *  chosen" are the SAME state otherwise: the DCP audio panel's "None" entry
+	 *  stores exactly nullptr, which is also what a fresh film has. Without this
+	 *  flag, every later content import re-offers the upmixer to a film the user
+	 *  deliberately left plain -- and Film::set_audio_processor() resets EVERY
+	 *  content's AudioMapping to the processor default, so hand-built routing on
+	 *  content that was already in the film is destroyed, with no prompt and no
+	 *  undo. */
+	bool _slang_smart_center_offered = false;
+	/** True once migrate_smart_center_mono_mapping() has run on this film.
+	 *
+	 *  The migration matches on the mapping PATTERN alone (mono in, both stereo
+	 *  legs at unity, nothing on the mono leg), and that pattern is ALSO the one
+	 *  a user sets deliberately to get cinema-correct centre-ONLY mono -- three
+	 *  clicks in the audio mapping grid, which sets exactly linear 1. Without a
+	 *  marker the migration is not idempotent against the user: it silently
+	 *  reverted that edit on every GPU export, every simplified-panel load and
+	 *  every content import, and wrote the revert into metadata.xml.
+	 *
+	 *  Defaults to false for a metadata.xml that predates it, so genuinely old
+	 *  projects still get migrated exactly once. */
+	bool _slang_mono_mapping_migrated = false;
 #endif
 
 };

@@ -64,6 +64,7 @@ sources = """
           slang_j2k_encoder_thread.cc
           slang_audio_analyse_job.cc
           slang_bitrate_probe_job.cc
+          slang_config.cc
           slang_source_bitrate.cc
           create_cli.cc
           crop.cc

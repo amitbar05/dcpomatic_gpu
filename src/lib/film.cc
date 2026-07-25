@@ -57,6 +57,7 @@
 #ifdef DCPOMATIC_SLANG
 #include "slang_audio_analyse_job.h"
 #include "slang_bitrate_probe_job.h"
+#include "slang_config.h"
 #include "slang_source_bitrate.h"
 #include "smart_center_upmixer.h"
 #endif
@@ -296,11 +297,13 @@ Film::video_identifier() const
 	   Part-15 and Part-1 frames into one MXF whose descriptor claims a single
 	   coder (verify_encode_contract only checks frames it actually encodes, so
 	   it is blind to the fake-written resumed ones). */
-	{
-		auto const slang = Config::instance()->slang();
-		if (slang.enable && _video_encoding == VideoEncoding::JPEG2000) {
-			s += "_slang_" + slang.coder;
-		}
+	/* slang_path_enabled()/slang_effective_coder(), NOT Config::slang() directly:
+	   the encoder is also switched on by the DCPOMATIC_SLANG env var and its
+	   coder is forced to "mq" by DCPOMATIC_SLANG_HETERO, so testing the config
+	   flags here would describe essence the encoder is not producing -- which is
+	   the very splice this block exists to prevent.  See slang_config.h. */
+	if (slang_path_enabled() && _video_encoding == VideoEncoding::JPEG2000) {
+		s += "_slang_" + slang_effective_coder();
 	}
 #endif
 
@@ -476,6 +479,12 @@ Film::metadata(bool with_content_paths) const
 				);
 		}
 	}
+	/* "This film has already been offered the smart-centre upmixer" -- see the
+	 * member's declaration.  Written unconditionally so an existing project
+	 * picks up the flag the first time it is saved by this version; absent in
+	 * an older metadata.xml, which read_metadata() handles below. */
+	cxml::add_text_child(root, "SlangSmartCentreOffered", _slang_smart_center_offered ? "1" : "0");
+	cxml::add_text_child(root, "SlangMonoMappingMigrated", _slang_mono_mapping_migrated ? "1" : "0");
 #endif
 	cxml::add_text_child(root, "ThreeD", _three_d ? "1" : "0");
 	cxml::add_text_child(root, "Sequence", _sequence ? "1" : "0");
@@ -722,6 +731,24 @@ Film::read_metadata(optional<boost::filesystem::path> path)
 			Config::instance()->set_show_experimental_audio_processors(true);
 		}
 	}
+
+#ifdef DCPOMATIC_SLANG
+	/* Absent in a metadata.xml written before this flag existed.  Default it
+	 * from the state the film is in rather than to false: a film that already
+	 * HAS a processor has plainly been through the offer, and defaulting such a
+	 * film to "not offered" would re-run the mono-mapping migration on it -- the
+	 * one-shot behaviour the flag exists to give.  A film with no processor
+	 * stays offerable, which is the pre-existing behaviour for those.
+	 * Read here rather than with the other Slang members above, because it
+	 * depends on _audio_processor, which is only read a few lines up. */
+	_slang_smart_center_offered =
+		f.optional_bool_child("SlangSmartCentreOffered").get_value_or(static_cast<bool>(_audio_processor));
+	/* Defaults to FALSE when absent, unlike the flag above: a project written
+	 * before this existed is exactly the project the migration is for, and must
+	 * still get its one run. */
+	_slang_mono_mapping_migrated =
+		f.optional_bool_child("SlangMonoMappingMigrated").get_value_or(false);
+#endif
 
 	_reel_type = static_cast<ReelType>(f.optional_number_child<int>("ReelType").get_value_or(static_cast<int>(ReelType::SINGLE)));
 	_reel_length = f.optional_number_child<int64_t>("ReelLength").get_value_or(2000000000);
@@ -1257,6 +1284,28 @@ void
 Film::set_directory(boost::filesystem::path d)
 {
 	_directory = d;
+	/* Re-point the log at the new directory. _log is a FileLog built once in the
+	 * constructor from file("log"), which resolves to an ABSOLUTE path there and
+	 * then never changes; the only caller of this setter (the simplified
+	 * interface's "Change..." output-folder control) moves the project and
+	 * deletes the old directory afterwards, so without this every later log
+	 * write would fopen a path that no longer exists. FileLog::do_log then
+	 * prints "(could not log to ...)" to stdout and DROPS the entry, which on a
+	 * GUI-subsystem build goes nowhere at all -- an export failing after a folder
+	 * move would leave no diagnostics anywhere.
+	 *
+	 * Re-point the EXISTING object rather than swapping in a new one: the same
+	 * shared_ptr is already held by the global dcpomatic_log (dcpomatic.cc's
+	 * set_film) and by anything else that took a copy, and those holders would
+	 * otherwise keep the old destination.
+	 */
+	if (auto file_log = dynamic_pointer_cast<FileLog>(_log)) {
+		file_log->set_file(file("log"));
+	} else {
+		/* Constructed with no directory, so the log is a NullLog; now that
+		 * there is somewhere to write, give it a real one. */
+		_log = make_shared<FileLog>(file("log"));
+	}
 	set_dirty(true);
 }
 
@@ -1792,6 +1841,17 @@ Film::maybe_smart_center_upmix()
 		return;
 	}
 
+	if (_slang_smart_center_offered) {
+		/* Offered once already and the film has no processor, so the answer was
+		 * "none" -- from the DCP audio panel's None entry, which stores exactly
+		 * the same nullptr a fresh film has.  Re-offering would not just be
+		 * noise: set_audio_processor() resets EVERY content's AudioMapping to
+		 * the processor default, so a re-offer triggered by importing a second
+		 * file destroys hand-built routing on the file that was already there.
+		 */
+		return;
+	}
+
 	bool any_audio = false;
 	int max_channels = 0;
 	for (auto c: content()) {
@@ -1804,8 +1864,13 @@ Film::maybe_smart_center_upmix()
 	}
 
 	if (!any_audio || max_channels == 0 || max_channels > 2) {
+		/* Nothing to decide about yet -- do NOT mark the film as offered, or a
+		 * film whose audio arrives in a later import would never get the offer
+		 * it is entitled to. */
 		return;
 	}
+
+	_slang_smart_center_offered = true;
 
 	/* set_audio_processor() resets every content's mapping to the processor's
 	 * default and raises the film to the processor's minimum channel count;
@@ -1829,8 +1894,15 @@ Film::maybe_smart_center_upmix()
  *
  *  ONLY the exact old default is rewritten (mono in, both legs at unity,
  *  nothing on the mono leg).  Any other mapping is somebody's deliberate
- *  routing and is left alone.  Idempotent: once moved, the pattern no longer
- *  matches.
+ *  routing and is left alone.
+ *
+ *  ONE-SHOT per film (_slang_mono_mapping_migrated).  "Once moved, the pattern
+ *  no longer matches" is not enough on its own, because the user can put it
+ *  back: mapping mono to both stereo legs at unity is how you ask this
+ *  processor for cinema-correct centre-ONLY mono, and it is three clicks in the
+ *  audio mapping grid.  Matching on the pattern for ever therefore reverted that
+ *  edit -- silently, into metadata.xml -- on every GPU export, simplified-panel
+ *  load and content import.
  */
 bool
 Film::migrate_smart_center_mono_mapping()
@@ -1838,6 +1910,17 @@ Film::migrate_smart_center_mono_mapping()
 	if (!_audio_processor || _audio_processor->id() != "smart-center-upmixer") {
 		return false;
 	}
+
+	if (_slang_mono_mapping_migrated) {
+		return false;
+	}
+	/* Set before the work, and regardless of whether anything matches: the
+	 * question this answers is "has this film been through the migration", not
+	 * "did the migration change something".  Dirty explicitly -- when nothing
+	 * matched there is no content change to do it, and an unsaved flag means the
+	 * migration runs again next session, which is the whole defect. */
+	_slang_mono_mapping_migrated = true;
+	set_dirty(true);
 
 	auto changed = false;
 	for (auto c: content()) {
@@ -2458,6 +2541,22 @@ Film::slang_forget_auto_gain_if_no_audio()
 		if (i->audio) {
 			return;
 		}
+	}
+
+	/* Stop any analysis still running on the mix that has just gone.  It samples
+	 * the content list once at the top of run() and then calls
+	 * set_slang_auto_gain()/set_slang_audio_stats() unconditionally at the end,
+	 * so a job left running would re-record the very gain and digest being
+	 * cleared here -- for content that no longer exists, and with its per-content
+	 * gain loop applying it to nothing.  cancel() lands promptly because
+	 * SlangAudioAnalyseJob::analyse() calls set_progress() per Player callback,
+	 * which is an interruption point.
+	 */
+	if (auto existing = _slang_audio_gain_job.lock()) {
+		if (!existing->finished()) {
+			existing->cancel();
+		}
+		_slang_audio_gain_job.reset();
 	}
 
 	boost::mutex::scoped_lock lm(_slang_audio_mutex);

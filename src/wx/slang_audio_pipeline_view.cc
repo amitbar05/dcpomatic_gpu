@@ -170,34 +170,54 @@ SlangAudioPipelineView::refresh_state()
 		_processor_name = std_to_wx(processor->name());
 		_processor_id = processor->id();
 		if (_processor_id == "smart-center-upmixer") {
-			/* A mono source is mapped into BOTH of the processor's inputs, so
-			 * mid = (L + R) / 2 = M and the two differences come out at exactly
-			 * zero: C carries the whole mix and L/R are silent. The stereo
-			 * matrix is still what runs, but printing it for a mono source
-			 * reads as a contradiction next to two silent meters -- so say what
-			 * that matrix DOES here, which is the question an operator looking
-			 * at this screen is actually asking. */
-			auto mono = false;
+			/* Which matrix runs is decided by WHICH LEG the mapping feeds --
+			 * SmartCenterUpmixer::do_run() reads its mono leg and its L/R legs
+			 * out of the buffer Player::remap() filled from each content's
+			 * AudioMapping -- so this has to be read from the mapping too.
+			 * Deriving it from the content's channel count instead described a
+			 * matrix the DCP would not contain: a mono source hand-mapped onto
+			 * the L leg alone runs the stereo extraction (C = M/2, R' = -L'),
+			 * and a film holding one mono AND one stereo content runs BOTH
+			 * matrices at once with entirely default mappings.  The links drawn
+			 * below already come from the mapping, so the caption would also
+			 * contradict the picture in its own box. */
+			bool mono_leg_fed = false;
+			bool stereo_legs_fed = false;
 			for (auto content: _film->content()) {
 				if (!content->audio) {
 					continue;
 				}
-				mono = content->audio->channel_names().size() == 1;
-				if (!mono) {
-					break;
+				auto const mapping = content->audio->mapping();
+				for (int c = 0; c < mapping.input_channels(); ++c) {
+					for (int o = 0; o < mapping.output_channels(); ++o) {
+						if (mapping.get(c, o) <= 0) {
+							continue;
+						}
+						if (o == SmartCenterUpmixer::MONO_INPUT) {
+							mono_leg_fed = true;
+						} else if (o == 0 || o == 1) {
+							stereo_legs_fed = true;
+						}
+					}
 				}
 			}
 
-			if (mono) {
+			if (mono_leg_fed) {
 				_processor_lines.push_back(_("Mono source: C = M"));
 				_processor_lines.push_back(_("L = R = M / 2     (6 dB below the centre)"));
-				_processor_lines.push_back(_("Dialogue stays anchored to the centre speaker"));
-			} else {
+			}
+			if (stereo_legs_fed) {
 				/* Spelling the matrix out is the point: an operator needs to see
 				 * that this is centre EXTRACTION (L'+C == L) and not a downmix
 				 * that doubles dialogue into a phantom centre as well. */
 				_processor_lines.push_back(_("C = (L + R) / 2"));
 				_processor_lines.push_back(_("L' = L - C     R' = R - C"));
+			}
+			if (mono_leg_fed && stereo_legs_fed) {
+				_processor_lines.push_back(_("Both matrices are running (mixed routing)"));
+			} else if (mono_leg_fed) {
+				_processor_lines.push_back(_("Dialogue stays anchored to the centre speaker"));
+			} else if (stereo_legs_fed) {
 				_processor_lines.push_back(_("Dialogue plays from the centre speaker alone"));
 			}
 		}
@@ -272,6 +292,7 @@ SlangAudioPipelineView::refresh_state()
 		OutputChannel output;
 		output.name = std_to_wx(short_audio_channel_name(c));
 		if (c < static_cast<int>(peak.size())) {
+			output.measured = true;
 			output.peak = peak[c];
 			output.rms = c < static_cast<int>(rms.size()) ? rms[c] : -1;
 			natural_peak = std::max(natural_peak, static_cast<double>(peak[c]));
@@ -279,7 +300,11 @@ SlangAudioPipelineView::refresh_state()
 		_outputs.push_back(output);
 	}
 
-	if (_have_measurement && natural_peak > 0) {
+	/* Only report a mix peak when the analysis covered every channel the film
+	 * will write.  A partial vector's maximum is not the mix's maximum, and
+	 * quoting it would under-report the level by however loud the channels that
+	 * were never measured turn out to be. */
+	if (_have_measurement && natural_peak > 0 && peak.size() >= static_cast<size_t>(_film->audio_channels())) {
 		_natural_peak_dbfs = to_dbfs(natural_peak);
 	}
 
@@ -529,10 +554,12 @@ SlangAudioPipelineView::paint()
 			meter_width,
 			FromDIP(10)
 			);
-		draw_meter(gc.get(), meter, _have_measurement ? resulting : -std::numeric_limits<double>::infinity(), output.live);
+		draw_meter(gc.get(), meter, output.measured ? resulting : -std::numeric_limits<double>::infinity(), output.live);
 
 		gc->SetFont(gc->CreateFont(slang_ui::font(this, -2), output.live ? p.muted : slang_ui::mix(p.muted, p.card, 0.5)));
-		auto const level = !_have_measurement
+		/* Per channel, not per film: an unmeasured channel must never be
+		 * labelled "silent" (see OutputChannel::measured). */
+		auto const level = !output.measured
 			? (output.live ? wxString(_("not measured")) : wxString(_("silent")))
 			: format_dbfs(output.peak > 0 ? resulting : -std::numeric_limits<double>::infinity());
 		slang_ui::draw_text(

@@ -243,6 +243,17 @@ JobManager::analyse_audio(
 	 * -- the same reason Job::when_finished() drops _state_mutex before it calls
 	 * the handler.
 	 *
+	 * Only a job that is still going can serve a new caller, hence !finished()
+	 * rather than !finished_cancelled().  _jobs is never erased, so a terminal
+	 * job stays matchable for the life of the process, and matching one means
+	 * when_finished() runs the handler inline: a handler that responds by asking
+	 * for the analysis again (AudioDialog::analysis_finished() ->
+	 * try_to_load_analysis() -> OldFormatError -> analyse_audio(), which unlike
+	 * its sibling branch cancels nothing first) would re-match the same terminal
+	 * job and recurse until the stack runs out.  Excluding terminal jobs makes
+	 * that gesture start a fresh analysis instead, which is what the caller
+	 * actually asked for.
+	 *
 	 * The job is held by shared_ptr so it cannot be destroyed in the gap; it may
 	 * be cancelled or removed from _jobs, which is the race the second half of
 	 * this function has always had between its own two locked sections.
@@ -254,7 +265,7 @@ JobManager::analyse_audio(
 
 		for (auto i: _jobs) {
 			auto a = dynamic_pointer_cast<AnalyseAudioJob>(i);
-			if (a && a->path() == film->audio_analysis_path(playlist) && !i->finished_cancelled()) {
+			if (a && a->path() == film->audio_analysis_path(playlist) && !i->finished()) {
 				existing = i;
 				break;
 			}
@@ -289,7 +300,9 @@ JobManager::analyse_subtitles(
 	function<void (Job::Result)> ready
 	)
 {
-	/* Attach outside the lock; see analyse_audio() above for why. */
+	/* Attach outside the lock, and only to a job that is still going; see
+	 * analyse_audio() above for both reasons.
+	 */
 	shared_ptr<Job> existing;
 
 	{
@@ -297,7 +310,7 @@ JobManager::analyse_subtitles(
 
 		for (auto i: _jobs) {
 			auto a = dynamic_pointer_cast<AnalyseSubtitlesJob>(i);
-			if (a && a->path() == film->subtitle_analysis_path(content) && !i->finished_cancelled()) {
+			if (a && a->path() == film->subtitle_analysis_path(content) && !i->finished()) {
 				existing = i;
 				break;
 			}

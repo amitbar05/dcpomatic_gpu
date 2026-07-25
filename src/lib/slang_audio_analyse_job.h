@@ -188,6 +188,11 @@ private:
 	uint32_t _seq = 0;
 	bool _used_gpu = false;
 	bool _cache_hit = false;             ///< skipped the replay (mix unchanged)
+	/** Measured a peak outside the sane range and refused to normalise it (see
+	 *  slang_peak_is_sane). Distinct from "already at target": the gain was not
+	 *  applied because the measurement is not usable, which status() has to say
+	 *  rather than reporting a 0 dB change as success. */
+	bool _refused_out_of_range = false;
 	double _gain_applied_db = 0;
 	double _peak_dbfs = 0;
 	/** Absolute slang auto-gain in effect after this run (== the value

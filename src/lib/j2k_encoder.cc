@@ -38,6 +38,7 @@
 #include "grok_j2k_encoder_thread.h"
 #endif
 #ifdef DCPOMATIC_SLANG
+#include "slang_config.h"
 #include "slang_j2k_encoder_thread.h"
 #endif
 #include "remote_j2k_encoder_thread.h"
@@ -137,30 +138,6 @@ J2KEncoder::~J2KEncoder()
 }
 
 
-#ifdef DCPOMATIC_SLANG
-/* The effective Slang coder for this encode run: "ht" or "mq".
- *
- * A single reel's picture MXF cannot legally mix HTJ2K (Part 15) and
- * Part-1/MQ essence.  Heterogeneous CPU+GPU encoding (DCPOMATIC_SLANG_HETERO)
- * keeps OpenJPEG (Part-1/MQ) CPU encoder threads running alongside the Slang
- * GPU thread(s), so if the configured Slang coder is "ht" the two pools would
- * write incompatible essence into the same track.  In that case force the
- * whole track to "mq" so every thread produces consistent Part-1 essence.
- * This only affects the local value used to build threads / the end() mop-up;
- * it never persists back to Config.
- */
-static std::string
-slang_effective_coder()
-{
-	auto const slang = Config::instance()->slang();
-	bool const slang_enable = getenv("DCPOMATIC_SLANG") != nullptr || slang.enable;
-	bool const slang_hetero = slang_enable && getenv("DCPOMATIC_SLANG_HETERO");
-	if (slang_hetero && slang.coder != "mq") {
-		return "mq";
-	}
-	return slang.coder;
-}
-#endif
 
 
 void
@@ -175,7 +152,7 @@ J2KEncoder::servers_list_changed()
 #ifdef DCPOMATIC_SLANG
 	/* GUI/config switch (Preferences → GPU (Slang)) or the original env
 	 * flag — either enables the GPU path. */
-	auto const slang_enable = getenv("DCPOMATIC_SLANG") != nullptr || config->slang().enable;
+	auto const slang_enable = slang_path_enabled();
 #else
 	auto const slang_enable = false;
 #endif
@@ -300,9 +277,7 @@ J2KEncoder::end()
 #ifdef DCPOMATIC_GROK
 		grok_handling = Config::instance()->grok().enable;
 #endif
-		auto const slang_config = Config::instance()->slang();
-		bool const slang_enable = getenv("DCPOMATIC_SLANG") != nullptr || slang_config.enable;
-		if (!_queue.empty() && !grok_handling && slang_enable && slang_effective_coder() == "ht") {
+		if (!_queue.empty() && !grok_handling && slang_path_enabled() && slang_effective_coder() == "ht") {
 			try {
 				throw EncodeError(fmt::format(
 					N_("GPU (Slang) HT encode left {} frame(s) un-encoded at the end of the run; refusing to encode them with OpenJPEG (Part-1) as that would corrupt the HTJ2K reel."),

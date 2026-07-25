@@ -104,6 +104,14 @@ private:
 		/** natural (pre-auto-gain) peak and RMS, linear; < 0 if not measured */
 		double peak = -1;
 		double rms = -1;
+		/** this channel was covered by the stored analysis.  Per-channel, NOT
+		 *  the film-wide _have_measurement: the stored vector is as wide as the
+		 *  film was when it was measured, so widening the film afterwards (which
+		 *  the smart-centre upmix does, to 6) leaves the new channels
+		 *  unmeasured while the film still counts as measured overall.  Without
+		 *  this they render as "silent" -- a positive claim about a centre
+		 *  channel that may be carrying all the dialogue. */
+		bool measured = false;
 		/** something is mapped or processed into this channel */
 		bool live = false;
 		double y = 0;

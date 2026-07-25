@@ -34,6 +34,7 @@
 #include "lib/content.h"
 #include "lib/content_factory.h"
 #include "lib/cross.h"
+#include "lib/dcp_transcode_job.h"
 #include "lib/examine_content_job.h"
 #include "lib/film.h"
 #include "lib/film_util.h"
@@ -90,6 +91,47 @@ is_subtitle_path(boost::filesystem::path const& path)
 		|| extension == ".vtt" || extension == ".stl" || extension == ".sub"
 		|| extension == ".dfxp" || extension == ".ttml" || extension == ".xml"
 		|| extension == ".fcpxml";
+}
+
+
+/** Recursively copy a project directory.
+ *
+ *  Hand-rolled rather than boost::filesystem::copy(..., copy_options::recursive)
+ *  for two reasons.  copy_options only exists in Boost >= 1.74, while this
+ *  project's wscript accepts >= 1.45 on Linux and >= 1.61 elsewhere, so the bare
+ *  symbol configures fine and then fails to compile (upstream guards the same
+ *  symbol with #if BOOST_VERSION >= 107400 in test/subtitle_font_id_test.cc).
+ *  And going through dcp::filesystem picks up libdcp's long-path handling, which
+ *  a project directory full of MXFs on Windows needs.
+ *
+ *  It descends with a plain directory_iterator and never follows a directory
+ *  SYMLINK.  That is load-bearing, not tidiness: boost::filesystem::copy has no
+ *  cycle detection, so a symlinked route back into the source subtree re-copies
+ *  each level's earlier siblings (measured at 195x amplification) until the path
+ *  hits ENAMETOOLONG.  change_output_folder() refuses a target inside the
+ *  project by filesystem identity; not following links is the structural half of
+ *  the same guard.  boost::filesystem::relative() is avoided for the same
+ *  version reason as copy_options (it arrived in 1.60), hence the explicit
+ *  recursion rather than recursive_directory_iterator plus a relative path.
+ */
+static void
+copy_tree(boost::filesystem::path const& from, boost::filesystem::path const& to)
+{
+	dcp::filesystem::create_directories(to);
+	for (auto const& i: dcp::filesystem::directory_iterator(from)) {
+		auto const destination = to / i.path().filename();
+		if (boost::filesystem::is_symlink(boost::filesystem::symlink_status(i.path()))) {
+			/* Copy the link itself; do not follow it. */
+			boost::filesystem::copy_symlink(i.path(), destination);
+		} else if (dcp::filesystem::is_directory(i.path())) {
+			copy_tree(i.path(), destination);
+		} else {
+			/* CopyOptions::NONE: `to` was empty or newly invented, so a
+			 * collision means an assumption is wrong and throwing beats
+			 * silently replacing a file. */
+			dcp::filesystem::copy_file(i.path(), destination, dcp::filesystem::CopyOptions::NONE);
+		}
+	}
 }
 
 
@@ -418,7 +460,31 @@ SlangSimplePanel::set_film(shared_ptr<Film> film)
 void
 SlangSimplePanel::migrate_mono_mapping()
 {
-	if (!_film || !_film->migrate_smart_center_mono_mapping()) {
+	if (!_film) {
+		return;
+	}
+
+	/* Never while a DCP is being written.  Both halves of this function change
+	 * the film underneath the running export: set_mapping() fires a
+	 * ContentChange that makes the in-flight Player rebuild all its pieces
+	 * mid-reel, and the analysis job ends by calling AudioContent::set_gain, so
+	 * the delivered DCP would no longer match the project it was made from.
+	 * Nothing is lost by skipping it -- the migration is idempotent and
+	 * jobs_make_dcp_gpu_continue() runs it again, immediately before the
+	 * analysis it exists to precede.
+	 */
+	auto jobs = JobManager::instance()->get();
+	auto const transcoding = std::any_of(
+		jobs.begin(),
+		jobs.end(),
+		[](shared_ptr<const Job> job) {
+			return std::dynamic_pointer_cast<const DCPTranscodeJob>(job) && !job->finished();
+		});
+	if (transcoding) {
+		return;
+	}
+
+	if (!_film->migrate_smart_center_mono_mapping()) {
 		return;
 	}
 
@@ -1051,9 +1117,7 @@ SlangSimplePanel::change_output_folder()
 			 * name that collides means an assumption is wrong, and throwing
 			 * (caught below, reported) beats silently replacing a file. */
 			try {
-				boost::filesystem::copy(
-					*current, target, boost::filesystem::copy_options::recursive
-					);
+				copy_tree(*current, target);
 			} catch (...) {
 				/* project_folder_for() guarantees `target` was empty or invented,
 				 * so everything in it now is what this copy just wrote.  Leaving

@@ -50,6 +50,17 @@ FileLog::FileLog(boost::filesystem::path file, int types)
 
 
 void
+FileLog::set_file(boost::filesystem::path file)
+{
+	/* Same mutex do_log()/head_and_tail() run under (Log::log() takes it before
+	 * calling do_log), so a job thread cannot be part-way through a write to the
+	 * old path while the UI thread changes it. */
+	boost::mutex::scoped_lock lm(_mutex);
+	_file = file;
+}
+
+
+void
 FileLog::do_log(shared_ptr<const LogEntry> entry)
 {
 	dcp::File f(_file, "a");

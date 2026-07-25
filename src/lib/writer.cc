@@ -30,6 +30,9 @@
 #include "frame_info.h"
 #include "job.h"
 #include "reel_writer.h"
+#ifdef DCPOMATIC_SLANG
+#include "slang_config.h"
+#endif
 #include "text_content.h"
 #include "util.h"
 #include "version.h"
@@ -743,7 +746,7 @@ Writer::can_fake_write(Frame frame) const
 	   frame > 0), forcing a full re-encode of the reel.  Deterministic coders
 	   (OpenJPEG / Grok, i.e. Slang disabled) keep the fast fake-write resume.
 	*/
-	if (Config::instance()->slang().enable && reel.first_nonexistent_frame() > 0) {
+	if (slang_path_enabled() && reel.first_nonexistent_frame() > 0) {
 		return false;
 	}
 #endif
