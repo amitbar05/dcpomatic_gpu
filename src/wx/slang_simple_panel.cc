@@ -570,7 +570,16 @@ SlangSimplePanel::choose_audio_language()
 	}
 
 	LanguageTagDialog dialog(this, _film->audio_language().get_value_or(dcp::LanguageTag("en")));
-	if (dialog.ShowModal() == wxID_OK) {
+	auto const result = dialog.ShowModal();
+	/* Reported: the Create DCP row (and everything below the Sound card) can be
+	 * left showing stale, blank content once this modal closes -- the toolkit
+	 * does not reliably repaint the area the dialog covered.  Force it rather
+	 * than trust an Expose/frame callback that this window manager may not
+	 * send.  Unconditional: the stale paint is a side effect of the modal
+	 * itself, not of what the user chose in it. */
+	Refresh();
+	Update();
+	if (result == wxID_OK) {
 		_film->set_audio_language(dialog.get());
 		save();
 	}
@@ -1379,7 +1388,12 @@ SlangSimplePanel::choose_subtitle_language(weak_ptr<Content> weak)
 
 	auto const current = content->text.front()->language();
 	LanguageTagDialog dialog(this, current.get_value_or(dcp::LanguageTag("en")));
-	if (dialog.ShowModal() != wxID_OK) {
+	auto const result = dialog.ShowModal();
+	/* See choose_audio_language(): force a repaint rather than trust the
+	 * toolkit to redraw what this modal covered. */
+	Refresh();
+	Update();
+	if (result != wxID_OK) {
 		return;
 	}
 
