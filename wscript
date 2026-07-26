@@ -88,6 +88,17 @@ def configure(conf):
     if conf.options.target_windows_64 or conf.options.target_windows_32:
         conf.load('winres')
 
+    # The Slang GPU integration is switched on by putting -DDCPOMATIC_SLANG in
+    # CXXFLAGS.  waf's dependency scanner reads env.DEFINES, NOT CXXFLAGS, so
+    # left at that every "#include" sitting behind "#ifdef DCPOMATIC_SLANG" is
+    # invisible to it: editing e.g. src/wx/slang_simple_panel.h rebuilds
+    # NOTHING, and a tool that allocates a class whose layout just changed keeps
+    # the old, smaller sizeof().  That is not a stale-looking build, it is a
+    # heap overflow -- it cost a debugging session to a SIGSEGV inside GTK's
+    # size negotiation.  Mirror the flag into DEFINES so the scanner sees it.
+    if '-DDCPOMATIC_SLANG' in conf.env.CXXFLAGS and 'DCPOMATIC_SLANG=1' not in conf.env.DEFINES:
+        conf.env.append_value('DEFINES', 'DCPOMATIC_SLANG=1')
+
     if vars(conf.options)['c++17']:
         cpp_std = '17'
         conf.env.XMLPP_API = '4.0'

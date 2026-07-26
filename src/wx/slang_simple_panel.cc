@@ -20,9 +20,11 @@
 
 #ifdef DCPOMATIC_SLANG
 
+#include "dcpomatic_choice.h"
 #include "dir_dialog.h"
 #include "file_dialog.h"
 #include "job_manager_view.h"
+#include "language_tag_dialog.h"
 #include "slang_audio_pipeline_view.h"
 #include "slang_simple_panel.h"
 #include "slang_ui_theme.h"
@@ -34,6 +36,7 @@
 #include "lib/content.h"
 #include "lib/content_factory.h"
 #include "lib/cross.h"
+#include "lib/dcp_content_type.h"
 #include "lib/dcp_transcode_job.h"
 #include "lib/examine_content_job.h"
 #include "lib/film.h"
@@ -309,6 +312,67 @@ SlangSimplePanel::build_video_card(wxWindow* parent, wxSizer* sizer)
 	_video_details->SetSizer(details);
 	_video_card->body()->Add(_video_details, 0, wxEXPAND);
 	_video_details->Hide();
+
+	/* What the DCP is, which is a property of the programme rather than of the
+	 * file, so it stays visible whether or not a video has been added yet.  It
+	 * picks the CPL's ContentKind and the FTR/SHR/CLP part of the DCP name --
+	 * and a "feature" is the one kind SMPTE Bv2.1 then requires end-credit
+	 * markers on, so choosing correctly here is not only cosmetic. */
+	auto type_row = new wxBoxSizer(wxHORIZONTAL);
+	auto type_label = new wxStaticText(_video_card, wxID_ANY, _("This DCP is a"));
+	type_label->SetFont(slang_ui::font(_video_card, -1));
+	type_label->SetForegroundColour(p.muted);
+	type_row->Add(type_label, 0, wxALIGN_CENTRE_VERTICAL | wxRIGHT, FromDIP(8));
+
+	_content_type = new Choice(_video_card);
+	for (auto type: DCPContentType::all()) {
+		_content_type->add_entry(type->pretty_name());
+	}
+	/* ASCII only inside _(): wx routes a translatable char* through
+	 * wxString::FromAscii, which asserts on the first byte >= 0x80 -- an em
+	 * dash here stopped the program on the splash screen with
+	 * "Non-ASCII value passed to FromAscii()".  Non-ASCII text has to go
+	 * through char_to_wx(), as the "%dx%d" summary below does. */
+	_content_type->SetToolTip(_("Feature, short, clip, trailer... - this sets the DCP's content kind and part of its name."));
+	_content_type->Bind(wxEVT_CHOICE, boost::bind(&SlangSimplePanel::content_type_changed, this));
+	type_row->Add(_content_type, 0, wxALIGN_CENTRE_VERTICAL);
+
+	_video_card->body()->Add(type_row, 0, wxEXPAND | wxTOP, FromDIP(10));
+}
+
+
+void
+SlangSimplePanel::content_type_changed()
+{
+	if (!_film || !_content_type) {
+		return;
+	}
+	if (auto const index = _content_type->get()) {
+		_film->set_dcp_content_type(DCPContentType::from_index(*index));
+		/* This screen has no Save button (see save()), and unlike the content
+		 * edits there is no ContentChange to carry it into
+		 * content_layout_changed() -- so a type picked here and never followed
+		 * by a content edit would be lost on close. */
+		save();
+	}
+}
+
+
+void
+SlangSimplePanel::update_content_type()
+{
+	if (!_content_type) {
+		return;
+	}
+
+	_content_type->Enable(_sensitive && static_cast<bool>(_film));
+	if (!_film) {
+		return;
+	}
+
+	if (auto const index = DCPContentType::as_index(_film->dcp_content_type())) {
+		checked_set(_content_type, *index);
+	}
 }
 
 
@@ -371,6 +435,8 @@ SlangSimplePanel::build_output_card(wxWindow* parent, wxSizer* sizer)
 void
 SlangSimplePanel::build_audio_card(wxWindow* parent, wxSizer* sizer)
 {
+	auto const p = slang_ui::palette();
+
 	_audio_card = new SlangCard(
 		parent, _("Sound"),
 		_("Measured on the GPU as soon as your video is added, then levelled for the cinema.")
@@ -379,6 +445,71 @@ SlangSimplePanel::build_audio_card(wxWindow* parent, wxSizer* sizer)
 
 	_pipeline = new SlangAudioPipelineView(_audio_card);
 	_audio_card->body()->Add(_pipeline, 1, wxEXPAND);
+
+	/* The spoken language of the soundtrack.  Optional by design: an unset
+	 * language is written as XX in the DCP name, which is what the convention
+	 * says for "not specified" -- so this asks rather than guessing, and a film
+	 * nobody answers for keeps the honest XX rather than a wrong "en". */
+	auto language_row = new wxBoxSizer(wxHORIZONTAL);
+	auto language_label = new wxStaticText(_audio_card, wxID_ANY, _("Spoken language"));
+	language_label->SetFont(slang_ui::font(_audio_card, -1));
+	language_label->SetForegroundColour(p.muted);
+	language_row->Add(language_label, 0, wxALIGN_CENTRE_VERTICAL | wxRIGHT, FromDIP(8));
+
+	_audio_language = new SlangFlatButton(_audio_card, _("Not specified"), SlangFlatButton::Kind::SECONDARY);
+	_audio_language->SetToolTip(_("The language the soundtrack is spoken in; it becomes part of the DCP's name."));
+	_audio_language->on_click([this]() { choose_audio_language(); });
+	language_row->Add(_audio_language, 0, wxALIGN_CENTRE_VERTICAL);
+
+	_audio_language_clear = new SlangFlatButton(_audio_card, _("Clear"), SlangFlatButton::Kind::GHOST);
+	_audio_language_clear->SetToolTip(_("Leave the language unspecified (XX in the DCP name)."));
+	_audio_language_clear->on_click([this]() { clear_audio_language(); });
+	language_row->Add(_audio_language_clear, 0, wxALIGN_CENTRE_VERTICAL);
+	_audio_language_clear->Hide();
+
+	_audio_card->body()->Add(language_row, 0, wxEXPAND | wxTOP, FromDIP(10));
+}
+
+
+void
+SlangSimplePanel::choose_audio_language()
+{
+	if (!_film) {
+		return;
+	}
+
+	LanguageTagDialog dialog(this, _film->audio_language().get_value_or(dcp::LanguageTag("en")));
+	if (dialog.ShowModal() == wxID_OK) {
+		_film->set_audio_language(dialog.get());
+		save();
+	}
+}
+
+
+void
+SlangSimplePanel::clear_audio_language()
+{
+	if (_film) {
+		_film->set_audio_language(boost::none);
+		save();
+	}
+}
+
+
+void
+SlangSimplePanel::update_audio_language()
+{
+	if (!_audio_language) {
+		return;
+	}
+
+	auto const language = _film ? _film->audio_language() : optional<dcp::LanguageTag>();
+
+	_audio_language->set_label_text(language ? std_to_wx(language->as_string()) : _("Not specified"));
+	_audio_language->Enable(_sensitive && static_cast<bool>(_film));
+	_audio_language_clear->Enable(_sensitive && static_cast<bool>(_film));
+	_audio_language_clear->Show(static_cast<bool>(language));
+	_audio_card->Layout();
 }
 
 
@@ -525,6 +656,13 @@ SlangSimplePanel::set_general_sensitivity(bool sensitive)
 {
 	_sensitive = sensitive;
 	update_action_row();
+	/* These edit the film, so they follow the same rule as the controls below:
+	 * an export in flight owns the film's settings until it finishes. */
+	update_content_type();
+	update_audio_language();
+	for (auto button: _subtitle_language_buttons) {
+		button->Enable(sensitive);
+	}
 	if (_output_change) {
 		/* Moving the project out from under a running job would strand its
 		 * output; the full interface disables the same class of control. */
@@ -560,6 +698,17 @@ SlangSimplePanel::film_changed(ChangeType type, FilmProperty property)
 		break;
 	case FilmProperty::NAME:
 	case FilmProperty::USE_ISDCF_NAME:
+		update_output_card();
+		break;
+	case FilmProperty::DCP_CONTENT_TYPE:
+		update_content_type();
+		/* Both of these are ingredients of the ISDCF name the output card
+		 * shows, so the card has to be re-read for the change to be visible
+		 * where the user is looking for its effect. */
+		update_output_card();
+		break;
+	case FilmProperty::AUDIO_LANGUAGE:
+		update_audio_language();
 		update_output_card();
 		break;
 	case FilmProperty::VIDEO_BIT_RATE:
@@ -969,6 +1118,32 @@ SlangSimplePanel::remove_video()
 
 
 void
+SlangSimplePanel::choose_subtitle_language(weak_ptr<Content> weak)
+{
+	auto content = weak.lock();
+	if (!_film || !content || content->text.empty()) {
+		return;
+	}
+
+	auto const current = content->text.front()->language();
+	LanguageTagDialog dialog(this, current.get_value_or(dcp::LanguageTag("en")));
+	if (dialog.ShowModal() != wxID_OK) {
+		return;
+	}
+
+	/* Every text track in the file, not just the first: the file is one
+	 * language whichever track of it the name is later built from. */
+	for (auto text: content->text) {
+		text->set_language(dialog.get());
+	}
+
+	update_subtitle_card();
+	update_output_card();
+	save();
+}
+
+
+void
 SlangSimplePanel::remove_subtitle(weak_ptr<Content> weak)
 {
 	auto content = weak.lock();
@@ -1191,6 +1366,8 @@ SlangSimplePanel::update_all()
 	update_video_card();
 	update_subtitle_card();
 	update_output_card();
+	update_content_type();
+	update_audio_language();
 	update_action_row();
 	if (_pipeline) {
 		_pipeline->refresh_state();
@@ -1293,6 +1470,9 @@ SlangSimplePanel::update_subtitle_card()
 
 	_subtitle_card->set_done(!subtitles.empty());
 
+	/* Drop the borrowed pointers BEFORE Clear(true) destroys what they point
+	 * at, so nothing can reach a freed button in between. */
+	_subtitle_language_buttons.clear();
 	_subtitle_list_sizer->Clear(true);
 	if (subtitles.empty()) {
 		_subtitle_list->Hide();
@@ -1308,8 +1488,29 @@ SlangSimplePanel::update_subtitle_card()
 		label->SetForegroundColour(p.text);
 		row->Add(label, 1, wxALIGN_CENTRE_VERTICAL);
 
-		auto remove = new SlangFlatButton(_subtitle_list, _("Remove"), SlangFlatButton::Kind::GHOST);
 		weak_ptr<Content> weak = content;
+
+		/* The language OF THIS FILE, not of the film: a package can carry more
+		 * than one subtitle track, and the DCP name is built from the tracks'
+		 * own languages (open captions lower-cased, closed ones with -CCAP), so
+		 * it has to be asked per file.  Same CallAfter discipline as Remove
+		 * below -- picking a language rebuilds this list, which would free this
+		 * button while wx is still dispatching its click. */
+		auto const language = content->text.empty() ? optional<dcp::LanguageTag>() : content->text.front()->language();
+		auto language_button = new SlangFlatButton(
+			_subtitle_list,
+			language ? std_to_wx(language->as_string()) : wxString(_("Set language...")),
+			SlangFlatButton::Kind::GHOST
+			);
+		language_button->SetToolTip(_("The language of these subtitles; it becomes part of the DCP's name."));
+		language_button->on_click([this, weak]() {
+			CallAfter([this, weak]() { choose_subtitle_language(weak); });
+		});
+		language_button->Enable(_sensitive);
+		_subtitle_language_buttons.push_back(language_button);
+		row->Add(language_button, 0, wxALIGN_CENTRE_VERTICAL);
+
+		auto remove = new SlangFlatButton(_subtitle_list, _("Remove"), SlangFlatButton::Kind::GHOST);
 		/* CallAfter, not a direct call: removing the content rebuilds this list,
 		 * and _subtitle_list_sizer->Clear(true) deletes these buttons -- via
 		 * wxSizerItem::DeleteWindows() -> wxWindow::Destroy(), which for a

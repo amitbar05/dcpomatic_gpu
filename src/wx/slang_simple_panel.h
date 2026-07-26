@@ -44,6 +44,7 @@ LIBDCP_ENABLE_WARNINGS
 #include <vector>
 
 
+class Choice;
 class Content;
 class Film;
 class JobManagerView;
@@ -111,6 +112,14 @@ private:
 	void subtitles_dropped(std::vector<boost::filesystem::path> paths);
 	void choose_video();
 	void choose_subtitles();
+	void content_type_changed();
+	/** Pick the language of the soundtrack, or clear it again.  Optional: the
+	 *  DCP name carries XX for "not specified", which is a legitimate answer
+	 *  and the one a film gets until someone says otherwise. */
+	void choose_audio_language();
+	void clear_audio_language();
+	/** Pick the language of one subtitle file (its own, not the film's). */
+	void choose_subtitle_language(std::weak_ptr<Content> content);
 	void change_output_folder();
 	void remove_video();
 	void remove_subtitle(std::weak_ptr<Content> content);
@@ -145,6 +154,8 @@ private:
 	void update_video_card();
 	void update_subtitle_card();
 	void update_output_card();
+	void update_content_type();
+	void update_audio_language();
 	void update_action_row();
 	void update_all();
 
@@ -169,11 +180,19 @@ private:
 	wxStaticText* _video_name = nullptr;
 	wxStaticText* _video_summary = nullptr;
 	wxStaticText* _video_encoding = nullptr;
+	/** What this DCP is -- feature, short, clip, trailer... -- which becomes the
+	 *  FTR/SHR/CLP part of its name and the CPL's ContentKind. */
+	Choice* _content_type = nullptr;
 
 	SlangCard* _subtitle_card = nullptr;
 	SlangDropArea* _subtitle_drop = nullptr;
 	wxPanel* _subtitle_list = nullptr;
 	wxSizer* _subtitle_list_sizer = nullptr;
+	/** The per-file "set language" buttons of the CURRENT list, so a
+	 *  sensitivity change can reach them without rebuilding it.  Borrowed
+	 *  pointers: the sizer owns the buttons, and this is emptied before it
+	 *  destroys them. */
+	std::vector<SlangFlatButton*> _subtitle_language_buttons;
 
 	SlangCard* _output_card = nullptr;
 	wxStaticText* _output_path = nullptr;
@@ -182,6 +201,8 @@ private:
 
 	SlangCard* _audio_card = nullptr;
 	SlangAudioPipelineView* _pipeline = nullptr;
+	SlangFlatButton* _audio_language = nullptr;
+	SlangFlatButton* _audio_language_clear = nullptr;
 
 	SlangFlatButton* _new = nullptr;
 
