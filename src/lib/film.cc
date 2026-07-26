@@ -1836,7 +1836,20 @@ Film::maybe_smart_center_upmix()
 	 * still needs its mono mapping brought forward (see the method's comment). */
 	migrate_smart_center_mono_mapping();
 
+	bool any_audio = false;
+	int max_channels = 0;
+	for (auto c: content()) {
+		if (c->audio) {
+			any_audio = true;
+			for (auto stream: c->audio->streams()) {
+				max_channels = std::max(max_channels, stream->channels());
+			}
+		}
+	}
+
 	if (_audio_processor) {
+		/* The film may have outgrown the upmixer; see the method's comment. */
+		maybe_retire_smart_center_upmix();
 		/* Never override a processor the user (or a template) chose. */
 		return;
 	}
@@ -1850,17 +1863,6 @@ Film::maybe_smart_center_upmix()
 		 * file destroys hand-built routing on the file that was already there.
 		 */
 		return;
-	}
-
-	bool any_audio = false;
-	int max_channels = 0;
-	for (auto c: content()) {
-		if (c->audio) {
-			any_audio = true;
-			for (auto stream: c->audio->streams()) {
-				max_channels = std::max(max_channels, stream->channels());
-			}
-		}
 	}
 
 	if (!any_audio || max_channels == 0 || max_channels > 2) {
@@ -1880,6 +1882,51 @@ Film::maybe_smart_center_upmix()
 	if (_audio_channels < 6) {
 		set_audio_channels(6);
 	}
+}
+
+
+/** Retire an auto-installed smart-centre upmixer once the content outgrows it.
+ *
+ *  The upmixer DERIVES a centre from a mono/stereo pair.  A source that already
+ *  has a discrete centre needs nothing derived, and leaving the processor in
+ *  place does not merely waste a matrix -- it destroys channels.  The processor
+ *  has three input legs (L, R, mono), so SmartCenterUpmixer::
+ *  make_audio_mapping_default() routes only inputs 0 and 1 of a wider source;
+ *  a 5.1 master's C, LFE, Ls and Rs stay at zero and never reach the DCP, and
+ *  the centre that IS delivered is (L+R)/2 of the front pair rather than the
+ *  dialogue stem the master carries.  Nothing warned about it: the simplified
+ *  interface does not run Hints, and the only cue was four unrouted dots drawn
+ *  in the pipeline view's muted colour.
+ *
+ *  One ordinary sequence reaches it: import a stereo trailer, which installs the
+ *  processor, then import the 5.1 master.
+ *
+ *  ONLY the processor this code installed by itself is removed -- one the user
+ *  or a template chose is somebody's decision and is left alone.  The "offered"
+ *  flag stays SET afterwards, so this is one-shot in both directions: a later
+ *  stereo-only import cannot re-install it and reset everyone's mapping again.
+ */
+bool
+Film::maybe_retire_smart_center_upmix()
+{
+	if (!_slang_smart_center_offered || !_audio_processor
+	    || _audio_processor->id() != "smart-center-upmixer") {
+		return false;
+	}
+
+	for (auto c: content()) {
+		if (!c->audio) {
+			continue;
+		}
+		for (auto stream: c->audio->streams()) {
+			if (stream->channels() > 2) {
+				set_audio_processor(nullptr);
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 

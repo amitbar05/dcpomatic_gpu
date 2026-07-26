@@ -165,6 +165,26 @@ slang_peak_is_sane(double peak)
 	return peak >= SLANG_SANE_PEAK_MIN && peak <= SLANG_SANE_PEAK_MAX;
 }
 
+/* The peak of the mix WITHOUT slang's own previously-applied gain.
+ *
+ * The Player replays the mix as it stands today, which already contains
+ * `prior_gain_db` from an earlier run; every judgement made about the SOURCE --
+ * the sanity range above, and the normalisation target in the block before it
+ * -- has to run on this quantity, not on what came off the Player. Feeding the
+ * measured peak to slang_peak_is_sane() instead slid the whole range by
+ * `prior`: with a +46.5 dB gain already applied, the -60 dBFS floor only fired
+ * below -106.5 dBFS, so re-mapping such a film onto a room-tone channel passed
+ * the check and shipped the noise at programme level. Kept here, next to the
+ * range it defends and inside the marker block, so the test suite EXECUTES it
+ * rather than trusting that run() converts before it compares. */
+static double
+slang_natural_peak(double measured_peak, double prior_gain_db)
+{
+	return measured_peak > 0
+		? measured_peak * std::pow(10.0, -prior_gain_db / 20.0)
+		: measured_peak;
+}
+
 /* SLANG_PEAK_SOURCE_END */
 
 #if BOOST_VERSION >= 106100
@@ -355,28 +375,51 @@ SlangAudioAnalyseJob::run()
 
 	auto const peak = slang_selected_peak(_used_gpu, _gpu_failed, _peak_mismatch,
 					      _server_peak, _local_peak);
-	if (peak > 0 && !slang_peak_is_sane(peak)) {
+
+	/* Read once, BEFORE the branch further down overwrites it via
+	 * set_slang_auto_gain: everything below -- the sanity range, the gain maths
+	 * and the per-channel stats -- describes the *natural* mix, i.e. with
+	 * slang's own previously-applied contribution backed out. */
+	double const prior = _film->slang_auto_gain_db();
+
+	/* The sanity range is a statement about the SOURCE, so it has to be tested
+	 * against the natural peak -- the same quantity slang_auto_gain_absolute_db()
+	 * is fed -- not against what came off the Player.
+	 *
+	 * `peak` is the mix as it plays TODAY, which already contains `prior`.
+	 * Testing that instead slid the floor to (-60 - prior) dBFS and the ceiling
+	 * to (+60 - prior), so once any positive gain had been applied the floor
+	 * stopped firing: a film normalised at -50 dBFS (prior +46.5) and then
+	 * re-mapped onto a -90 dBFS room-tone channel measured -43.5 dBFS, passed as
+	 * sane, and shipped the room tone at -3.5 dBFS with a +86.5 dB content gain
+	 * -- past both ends of AudioPanel's SetRange(-60, 60), so one touch of that
+	 * control would then silently drop 26 dB.  Symmetric at the top: a large
+	 * prior REDUCTION could hide a corrupt sample under the ceiling.
+	 */
+	auto const natural = slang_natural_peak(peak, prior);
+
+	if (natural > 0 && !slang_peak_is_sane(natural)) {
 		/* Out of range in either direction (see slang_peak_is_sane): refuse to
 		 * apply auto-gain. Too high is corruption, not a hot master, and an
 		 * enormous reduction would silence the whole film; too low is silence
 		 * or a noise floor, and an enormous boost would ship that noise floor
 		 * at programme level. Leave the content gain untouched and make it LOUD
 		 * in the log rather than shipping a confidently-wrong soundtrack. */
-		if (peak > SLANG_SANE_PEAK_MAX) {
-			LOG_GENERAL(N_("Slang audio analysis: peak {} is far above full scale "
+		if (natural > SLANG_SANE_PEAK_MAX) {
+			LOG_GENERAL(N_("Slang audio analysis: natural peak {} is far above full scale "
 				       "-- a grossly-out-of-range sample (source/decode "
 				       "corruption); NOT applying auto-gain, which would "
 				       "silence the soundtrack. Fix the source and re-run."),
-				    peak);
+				    natural);
 		} else {
-			LOG_GENERAL(N_("Slang audio analysis: peak {} dBFS is below the -60 dBFS "
+			LOG_GENERAL(N_("Slang audio analysis: natural peak {} dBFS is below the -60 dBFS "
 				       "floor -- the mix is silence or a noise floor, not "
 				       "programme material; NOT applying auto-gain, which would "
 				       "boost that noise to the target level. Check the audio "
 				       "mapping and the source, then re-run."),
-				    20 * std::log10(peak));
+				    20 * std::log10(natural));
 		}
-		_peak_dbfs = 20 * std::log10(peak);
+		_peak_dbfs = 20 * std::log10(natural);
 		_gain_applied_db = 0;
 		_refused_out_of_range = true;
 		set_progress(1);
@@ -403,15 +446,11 @@ SlangAudioAnalyseJob::run()
 				  "discarding the measurement rather than recording a gain "
 				  "for a mix that no longer exists."));
 		_gain_applied_db = 0;
+		_content_went_away = true;
 		set_progress(1);
 		set_state(FINISHED_OK);
 		return;
 	}
-
-	/* Read once, BEFORE the branch below overwrites it via set_slang_auto_gain:
-	 * both the gain maths and the per-channel stats describe the *natural* mix,
-	 * i.e. with this contribution backed out. */
-	double const prior = _film->slang_auto_gain_db();
 
 	if (peak > 0) {
 		/* Absolute (idempotent) apply: back out the contribution slang itself

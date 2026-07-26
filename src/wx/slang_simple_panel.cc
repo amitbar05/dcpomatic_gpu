@@ -86,14 +86,90 @@ static int const CARD_GAP = 16;
 static int const ANALYSIS_POLL_MS = 250;
 
 
+/** The subtitle formats this screen accepts, in ONE place.
+ *
+ *  The same list used to be written out three times in this file -- here, in
+ *  choose_subtitles()'s wildcard, and in the Subtitles card's prose -- and the
+ *  three had already drifted apart from each other and from what
+ *  content_factory() can actually load.  A file in a format only one of them
+ *  knew about was silently mis-routed: dropped on the video area it went to
+ *  add_paths(..., false) and became a piece of "video" with no picture, which
+ *  before this round could not be removed at all.
+ *
+ *  Extensions only, lower-cased; the leading dot is included.
+ */
+static char const* const SUBTITLE_EXTENSIONS[] = {
+	".srt", ".ssa", ".ass", ".vtt", ".stl", ".sub", ".dfxp", ".ttml", ".xml", ".fcpxml"
+};
+
+
 static bool
 is_subtitle_path(boost::filesystem::path const& path)
 {
-	auto extension = boost::algorithm::to_lower_copy(path.extension().string());
-	return extension == ".srt" || extension == ".ssa" || extension == ".ass"
-		|| extension == ".vtt" || extension == ".stl" || extension == ".sub"
-		|| extension == ".dfxp" || extension == ".ttml" || extension == ".xml"
-		|| extension == ".fcpxml";
+	auto const extension = boost::algorithm::to_lower_copy(path.extension().string());
+	return std::find_if(
+		std::begin(SUBTITLE_EXTENSIONS),
+		std::end(SUBTITLE_EXTENSIONS),
+		[&extension](char const* known) { return extension == known; }
+		) != std::end(SUBTITLE_EXTENSIONS);
+}
+
+
+/** The same list as a wxFileDialog wildcard fragment ("*.srt;*.ssa;..."). */
+static wxString
+subtitle_wildcard()
+{
+	wxString out;
+	for (auto const extension: SUBTITLE_EXTENSIONS) {
+		if (!out.IsEmpty()) {
+			out += char_to_wx(";");
+		}
+		out += char_to_wx("*") + char_to_wx(extension);
+	}
+	return out;
+}
+
+
+/** A free name for a new folder inside @p base: `<stem>`, then `<stem> 2`, ...
+ *
+ *  boost::none when everything up to the bound is taken.  Returning a colliding
+ *  path on exhaustion -- what both call sites used to do, each with its own copy
+ *  of the loop -- is not a harmless fallback: change_output_folder() treats what
+ *  it gets back as "empty or newly invented", and its failure rollback DELETES
+ *  that directory, so an exhausted search handed the rollback somebody's live
+ *  folder to empty.
+ *
+ *  exists() takes an error_code because an unreadable, ESTALE or symlink-looped
+ *  base must not throw out of a UI handler: wxApp::OnExceptionInMainLoop reports
+ *  and then TERMINATES the program.
+ */
+static optional<boost::filesystem::path>
+unique_child(boost::filesystem::path const& base, string const& stem)
+{
+	boost::system::error_code ec;
+	for (int i = 1; i < 1000; ++i) {
+		auto const path = i == 1 ? base / stem : base / fmt::format("{} {}", stem, i);
+		if (!boost::filesystem::exists(path, ec)) {
+			return path;
+		}
+	}
+	return {};
+}
+
+
+/** Content this screen's Video card is responsible for: the picture, and any
+ *  bare sound file dropped alongside it.
+ *
+ *  The video drop area's file dialog offers sound files as well as video, so a
+ *  .wav added there is content the card accepted -- and it must therefore be
+ *  content the card can remove.  It used to be neither shown nor removable by
+ *  either card (the subtitle list filters on text tracks), so a stray score.wav
+ *  became permanently welded to the project and was mixed into the DCP.
+ */
+static bool
+is_video_card_content(shared_ptr<const Content> content)
+{
+	return static_cast<bool>(content->video) || (content->audio && content->text.empty());
 }
 
 
@@ -301,13 +377,14 @@ SlangSimplePanel::build_video_card(wxWindow* parent, wxSizer* sizer)
 
 	details->Add(text, 1, wxALIGN_CENTRE_VERTICAL);
 
-	auto replace = new SlangFlatButton(_video_details, _("Replace..."), SlangFlatButton::Kind::GHOST);
-	replace->on_click([this]() { choose_video(); });
-	details->Add(replace, 0, wxALIGN_CENTRE_VERTICAL);
+	_video_replace = new SlangFlatButton(_video_details, _("Replace..."), SlangFlatButton::Kind::GHOST);
+	_video_replace->SetToolTip(_("Choose a different file, replacing the one that is here."));
+	_video_replace->on_click([this]() { replace_video(); });
+	details->Add(_video_replace, 0, wxALIGN_CENTRE_VERTICAL);
 
-	auto remove = new SlangFlatButton(_video_details, _("Remove"), SlangFlatButton::Kind::GHOST);
-	remove->on_click([this]() { remove_video(); });
-	details->Add(remove, 0, wxALIGN_CENTRE_VERTICAL);
+	_video_remove = new SlangFlatButton(_video_details, _("Remove"), SlangFlatButton::Kind::GHOST);
+	_video_remove->on_click([this]() { remove_video(); });
+	details->Add(_video_remove, 0, wxALIGN_CENTRE_VERTICAL);
 
 	_video_details->SetSizer(details);
 	_video_card->body()->Add(_video_details, 0, wxEXPAND);
@@ -381,7 +458,10 @@ SlangSimplePanel::build_subtitle_card(wxWindow* parent, wxSizer* sizer)
 {
 	auto const p = slang_ui::palette();
 
-	_subtitle_card = new SlangCard(parent, _("Subtitles"), _("Optional. SRT, ASS/SSA, VTT, STL or DCP subtitle XML."), 2);
+	_subtitle_card = new SlangCard(
+		parent, _("Subtitles"),
+		_("Optional. SRT, ASS/SSA, VTT, STL, SUB, Final Cut Pro XML or DCP subtitle XML."), 2
+		);
 	sizer->Add(_subtitle_card, 0, wxEXPAND);
 
 	_subtitle_drop = new SlangDropArea(
@@ -446,10 +526,16 @@ SlangSimplePanel::build_audio_card(wxWindow* parent, wxSizer* sizer)
 	_pipeline = new SlangAudioPipelineView(_audio_card);
 	_audio_card->body()->Add(_pipeline, 1, wxEXPAND);
 
-	/* The spoken language of the soundtrack.  Optional by design: an unset
-	 * language is written as XX in the DCP name, which is what the convention
-	 * says for "not specified" -- so this asks rather than guessing, and a film
-	 * nobody answers for keeps the honest XX rather than a wrong "en". */
+	/* The spoken language of the soundtrack.  Optional in the DCP's NAME, where
+	 * an unset language is written as XX -- the convention's own "not
+	 * specified".
+	 *
+	 * It is NOT optional in the essence: libdcp's SoundAsset takes a mandatory
+	 * language and falls back to en-US, which it stamps into every MCA
+	 * sub-descriptor of the sound MXF.  So leaving this alone does not produce a
+	 * package that declines to say; it produces one whose name says XX and whose
+	 * essence says en-US.  That is worth being told about rather than
+	 * discovering from a QC report, hence the note under the button. */
 	auto language_row = new wxBoxSizer(wxHORIZONTAL);
 	auto language_label = new wxStaticText(_audio_card, wxID_ANY, _("Spoken language"));
 	language_label->SetFont(slang_ui::font(_audio_card, -1));
@@ -468,6 +554,11 @@ SlangSimplePanel::build_audio_card(wxWindow* parent, wxSizer* sizer)
 	_audio_language_clear->Hide();
 
 	_audio_card->body()->Add(language_row, 0, wxEXPAND | wxTOP, FromDIP(10));
+
+	_audio_language_note = new wxStaticText(_audio_card, wxID_ANY, wxEmptyString);
+	_audio_language_note->SetFont(slang_ui::font(_audio_card, -1));
+	_audio_language_note->SetForegroundColour(p.muted);
+	_audio_card->body()->Add(_audio_language_note, 0, wxEXPAND | wxTOP, FromDIP(4));
 }
 
 
@@ -509,6 +600,15 @@ SlangSimplePanel::update_audio_language()
 	_audio_language->Enable(_sensitive && static_cast<bool>(_film));
 	_audio_language_clear->Enable(_sensitive && static_cast<bool>(_film));
 	_audio_language_clear->Show(static_cast<bool>(language));
+	if (_audio_language_note) {
+		/* Say what "not specified" actually ships as; see build_audio_card(). */
+		_audio_language_note->SetLabel(
+			language
+				? wxString(wxEmptyString)
+				: _("Left unset, the sound track is labelled en-US inside the DCP, and the DCP's name says XX.")
+			);
+		_audio_language_note->Show(!language);
+	}
 	_audio_card->Layout();
 }
 
@@ -571,6 +671,19 @@ SlangSimplePanel::set_film(shared_ptr<Film> film)
 	_film_content_changed_connection.disconnect();
 	_pending_subtitles.clear();
 
+	/* The analysis members belong to the film that is going away.  Left armed,
+	 * the previous film's job kept driving this screen: opening a second film
+	 * (Ctrl+O still works here -- the accelerators outlive the hidden menu bar)
+	 * showed ITS Sound card animating "Measuring the mix on the GPU... 43%", and
+	 * when the old job finished, analysis_finished() stamped the new film with
+	 * "Measured on the GPU and cross-checked" beside a gain box reading "Not
+	 * measured yet".  A positive verification claim about a soundtrack that was
+	 * never measured is the worst shape this screen can take. */
+	_analysis_finished_connection.disconnect();
+	_analysis_job.reset();
+	_analysis_timer.Stop();
+	_pipeline->set_analysing(false, {});
+
 	if (_film) {
 		_film_changed_connection = _film->Change.connect(
 			boost::bind(&SlangSimplePanel::film_changed, this, _1, _2)
@@ -598,6 +711,22 @@ SlangSimplePanel::set_film(shared_ptr<Film> film)
 }
 
 
+/** @return true if a DCP is being written right now.  See the header for why
+ *  this must only ever be reached from a user action.
+ */
+bool
+SlangSimplePanel::export_in_flight() const
+{
+	auto jobs = JobManager::instance()->get();
+	return std::any_of(
+		jobs.begin(),
+		jobs.end(),
+		[](shared_ptr<const Job> job) {
+			return std::dynamic_pointer_cast<const DCPTranscodeJob>(job) && !job->finished();
+		});
+}
+
+
 void
 SlangSimplePanel::migrate_mono_mapping()
 {
@@ -614,18 +743,23 @@ SlangSimplePanel::migrate_mono_mapping()
 	 * jobs_make_dcp_gpu_continue() runs it again, immediately before the
 	 * analysis it exists to precede.
 	 */
-	auto jobs = JobManager::instance()->get();
-	auto const transcoding = std::any_of(
-		jobs.begin(),
-		jobs.end(),
-		[](shared_ptr<const Job> job) {
-			return std::dynamic_pointer_cast<const DCPTranscodeJob>(job) && !job->finished();
-		});
-	if (transcoding) {
+	if (export_in_flight()) {
 		return;
 	}
 
-	if (!_film->migrate_smart_center_mono_mapping()) {
+	auto const changed = _film->migrate_smart_center_mono_mapping();
+
+	/* Save whatever the answer was.  The Film method sets its one-shot flag
+	 * BEFORE looking for anything to rewrite (deliberately -- see its comment),
+	 * so a run that matches nothing still dirties the film.  Returning early on
+	 * `false` therefore left the beginner-facing screen asking "Save changes to
+	 * project?" about a project the user had only opened -- and answering "no"
+	 * left the flag unwritten, so the migration ran again next session and could
+	 * rewrite a mapping deliberately built in between.  save() is dirty-gated,
+	 * so this writes once and later calls cost nothing. */
+	save();
+
+	if (!changed) {
 		return;
 	}
 
@@ -660,14 +794,32 @@ SlangSimplePanel::set_general_sensitivity(bool sensitive)
 	 * an export in flight owns the film's settings until it finishes. */
 	update_content_type();
 	update_audio_language();
-	for (auto button: _subtitle_language_buttons) {
+	for (auto button: _subtitle_row_buttons) {
 		button->Enable(sensitive);
 	}
-	if (_output_change) {
-		/* Moving the project out from under a running job would strand its
-		 * output; the full interface disables the same class of control. */
-		_output_change->Enable(sensitive && static_cast<bool>(_film));
+
+	/* The controls that change the film's CONTENT, which is the class this
+	 * function used to miss entirely.  Everything above only edits settings; the
+	 * four below add and remove the pieces a running DCPTranscodeJob is reading.
+	 * Its Player shares the film's playlist, so removing the video mid-export
+	 * collapses the playback length and the writer finalises a picture asset
+	 * short of its reel -- a silently truncated DCP, not a failed job.  The
+	 * buttons were locals in build_video_card() and rows rebuilt in
+	 * update_subtitle_card(), so nothing had ever reached them. */
+	if (_video_replace) {
+		_video_replace->Enable(sensitive);
 	}
+	if (_video_remove) {
+		_video_remove->Enable(sensitive);
+	}
+	if (_video_drop) {
+		_video_drop->Enable(sensitive);
+	}
+	if (_subtitle_drop) {
+		_subtitle_drop->Enable(sensitive);
+	}
+
+	update_output_change_enabled();
 	if (_new) {
 		/* Same class: starting a new project discards the current film, and
 		 * discarding the one an export is writing strands it.  Deliberately
@@ -831,7 +983,10 @@ void
 SlangSimplePanel::job_added(weak_ptr<Job> weak)
 {
 	auto job = dynamic_pointer_cast<SlangAudioAnalyseJob>(weak.lock());
-	if (!job) {
+	/* Only this screen's film: JobAdded is global, and a job queued against
+	 * another film (the batch converter, a second window) must not take over
+	 * this one's Sound card. */
+	if (!job || job->film() != _film) {
 		return;
 	}
 
@@ -868,8 +1023,12 @@ void
 SlangSimplePanel::poll_analysis()
 {
 	auto job = _analysis_job.lock();
-	if (!job || job->finished()) {
+	/* Keyed on the FILM as well as the job: a job outliving the film it measured
+	 * must not drive this screen (see set_film()).  Job::film() is the same
+	 * weak-pointer comparison the export chain already makes. */
+	if (!job || job->finished() || job->film() != _film) {
 		_analysis_timer.Stop();
+		_pipeline->set_analysing(false, {});
 		return;
 	}
 
@@ -881,9 +1040,10 @@ void
 SlangSimplePanel::analysis_finished(Job::Result result, weak_ptr<SlangAudioAnalyseJob> weak)
 {
 	auto job = weak.lock();
-	if (!job || job != _analysis_job.lock()) {
-		/* A superseded run (a second content add restarts the analysis);
-		 * whatever the current one reports is what counts. */
+	if (!job || job != _analysis_job.lock() || job->film() != _film) {
+		/* A superseded run (a second content add restarts the analysis), or one
+		 * belonging to a film this screen has moved on from; whatever the
+		 * current film's current run reports is what counts. */
 		return;
 	}
 
@@ -906,7 +1066,24 @@ SlangSimplePanel::analysis_finished(Job::Result result, weak_ptr<SlangAudioAnaly
 
 	/* Say where the number came from.  "Measured on the GPU" is only claimed
 	 * when the server's answer was also checked against the local ground truth
-	 * -- an answer is not a measurement (see SlangAudioAnalyseJob). */
+	 * -- an answer is not a measurement (see SlangAudioAnalyseJob).
+	 *
+	 * The no-measurement case has to come FIRST, before any of the provenance
+	 * branches.  A job that refuses an out-of-range peak still finishes OK, and
+	 * both used_gpu() and peak_verified() are true on the way there -- the
+	 * server answered, and it agreed, which is HOW the job knew the peak was
+	 * unusable.  Reading provenance first therefore labelled a refusal
+	 * "Measured on the GPU and cross-checked" directly under a gain box reading
+	 * "Not measured yet". */
+	if (job->no_measurement()) {
+		_pipeline->set_measurement_note(
+			_("The sound level was outside the usable range, so it was left alone -- see Progress.")
+			);
+		_pipeline->refresh_state();
+		signal_manager->when_idle(boost::bind(&SlangSimplePanel::update_action_row, this));
+		return;
+	}
+
 	if (job->cache_hit()) {
 		_pipeline->set_measurement_note(_("Sound unchanged since the last measurement."));
 	} else if (job->used_gpu() && job->peak_verified()) {
@@ -943,21 +1120,32 @@ SlangSimplePanel::ensure_film(boost::filesystem::path const& first_content)
 	 * they just added, so nothing has to be answered before the first video
 	 * can go in.  The output card shows where that landed and offers to move
 	 * it. */
-	auto const base = Config::instance()->default_directory_or(
-		wx_to_std(wxStandardPaths::Get().GetDocumentsDir())
-		);
+	optional<boost::filesystem::path> path;
+	try {
+		auto const base = Config::instance()->default_directory_or(
+			wx_to_std(wxStandardPaths::Get().GetDocumentsDir())
+			);
 
-	auto stem = first_content.stem().string();
-	if (stem.empty()) {
-		stem = "DCP";
+		auto stem = first_content.stem().string();
+		if (stem.empty()) {
+			stem = "DCP";
+		}
+
+		path = unique_child(base, stem);
+		if (!path) {
+			error_dialog(this, _("Could not find a free folder name for the new project."));
+			return false;
+		}
+	} catch (std::exception& e) {
+		/* Reading the default directory can fail -- an unreadable share, a dead
+		 * NFS mount.  Uncaught, that reaches wxApp::OnExceptionInMainLoop, which
+		 * reports it and then TERMINATES the program: the user loses whatever
+		 * they were doing because a folder could not be stat'd. */
+		error_dialog(this, _("A folder for the new project could not be chosen."), std_to_wx(e.what()));
+		return false;
 	}
 
-	auto path = base / stem;
-	for (int i = 2; dcp::filesystem::exists(path) && i < 1000; ++i) {
-		path = base / fmt::format("{} {}", stem, i);
-	}
-
-	NewFilm(path);
+	NewFilm(*path);
 	return static_cast<bool>(_film);
 }
 
@@ -971,10 +1159,21 @@ SlangSimplePanel::add_paths(vector<boost::filesystem::path> paths, bool as_subti
 
 	std::sort(paths.begin(), paths.end());
 
-	if (!ensure_film(paths.front())) {
+	/* Not while a DCP is being written.  The buttons and drop areas are already
+	 * disabled for the duration (set_general_sensitivity), but a drop can arrive
+	 * from a drag begun before the export started, and this is the function that
+	 * actually mutates the playlist the running Player is reading. */
+	if (export_in_flight()) {
+		error_dialog(this, _("Your DCP is being made.  Wait for it to finish before changing the content."));
 		return;
 	}
 
+	/* Examine the files BEFORE inventing a project for them.  ensure_film()
+	 * creates a directory on disk and binds this panel to a new film, so doing
+	 * it first meant that dropping a folder of documents left an orphan,
+	 * misnamed project behind -- one that every later legitimate drop then
+	 * landed in -- underneath an error message saying nothing usable was found.
+	 * content_factory() needs no film. */
 	vector<shared_ptr<Content>> content;
 	try {
 		for (auto const& path: paths) {
@@ -989,6 +1188,10 @@ SlangSimplePanel::add_paths(vector<boost::filesystem::path> paths, bool as_subti
 
 	if (content.empty()) {
 		error_dialog(this, _("Nothing usable was found in that file."));
+		return;
+	}
+
+	if (!ensure_film(paths.front())) {
 		return;
 	}
 
@@ -1081,13 +1284,56 @@ SlangSimplePanel::choose_video()
 }
 
 
+/** The "Replace..." button, which has to REPLACE.
+ *
+ *  It used to be wired straight to choose_video(), so it appended: the film kept
+ *  the old cut FIRST (Playlist::add_at_end positions the new one after it), the
+ *  card read "holiday.mp4 (+1 more)", the DCP name kept the old stem because
+ *  add_paths() only renames a film whose content is empty, and Create DCP made a
+ *  22-minute DCP out of two takes of the same film.  The only way back was
+ *  Remove, which deletes everything.
+ *
+ *  Nothing is removed until the user has confirmed a replacement, so cancelling
+ *  the dialog leaves the project exactly as it was.
+ */
+void
+SlangSimplePanel::replace_video()
+{
+	if (!_film || export_in_flight()) {
+		return;
+	}
+
+	FileDialog dialog(
+		this,
+		_("Choose the file to use instead"),
+		char_to_wx("All files|*.*|Video files|*.mp4;*.mov;*.mkv;*.mxf;*.avi;*.m2ts;*.mpg;*.mpeg;*.webm;*.dpx;*.tif;*.tiff|Sound files|*.wav;*.w64;*.flac;*.aif;*.aiff"),
+		wxFD_MULTIPLE | wxFD_CHANGE_DIR,
+		"AddFilesPath",
+		{},
+		start_directory_for(_film)
+		);
+
+	if (!dialog.show()) {
+		return;
+	}
+
+	auto const paths = dialog.paths();
+	if (paths.empty()) {
+		return;
+	}
+
+	remove_video();
+	video_dropped(paths);
+}
+
+
 void
 SlangSimplePanel::choose_subtitles()
 {
 	FileDialog dialog(
 		this,
 		_("Choose your subtitles"),
-		char_to_wx("Subtitle files|*.srt;*.ssa;*.ass;*.vtt;*.stl;*.sub;*.xml;*.dfxp;*.ttml;*.fcpxml|All files|*.*"),
+		char_to_wx("Subtitle files|") + subtitle_wildcard() + char_to_wx("|All files|*.*"),
 		wxFD_MULTIPLE | wxFD_CHANGE_DIR,
 		"AddFilesPath",
 		{},
@@ -1103,12 +1349,18 @@ SlangSimplePanel::choose_subtitles()
 void
 SlangSimplePanel::remove_video()
 {
-	if (!_film) {
+	if (!_film || export_in_flight()) {
 		return;
 	}
 
+	/* Everything the Video card accepts, not only content that has a picture.
+	 * choose_video()'s dialog offers sound files, so a .wav dropped there became
+	 * content that NEITHER card listed and NEITHER Remove reached: it was welded
+	 * to the project for good, it named the film and therefore the DCP, and it
+	 * was mixed into the delivered soundtrack.  The card's own subtitle already
+	 * says "The picture and sound your DCP is made from". */
 	for (auto content: _film->content()) {
-		if (content->video) {
+		if (is_video_card_content(content)) {
 			_film->remove_content(content);
 		}
 	}
@@ -1147,7 +1399,7 @@ void
 SlangSimplePanel::remove_subtitle(weak_ptr<Content> weak)
 {
 	auto content = weak.lock();
-	if (!_film || !content) {
+	if (!_film || !content || export_in_flight()) {
 		return;
 	}
 
@@ -1156,7 +1408,7 @@ SlangSimplePanel::remove_subtitle(weak_ptr<Content> weak)
 }
 
 
-boost::filesystem::path
+optional<boost::filesystem::path>
 SlangSimplePanel::project_folder_for(boost::filesystem::path const& chosen) const
 {
 	/* The chosen folder IS the project folder when that is safe -- it does not
@@ -1186,12 +1438,10 @@ SlangSimplePanel::project_folder_for(boost::filesystem::path const& chosen) cons
 		stem = "DCP";
 	}
 
-	auto path = chosen / stem;
-	for (int i = 2; dcp::filesystem::exists(path) && i < 1000; ++i) {
-		path = chosen / fmt::format("{} {}", stem, i);
-	}
-
-	return path;
+	/* boost::none if every candidate is taken -- see unique_child().  The caller
+	 * MUST NOT fall back to a colliding path: it hands what it gets here to a
+	 * copy whose failure rollback does remove_all() on the target. */
+	return unique_child(chosen, stem);
 }
 
 
@@ -1203,7 +1453,38 @@ SlangSimplePanel::change_output_folder()
 	 * reports it and then TERMINATES the program -- losing whatever the user
 	 * was doing over a folder that could not be read.  Choosing a folder must
 	 * be able to fail without taking the application with it. */
+
+	/* However this returns -- normally, by an early return, or by the catch at
+	 * the bottom -- the cards must end up describing the film's REAL state.  The
+	 * bare update_all() at the end of the happy path did not: a remove_all()
+	 * that threw AFTER the project had already been repointed jumped straight to
+	 * the catch, so the output card went on showing the old, now-deleted folder
+	 * under a dialog saying the move had failed. */
+	dcp::ScopeGuard refresh([this]() { update_all(); });
+
 	try {
+		/* Not while anything is still writing into the project.  This function
+		 * copies the folder and then DELETES the original, and DCP-o-matic runs
+		 * background jobs against a path each one snapshotted when it started --
+		 * the audio analysis writes its cache into <project>/analysis at the end
+		 * of a run that takes minutes on a feature.  Pulling the directory out
+		 * from under them strands the output and fails the job with a filesystem
+		 * error the user cannot act on.  Checked here rather than by grey-ing the
+		 * button, because a job can start between the last repaint and the click
+		 * -- and because deriving it in the sensitivity path would mean walking
+		 * JobManager under its own lock (see export_in_flight()). */
+		auto jobs = JobManager::instance()->get();
+		auto const jobs_busy = std::any_of(
+			jobs.begin(), jobs.end(),
+			[](shared_ptr<const Job> job) { return !job->finished(); });
+		if (jobs_busy) {
+			error_dialog(
+				this,
+				_("Wait for the jobs in Progress to finish before moving the project.")
+				);
+			return;
+		}
+
 		DirDialog dialog(this, _("Choose the folder for your DCP"), wxDD_DEFAULT_STYLE, "SlangSimpleOutput");
 		if (!dialog.show()) {
 			return;
@@ -1238,12 +1519,56 @@ SlangSimplePanel::change_output_folder()
 			return;
 		}
 
-		auto const target = project_folder_for(chosen);
+		auto const maybe_target = project_folder_for(chosen);
+		if (!maybe_target) {
+			error_dialog(this, _("Could not find a free folder name inside that folder."));
+			return;
+		}
+		auto const target = *maybe_target;
 
 		if (!_film) {
 			NewFilm(target);
-			update_all();
 			return;
+		}
+
+		/* Content stored INSIDE the project is about to be copied to a new
+		 * location and then deleted from the old one, while metadata.xml goes on
+		 * naming the old absolute path.  The result reopens as a project whose
+		 * video "exists" on the card and cannot be opened -- so refuse, and say
+		 * which files are in the way, rather than silently producing it.
+		 * (Rewriting the paths is the other possible answer; refusing is the one
+		 * that cannot get a path wrong.) */
+		if (current) {
+			auto const under = [](boost::filesystem::path const& child,
+					      boost::filesystem::path const& parent) {
+				boost::system::error_code ec;
+				for (auto p = child.parent_path(); !p.empty() && p != p.parent_path();
+				     p = p.parent_path()) {
+					if (boost::filesystem::exists(p, ec)
+					    && boost::filesystem::equivalent(p, parent, ec) && !ec) {
+						return true;
+					}
+				}
+				return false;
+			};
+			vector<string> inside_names;
+			for (auto content: _film->content()) {
+				for (auto const& p: content->paths()) {
+					if (under(p, *current)) {
+						inside_names.push_back(p.filename().string());
+						break;
+					}
+				}
+			}
+			if (!inside_names.empty()) {
+				error_dialog(
+					this,
+					_("Some of your files are stored inside the project folder, so it cannot be moved. "
+					  "Move them somewhere else first, then add them again."),
+					std_to_wx(boost::algorithm::join(inside_names, ", "))
+					);
+				return;
+			}
 		}
 
 		/* The project folder IS the output folder (the DCP is written inside
@@ -1281,10 +1606,23 @@ SlangSimplePanel::change_output_folder()
 				auto const space = boost::filesystem::space(chosen, ec);
 				if (!ec) {
 					uintmax_t needed = 0;
-					for (auto& i: boost::filesystem::recursive_directory_iterator(*current)) {
+					boost::system::error_code we;
+					boost::filesystem::recursive_directory_iterator it(*current, we), last;
+					for (; !we && it != last; it.increment(we)) {
+						/* file_size() returns uintmax_t(-1) on failure, so
+						 * summing it unchecked turns one file that vanished
+						 * between the stat and the size -- Hints writes and
+						 * deletes scratch files inside the project from its own
+						 * thread -- into a demand for 18 exabytes, and the user
+						 * cancels a move that would have worked.  Only add what
+						 * was actually measured. */
 						boost::system::error_code fe;
-						if (boost::filesystem::is_regular_file(i.status())) {
-							needed += boost::filesystem::file_size(i.path(), fe);
+						if (!boost::filesystem::is_regular_file(it->status(fe)) || fe) {
+							continue;
+						}
+						auto const size = boost::filesystem::file_size(it->path(), fe);
+						if (!fe) {
+							needed += size;
 						}
 					}
 					if (needed > space.available) {
@@ -1331,14 +1669,39 @@ SlangSimplePanel::change_output_folder()
 			/* Only now is the original expendable.  Deleting it on the strength
 			 * of a copy nobody checked is how a project goes missing. */
 			if (dcp::filesystem::exists(target / "metadata.xml")) {
-				boost::filesystem::remove_all(*current);
+				/* error_code, NOT a throw.  By this line the project HAS
+				 * moved -- the film is repointed and its metadata is written
+				 * at the target -- so a delete that fails (a file held open
+				 * on Windows, a non-writable parent, NFS ESTALE) is a leftover
+				 * copy, not a failed move.  Throwing here reported "the
+				 * project could not be moved" about a move that had already
+				 * succeeded, and left the user hunting for it. */
+				boost::system::error_code de;
+				boost::filesystem::remove_all(*current, de);
+				if (de) {
+					std::cerr << "dcpomatic2: change_output_folder: could not remove "
+						  << current->string() << ": " << de.message() << "\n";
+					error_dialog(
+						this,
+						_("Your project was moved, but the old folder could not be deleted.  "
+						  "You can remove it yourself when you like."),
+						std_to_wx(current->string())
+						);
+				}
 			}
 		} else {
 			_film->set_directory(target);
 			_film->write_metadata();
 		}
 
-		update_all();
+		/* The project now lives somewhere else, and File -> Open recent still
+		 * points at a path that no longer exists -- which the next Config write
+		 * silently prunes, so the project vanishes from the list under both
+		 * names.  This screen has no menu bar and no open control, so the only
+		 * way back would be Advanced and browsing by hand.  add_to_history()
+		 * de-duplicates, and `target` is what project_folder_for() returned (the
+		 * dialog's path may have gained a subfolder). */
+		Config::instance()->add_to_history(target);
 	} catch (std::exception& e) {
 		std::cerr << "dcpomatic2: change_output_folder: " << e.what() << "\n";
 		error_dialog(this, _("The project could not be moved to that folder."), std_to_wx(e.what()));
@@ -1472,7 +1835,7 @@ SlangSimplePanel::update_subtitle_card()
 
 	/* Drop the borrowed pointers BEFORE Clear(true) destroys what they point
 	 * at, so nothing can reach a freed button in between. */
-	_subtitle_language_buttons.clear();
+	_subtitle_row_buttons.clear();
 	_subtitle_list_sizer->Clear(true);
 	if (subtitles.empty()) {
 		_subtitle_list->Hide();
@@ -1490,12 +1853,23 @@ SlangSimplePanel::update_subtitle_card()
 
 		weak_ptr<Content> weak = content;
 
-		/* The language OF THIS FILE, not of the film: a package can carry more
-		 * than one subtitle track, and the DCP name is built from the tracks'
-		 * own languages (open captions lower-cased, closed ones with -CCAP), so
-		 * it has to be asked per file.  Same CallAfter discipline as Remove
-		 * below -- picking a language rebuilds this list, which would free this
-		 * button while wx is still dispatching its click. */
+		/* The language OF THIS FILE, asked per file because that is where
+		 * TextContent stores it and where the timed-text asset reads it from.
+		 *
+		 * It is NOT one language per file in the finished DCP, and the comment
+		 * here used to imply it was: every used OPEN subtitle merges into a
+		 * single timed-text asset, and the DCP name carries only
+		 * open_text_languages().first -- so with two files in different
+		 * languages the name names one of them and the asset is tagged with one
+		 * of them.  (Nor is the lower-casing per track: DCNC lower-cases the
+		 * subtitle field only when every used open text is BURNT IN, and appends
+		 * -OCAP/-CCAP for captions.)  Asking per file is still right -- it is
+		 * the only place the answer can be stored -- but a multi-language
+		 * package needs closed-caption tracks, which the full interface does.
+		 *
+		 * Same CallAfter discipline as Remove below -- picking a language
+		 * rebuilds this list, which would free this button while wx is still
+		 * dispatching its click. */
 		auto const language = content->text.empty() ? optional<dcp::LanguageTag>() : content->text.front()->language();
 		auto language_button = new SlangFlatButton(
 			_subtitle_list,
@@ -1507,7 +1881,7 @@ SlangSimplePanel::update_subtitle_card()
 			CallAfter([this, weak]() { choose_subtitle_language(weak); });
 		});
 		language_button->Enable(_sensitive);
-		_subtitle_language_buttons.push_back(language_button);
+		_subtitle_row_buttons.push_back(language_button);
 		row->Add(language_button, 0, wxALIGN_CENTRE_VERTICAL);
 
 		auto remove = new SlangFlatButton(_subtitle_list, _("Remove"), SlangFlatButton::Kind::GHOST);
@@ -1521,6 +1895,10 @@ SlangSimplePanel::update_subtitle_card()
 		 * event finish first.  (The video card's buttons are built once and only
 		 * shown or hidden, so they do not need this.) */
 		remove->on_click([this, weak]() { CallAfter([this, weak]() { remove_subtitle(weak); }); });
+		/* Tracked alongside the language button so an export can grey it too --
+		 * removing content while a DCP is being written truncates it. */
+		remove->Enable(_sensitive);
+		_subtitle_row_buttons.push_back(remove);
 		row->Add(remove, 0, wxALIGN_CENTRE_VERTICAL);
 
 		_subtitle_list_sizer->Add(row, 0, wxEXPAND | wxBOTTOM, FromDIP(2));
@@ -1529,6 +1907,28 @@ SlangSimplePanel::update_subtitle_card()
 	_subtitle_list->Show();
 	_subtitle_list->Layout();
 	_subtitle_card->Layout();
+}
+
+
+/** The output "Change..." button's enabled state, computed in ONE place.
+ *
+ *  It used to be computed in two, with different terms: update_output_card()
+ *  said `_sensitive`, set_general_sensitivity() said `_sensitive && _film`.
+ *  Whichever ran last won, and on the normal first-run path (simple_ui is
+ *  persisted, so the panel comes up before any film exists) the film-less one
+ *  ran last -- leaving a dead, greyed button under a card that says "A folder
+ *  is picked for you when you add a video; change it here at any time", and
+ *  making change_output_folder()'s deliberate `if (!_film)` branch unreachable.
+ *
+ *  `_sensitive` alone is the correct predicate: the film-less case is designed
+ *  for, and an export in flight is what _sensitive already tracks.
+ */
+void
+SlangSimplePanel::update_output_change_enabled()
+{
+	if (_output_change) {
+		_output_change->Enable(_sensitive);
+	}
 }
 
 
@@ -1542,7 +1942,7 @@ SlangSimplePanel::update_output_card()
 	auto const directory = _film ? _film->directory() : optional<boost::filesystem::path>();
 
 	_output_card->set_done(static_cast<bool>(directory));
-	_output_change->Enable(_sensitive);
+	update_output_change_enabled();
 
 	if (!directory) {
 		_output_path->SetLabel(_("Not chosen yet"));
@@ -1573,7 +1973,31 @@ SlangSimplePanel::update_action_row()
 		return;
 	}
 
-	auto const has_content = _film && !_film->content().empty();
+	/* A VIDEO, not just any content.  Removing the video from a film that still
+	 * holds an .srt left this row saying "Everything is ready." beside a live
+	 * Create DCP button, directly under a Video card that had gone back to
+	 * "Drop a video file here" -- and pressing it queued a real transcode of a
+	 * picture-less film, whose length came from the subtitle timings. */
+	auto has_video = false;
+	/* A subtitle that will be in the DCP but has no language is a Bv2.1 ERROR
+	 * (libdcp MISSING_SUBTITLE_LANGUAGE), and it also makes the DCP's own name
+	 * deny that the subtitles exist -- the ISDCF field falls back to "-XX", so a
+	 * QC tool reports the name and the package contradicting each other.  It is
+	 * one click to fix, on a button already sitting in the Subtitles card, so
+	 * ask for it rather than shipping a package that fails verification. */
+	auto subtitles_need_language = false;
+	if (_film) {
+		for (auto content: _film->content()) {
+			if (content->video) {
+				has_video = true;
+			}
+			for (auto text: content->text) {
+				if (text->use() && !text->language()) {
+					subtitles_need_language = true;
+				}
+			}
+		}
+	}
 
 	/* Only wait for the jobs whose result the export depends on: content still
 	 * being examined (its streams and length are not known yet) and the GPU
@@ -1592,10 +2016,16 @@ SlangSimplePanel::update_action_row()
 		}
 	}
 
-	_create->Enable(_sensitive && has_content && !busy);
+	_create->Enable(_sensitive && has_video && !busy && !subtitles_need_language);
 
-	if (!has_content) {
+	if (!_sensitive) {
+		/* A disabled button always gets a reason.  During an export this row
+		 * used to read "Everything is ready." beside a dead button. */
+		_create_note->SetLabel(_("Your DCP is being made - see Progress below."));
+	} else if (!has_video) {
 		_create_note->SetLabel(_("Add a video to get started."));
+	} else if (subtitles_need_language) {
+		_create_note->SetLabel(_("Set the language of your subtitles above."));
 	} else if (busy) {
 		_create_note->SetLabel(_("Checking your video and measuring the sound..."));
 	} else {

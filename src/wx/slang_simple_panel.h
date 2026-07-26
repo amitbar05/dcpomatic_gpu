@@ -111,6 +111,10 @@ private:
 	void video_dropped(std::vector<boost::filesystem::path> paths);
 	void subtitles_dropped(std::vector<boost::filesystem::path> paths);
 	void choose_video();
+	/** Swap the film's picture (and any bare sound) for a different file --
+	 *  which is what a button labelled "Replace" has to do.  Nothing is removed
+	 *  until the user has actually chosen a replacement. */
+	void replace_video();
 	void choose_subtitles();
 	void content_type_changed();
 	/** Pick the language of the soundtrack, or clear it again.  Optional: the
@@ -124,11 +128,25 @@ private:
 	void remove_video();
 	void remove_subtitle(std::weak_ptr<Content> content);
 	void create_dcp();
+	/** @return true if a DCP is being written from this film right now.
+	 *
+	 *  The one place this question is asked from.  It walks JobManager::get(),
+	 *  so it may ONLY be called from a context holding no JobManager or Job lock
+	 *  -- i.e. from a user action, never from a job signal.  set_general_
+	 *  sensitivity() deliberately does not use it: the host already tells this
+	 *  panel when an export owns the film, and re-deriving it under
+	 *  ActiveJobsChanged is how the UI thread deadlocked against itself before. */
+	bool export_in_flight() const;
+	/** The single owner of the output "Change..." button's enabled state; two
+	 *  copies of this predicate had already drifted apart. */
+	void update_output_change_enabled();
 	/** @return where the project should live if the user picked @p chosen as
 	 *  the output folder: @p chosen itself when it is new or empty, otherwise a
 	 *  subfolder of it named after the film (see the definition for why a
-	 *  non-empty folder must never be used directly). */
-	boost::filesystem::path project_folder_for(boost::filesystem::path const& chosen) const;
+	 *  non-empty folder must never be used directly).  boost::none if no free
+	 *  name could be found -- the caller must NOT fall back to a colliding path,
+	 *  because the move's failure rollback deletes whatever it is given. */
+	boost::optional<boost::filesystem::path> project_folder_for(boost::filesystem::path const& chosen) const;
 	/** Bring a pre-2026-07-25 mono mapping onto the upmixer's mono leg and
 	 *  re-measure, so what this screen draws matches what the export makes. */
 	void migrate_mono_mapping();
@@ -176,6 +194,11 @@ private:
 
 	SlangCard* _video_card = nullptr;
 	SlangDropArea* _video_drop = nullptr;
+	/** Held so set_general_sensitivity() can reach them.  They were locals, and
+	 *  therefore stayed live through an export: Remove during a 40-minute
+	 *  transcode empties the playlist the running Player is reading from. */
+	SlangFlatButton* _video_replace = nullptr;
+	SlangFlatButton* _video_remove = nullptr;
 	wxPanel* _video_details = nullptr;
 	wxStaticText* _video_name = nullptr;
 	wxStaticText* _video_summary = nullptr;
@@ -188,11 +211,11 @@ private:
 	SlangDropArea* _subtitle_drop = nullptr;
 	wxPanel* _subtitle_list = nullptr;
 	wxSizer* _subtitle_list_sizer = nullptr;
-	/** The per-file "set language" buttons of the CURRENT list, so a
-	 *  sensitivity change can reach them without rebuilding it.  Borrowed
-	 *  pointers: the sizer owns the buttons, and this is emptied before it
-	 *  destroys them. */
-	std::vector<SlangFlatButton*> _subtitle_language_buttons;
+	/** Every per-file button of the CURRENT list -- "set language" AND "remove"
+	 *  -- so a sensitivity change can reach them without rebuilding it.
+	 *  Borrowed pointers: the sizer owns the buttons, and this is emptied before
+	 *  it destroys them. */
+	std::vector<SlangFlatButton*> _subtitle_row_buttons;
 
 	SlangCard* _output_card = nullptr;
 	wxStaticText* _output_path = nullptr;
@@ -203,6 +226,9 @@ private:
 	SlangAudioPipelineView* _pipeline = nullptr;
 	SlangFlatButton* _audio_language = nullptr;
 	SlangFlatButton* _audio_language_clear = nullptr;
+	/** Shown only while no language is set: says what the essence will claim
+	 *  anyway, since libdcp has no "unspecified" to write there. */
+	wxStaticText* _audio_language_note = nullptr;
 
 	SlangFlatButton* _new = nullptr;
 

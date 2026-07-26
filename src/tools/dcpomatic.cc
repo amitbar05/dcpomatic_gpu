@@ -1254,6 +1254,15 @@ private:
 			}
 		}
 
+		/* The other half of the same decision, and the one that is easy to leave
+		 * out: a film that was GIVEN the upmixer while its only content was
+		 * stereo, and has since gained a 5.1 master, must have it taken away
+		 * again -- the processor routes two legs, so the master's C/LFE/Ls/Rs
+		 * would be silently dropped from the DCP.  want_smart_center above is
+		 * only ever an install, so without this the export path could not
+		 * correct a film the import path had already moved past. */
+		film->maybe_retire_smart_center_upmix();
+
 		/* Before the analysis, never after: it measures the mix this changes.
 		 * A project made before the mono L/C/R spread still routes its mono
 		 * stream to the upmixer's L/R legs, and the peak of the OLD mix would
@@ -1316,6 +1325,9 @@ private:
 
 	void slang_gain_job_finished(Job::Result result)
 	{
+		/* Grab the job before letting go of it: if it failed, its own error is
+		 * the only thing that can say why. */
+		auto const job = _slang_gain_job.lock();
 		_slang_gain_job.reset();
 		if (!slang_chain_film()) {
 			/* Closed or replaced while the analysis ran. */
@@ -1329,7 +1341,26 @@ private:
 		}
 		if (result != Job::Result::RESULT_OK) {
 			slang_export_end();
-			error_dialog(this, _("GPU audio analysis failed, so the DCP was not made.  Check that the frame server is running, or disable the automatic gain in Preferences -> GPU (Slang)."));
+			/* Report what actually went wrong.
+			 *
+			 * This used to advise checking that the frame server is running --
+			 * the one cause it CANNOT be.  An unreachable server does not fail
+			 * this job: flush_audio_batch() logs it, falls back to measuring
+			 * locally, and finishes RESULT_OK.  Getting here means the audio
+			 * replay itself threw (an unreadable source, a decoder fault, a full
+			 * disk), and the job is holding that message while the dialog threw
+			 * it away and offered an unrelated remedy. */
+			auto const summary = job ? job->error_summary() : string();
+			error_dialog(
+				this,
+				summary.empty()
+					? _("The sound could not be analysed, so the DCP was not made.")
+					: std_to_wx(summary),
+				job && !job->error_details().empty()
+					? std_to_wx(job->error_details())
+					: wxString(_("You can switch the automatic sound levelling off in "
+						     "Preferences -> GPU (Slang) and try again."))
+				);
 			return;
 		}
 		/* The measured peak and any gain change are reported inline in the

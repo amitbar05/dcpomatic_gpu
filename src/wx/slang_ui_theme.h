@@ -663,12 +663,24 @@ private:
 			if (paths.empty()) {
 				return false;
 			}
+			/* A disabled area must refuse a DROP too, not just a click.  A drop
+			 * target is a separate object from the window's mouse handling, so
+			 * Enable(false) greys the area and stops left_down() without saying
+			 * anything to wxFileDropTarget -- and this handler adds content to
+			 * the film, which is exactly what being disabled during an export
+			 * means it must not do. */
+			if (!_area->IsThisEnabled()) {
+				return false;
+			}
 			_area->_handler(paths);
 			return true;
 		}
 
 		wxDragResult OnDragOver(wxCoord, wxCoord, wxDragResult def) override
 		{
+			if (!_area->IsThisEnabled()) {
+				return wxDragNone;
+			}
 			_area->set_dragging(true);
 			return def;
 		}

@@ -12,8 +12,9 @@ socket.
 
 The GPU encoder itself lives in a separate repository
 ([jpeg2000-gpu-encoder](https://github.com/amitbar05/jpeg2000-gpu-encoder)); the
-canonical copies of every file this fork adds/changes, the
-`slang_integration.patch`, and the full technical write-up live there under
+canonical copies of every file this fork *adds*, the `slang_integration.patch`
+(which additionally carries every hunk applied to existing upstream files, since
+those have no copy), and the full technical write-up live there under
 `encoder/integration/dcpomatic/`. Everything here is gated behind
 `-DDCPOMATIC_SLANG` (and the runtime `DCPOMATIC_SLANG` env var / Preferences
 switch), so an unconfigured build is stock DCP-o-matic.

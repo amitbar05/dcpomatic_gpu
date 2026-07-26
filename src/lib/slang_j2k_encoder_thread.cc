@@ -391,6 +391,32 @@ SlangJ2KEncoderThread::encode_locked(DCPVideo const& frame)
 	if (rc < 0) {
 		LOG_ERROR(N_("Slang encoder: transport error for frame {}"), frame.index());
 		_backoff = 1;
+		/* Bound this the way the rc>0 branch below already bounds a structured
+		 * server error -- and with its OWN counter, because the two failures
+		 * differ in shape.  A structured error is about one frame, so it counts
+		 * against _last_failed_index; a socket that will not open fails EVERY
+		 * index, so that counter would reset on every frame and never trip.
+		 *
+		 * Without this the export simply never ends: with the frame server not
+		 * running, every Slang thread requeues its frame, sleeps a second and
+		 * tries again, for ever.  The job sits at 0 %, no dialog appears, and
+		 * nothing reaches store_encode_thread_exception() for the producer to
+		 * rethrow -- and by then jobs_make_dcp_gpu_continue() has persisted
+		 * slang.enable, so every later export does it again.  The audio pre-pass
+		 * does not warn either: it falls back to measuring locally and finishes
+		 * OK.
+		 *
+		 * ~30 s of a completely unreachable server is well past any restart or
+		 * hiccup worth riding out. */
+		++_consecutive_transport_failures;
+		if (_consecutive_transport_failures >= 30) {
+			throw std::runtime_error(fmt::format(
+				"Could not reach the GPU frame server at {} for {} frames in a row.  "
+				"Start frame_server.py, or turn the GPU encoder off in "
+				"Preferences -> GPU (Slang).",
+				_client->path(),
+				_consecutive_transport_failures));
+		}
 		return {};
 	}
 	if (rc > 0) {
@@ -422,6 +448,7 @@ SlangJ2KEncoderThread::encode_locked(DCPVideo const& frame)
 
 	verify_encode_contract(data, frame);
 	_backoff = 0;
+	_consecutive_transport_failures = 0;
 	return make_shared<dcp::ArrayData>(data.data(), static_cast<int>(data.size()));
 }
 

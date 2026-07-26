@@ -96,7 +96,16 @@ def configure(conf):
     # the old, smaller sizeof().  That is not a stale-looking build, it is a
     # heap overflow -- it cost a debugging session to a SIGSEGV inside GTK's
     # size negotiation.  Mirror the flag into DEFINES so the scanner sees it.
-    if '-DDCPOMATIC_SLANG' in conf.env.CXXFLAGS and 'DCPOMATIC_SLANG=1' not in conf.env.DEFINES:
+    # Prefix match over BOTH flag lists, not an exact-string test for one
+    # spelling: -DDCPOMATIC_SLANG=1, or the flag arriving via CPPFLAGS, would
+    # otherwise build a Slang-enabled binary with the scanner still blind, which
+    # is the silent-heap-corruption case this block exists to prevent.  And it
+    # is reported, so a mis-spelled flag shows up at configure time instead of
+    # as a SIGSEGV inside GTK three edits later.
+    slang = any(f.startswith('-DDCPOMATIC_SLANG')
+                for f in conf.env.CXXFLAGS + conf.env.CPPFLAGS)
+    conf.msg('Slang GPU integration', 'yes' if slang else 'no')
+    if slang and 'DCPOMATIC_SLANG=1' not in conf.env.DEFINES:
         conf.env.append_value('DEFINES', 'DCPOMATIC_SLANG=1')
 
     if vars(conf.options)['c++17']:

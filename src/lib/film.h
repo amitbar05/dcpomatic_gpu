@@ -299,6 +299,22 @@ public:
 	 *  @return true if a mapping was actually changed -- in which case the mix
 	 *  has changed and its measured peak is stale. */
 	bool migrate_smart_center_mono_mapping();
+	/** Retire an auto-installed smart-centre upmixer once the film's content has
+	 *  outgrown it (any stream with more than two channels).
+	 *
+	 *  The upmixer DERIVES a centre from a mono/stereo pair; a source that has a
+	 *  discrete centre needs nothing derived, and leaving it in place silently
+	 *  destroys channels -- its mapping default routes only L and R, so a 5.1
+	 *  master's C, LFE, Ls and Rs never reach the DCP.  Only ever removes the one
+	 *  this code installed by itself, never a processor the user or a template
+	 *  chose, and only once (the "offered" flag stays set).
+	 *
+	 *  Public and separate from maybe_smart_center_upmix() because both routes
+	 *  that can install the processor -- content import and Jobs -> Make DCP
+	 *  using GPU -- must also be able to retire it, and the export route is not
+	 *  gated on the simplified interface.
+	 *  @return true if the processor was removed. */
+	bool maybe_retire_smart_center_upmix();
 	/** Kick off the GPU audio analysis + auto-gain pre-pass for the film's
 	 *  current content.  Called automatically when content is added; also
 	 *  callable from the UI after it changes something the mix depends on (the

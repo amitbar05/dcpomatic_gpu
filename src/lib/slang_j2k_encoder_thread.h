@@ -90,6 +90,12 @@ private:
 	 * failures on the SAME index, throw (stored via encode()'s catch). */
 	int _last_failed_index = -1;
 	int _consecutive_failures = 0;
+	/* The same bound for the OTHER failure shape: a transport error (rc<0),
+	 * which is a dead socket rather than a frame the server dislikes.  It needs
+	 * its own counter because it fails every index, so the per-index reset above
+	 * would clear it on every frame and it would never trip.  Reset only by a
+	 * frame that actually came back. */
+	int _consecutive_transport_failures = 0;
 };
 
 

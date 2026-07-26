@@ -94,6 +94,11 @@ public:
 	 *  state compare generations to know when to re-send it. */
 	uint64_t generation() const { return _generation; }
 
+	/** The socket this client talks to.  Reported verbatim when giving up on an
+	 *  unreachable server: the thread's own path, not whatever Config says now,
+	 *  is the one the user has to go and start something on. */
+	std::string const& path() const { return _path; }
+
 	bool connect()
 	{
 		if (_fd >= 0) {
@@ -111,6 +116,29 @@ public:
 			disconnect();
 			return false;
 		}
+		/* Never block on this socket for ever.
+		 *
+		 * A server that ACCEPTS a request and then wedges -- a GPU driver hang,
+		 * a SIGSTOP on the terminal the README tells you to run it in, a cold
+		 * shader compile that never completes -- left recv_exact() parked in a
+		 * syscall with nothing to wake it.  That is not merely a slow export:
+		 * SlangAudioAnalyseJob flushes its audio batch from a Player callback,
+		 * and Job::cancel() interrupts and then JOINS that thread from the UI
+		 * thread.  boost::thread::interrupt() cannot break a blocking syscall,
+		 * so pressing Cancel -- or simply removing the audio content, which
+		 * cancels the job for you -- froze the whole application until SIGKILL.
+		 *
+		 * Deliberately longer than the server's own 120 s per-frame timeout, so
+		 * a legitimately slow frame is never cut off; this bounds only the case
+		 * where no answer is coming at all.  Every caller already treats a false
+		 * from send_all/recv_exact as a transport failure and disconnects, and
+		 * both loops bail on r <= 0, so a timed-out read needs no new handling
+		 * -- it becomes the "server unavailable" path that already exists. */
+		struct timeval tv;
+		tv.tv_sec = 180;
+		tv.tv_usec = 0;
+		::setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		::setsockopt(_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 		++_generation;
 		return true;
 	}

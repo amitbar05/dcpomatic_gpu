@@ -157,6 +157,21 @@ public:
 		return _channel_rms;
 	}
 
+	/** @return true if the job finished without producing a usable measurement:
+	 *  the natural peak fell outside the sane range and auto-gain was refused,
+	 *  or the audio content disappeared while the replay was running.
+	 *
+	 *  Both are FINISHED_OK -- nothing failed, the job simply declined to act --
+	 *  and both leave the film's stored per-channel stats untouched.  A caller
+	 *  that only tests the Job::Result therefore cannot tell them from a
+	 *  successful run, and the simplified panel did exactly that: it reported
+	 *  a refused noise-floor measurement as "Measured on the GPU and
+	 *  cross-checked", which was true of the server exchange and false of
+	 *  everything the user cares about. */
+	bool no_measurement() const {
+		return _refused_out_of_range || _content_went_away;
+	}
+
 private:
 	void analyse(std::shared_ptr<const AudioBuffers> buffers, dcpomatic::DCPTime time);
 	void flush_audio_batch();
@@ -193,6 +208,9 @@ private:
 	 *  applied because the measurement is not usable, which status() has to say
 	 *  rather than reporting a 0 dB change as success. */
 	bool _refused_out_of_range = false;
+	/** The audio content was removed while the replay was running, so the
+	 *  measurement describes a mix that no longer exists and was discarded. */
+	bool _content_went_away = false;
 	double _gain_applied_db = 0;
 	double _peak_dbfs = 0;
 	/** Absolute slang auto-gain in effect after this run (== the value

@@ -51,6 +51,14 @@ class SlangBitrateProbeJob : public Job
 {
 public:
 	explicit SlangBitrateProbeJob(std::shared_ptr<const Film> film);
+	/** Job's own destructor cannot join the thread it started: by the time a
+	 *  base destructor runs, the derived object is already gone, so a run()
+	 *  still executing would be calling into freed memory.  Every Job subclass
+	 *  therefore has to stop its own thread, and this one did not -- destroying
+	 *  it mid-probe (the film is closed while avformat_find_stream_info() is
+	 *  grinding through a master on a slow disk) left run() touching a
+	 *  half-destroyed object.  SlangAudioAnalyseJob already does this. */
+	~SlangBitrateProbeJob();
 
 	std::string name() const override;
 	std::string json_name() const override;

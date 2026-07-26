@@ -86,7 +86,29 @@ SmartCenterUpmixer::id() const
 int
 SmartCenterUpmixer::out_channels() const
 {
-	return 3;
+	/* SIX, not the three this matrix actually writes -- matching upstream's
+	 * UpmixerA/UpmixerB, which also fill only some of the six they declare.
+	 *
+	 * This number is not just a buffer size.  Film::mapped_audio_channels()
+	 * treats a processor's declared outputs as the film's mapped channels, and
+	 * audio_channel_types() turns those into the DCNC AudioType field of the
+	 * DCP's name.  Declaring 3 gave {L, R, C}: three non-LFE channels and no
+	 * LFE, formatted as "30" -- which is not one of the codes the convention
+	 * defines (10, 20, 51, 71, MOS).  Every mono/stereo GPU
+	 * export was therefore named ..._30_..., while the sound MXF beside it
+	 * declared MainSoundConfiguration "51/L,R,C,-,-,-"; QC tools reject the
+	 * field outright ("not matching any naming convention field"), and this
+	 * repo's own src/dcp/isdcf.py would refuse to generate it.  Six describes
+	 * the essence that is actually wrapped, silent surrounds included -- which
+	 * is exactly what ISDCF Doc 4 Note 1 allows.
+	 *
+	 * Sample-identical: AudioProcessor::run() passes min(channels,
+	 * out_channels()) to do_run(), which re-clamps with min(channels, 3) before
+	 * writing anything, and run() then widens a narrow result to the film's
+	 * channel count with silence anyway.  The only thing that moves is the
+	 * name.
+	 */
+	return 6;
 }
 
 
@@ -120,15 +142,25 @@ SmartCenterUpmixer::do_run(shared_ptr<const AudioBuffers> in, int channels)
 		} else {
 			/* No centre slot (film pinned < 3 channels): pass L/R
 			 * through so dialogue survives as a phantom centre rather
-			 * than vanishing into an unwritten mid.  The mono leg has
-			 * no centre to be dominant in either, so it goes to both
-			 * at unity rather than at MONO_SIDE_GAIN -- 6 dB down with
-			 * nothing to be down RELATIVE to would just be quiet. */
+			 * than vanishing into an unwritten mid.
+			 *
+			 * `mono` is necessarily zero here and is deliberately not
+			 * added.  The buffer this reads has the FILM's channel
+			 * count (Player::remap fills it that way), so a film narrow
+			 * enough to take this branch has fewer channels than the
+			 * mono leg's own index -- have_mono above is false, and no
+			 * mono content is present in the buffer to pass through at
+			 * any gain.  The previous `+ mono` therefore added nothing,
+			 * under a comment describing a level choice it never got to
+			 * make.  Routing mono into a film pinned below three
+			 * channels loses it; the answer to that is the channel
+			 * floor in Film::set_audio_processor(), not arithmetic on a
+			 * value that cannot be non-zero. */
 			if (N > 0) {
-				out->data()[0][i] = left + mono;
+				out->data()[0][i] = left;
 			}
 			if (N > 1) {
-				out->data()[1][i] = right + mono;
+				out->data()[1][i] = right;
 			}
 		}
 	}

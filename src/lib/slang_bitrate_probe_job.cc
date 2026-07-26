@@ -38,6 +38,12 @@ SlangBitrateProbeJob::SlangBitrateProbeJob(shared_ptr<const Film> film)
 }
 
 
+SlangBitrateProbeJob::~SlangBitrateProbeJob()
+{
+	stop_thread();
+}
+
+
 string
 SlangBitrateProbeJob::name() const
 {
