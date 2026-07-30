@@ -22,8 +22,15 @@
 /** @file  src/wx/slang_coder_dialog.h
  *  @brief SlangCoderDialog: the "which JPEG 2000 coder?" chooser shown at the
  *  start of a GPU export (Jobs -> Make DCP using GPU), while the GPU audio
- *  analysis runs in the background.  HT (fast, the default) vs MQ (highest
- *  PSNR) with a concise line and a fuller strengths/weaknesses paragraph each.
+ *  analysis runs in the background.  MQ (classic Part 1, the default, and the
+ *  only one a DCP may carry) vs HT (Part 15, ~3x faster, preview-only) with a
+ *  concise line and a fuller strengths/weaknesses paragraph each.
+ *
+ *  The wording here was wrong until 2026-07-30: it told the user "Both produce
+ *  a fully DCI-compliant DCP" and described HT's incompatibility as "only a few
+ *  older Part-1-only tools cannot read it".  Neither is true -- Part 15 is
+ *  absent from the DCI specification and from SMPTE ST 429-4 -- and a user
+ *  followed that text to an export two DCP verifiers rejected.
  */
 
 #pragma once
@@ -74,7 +81,7 @@ public:
 
 		auto intro = new wxStaticText(
 			this, wxID_ANY,
-			_("Both produce a fully DCI-compliant DCP. You can change this any time in "
+			_("Only MQ produces a DCP a cinema can play. You can change this any time in "
 			  "Preferences -> GPU (Slang).")
 			);
 		intro->Wrap(body_wrap);
@@ -112,33 +119,39 @@ public:
 
 		add_option(
 			sizer, _ht, indent, detail_wrap,
-			_("Recommended - the fastest export, and tuned to match or beat MQ on how the picture looks."),
+			_("Fast previews and speed tests only - a cinema cannot play the result."),
 			_("The modern High-Throughput block coder (JPEG 2000 Part 15). On the GPU it "
-			  "encodes 4K frames roughly 3x faster than MQ, so exports finish much sooner, "
-			  "and it still fills the whole DCI bit-rate budget. Its raw PSNR is about 0.4 dB "
-			  "below MQ, but with the perceptual tuning applied here it equals or beats MQ on "
-			  "the measures that track what the eye actually sees - fine detail, smooth "
-			  "gradients (banding) and Butteraugli. Decoded by OpenJPEG 2.5+ and modern "
-			  "digital-cinema players; only a few older Part-1-only tools cannot read it.")
+			  "encodes 4K frames roughly 3x faster than MQ, still fills the whole DCI bit-rate "
+			  "budget, and with the perceptual tuning applied here it equals or beats MQ on the "
+			  "measures that track what the eye actually sees - fine detail, smooth gradients "
+			  "(banding) and Butteraugli. What it is NOT is a coder a DCP may carry: Part 15 "
+			  "has no place in the DCI specification or in SMPTE ST 429-4, its standardised "
+			  "home is IMF rather than digital cinema, deployed cinema servers do not decode "
+			  "it, and third-party DCP verifiers reject it. The sound, the packaging and the "
+			  "naming are all still correct - only the picture essence is a codec the target "
+			  "equipment cannot read. Choose it to see a result quickly, never to deliver.")
 			);
 
 		add_option(
 			sizer, _mq, indent, detail_wrap,
-			_("Highest PSNR and the widest compatibility - but slower to encode."),
+			_("Recommended - the only choice for a DCP you intend to deliver."),
 			_("The original JPEG 2000 (Part 1) arithmetic coder that every DCP player has read "
-			  "for twenty years. It gives the highest PSNR, which means the decoded frames are "
-			  "numerically the closest to your source: fine gradients and detail come back with "
-			  "the least deviation and the lowest chance of a visible compression artefact on "
-			  "demanding shots (at DCI bit rates the margin over HT is small and mostly "
-			  "sub-perceptual). The trade-off is speed - about 3x slower than HT on the "
-			  "GPU. Choose it for maximum fidelity, or for guaranteed playback on the oldest "
-			  "equipment.")
+			  "for twenty years, and the one the DCI specification requires. It also gives the "
+			  "highest PSNR, which means the decoded frames are numerically the closest to your "
+			  "source: fine gradients and detail come back with the least deviation and the "
+			  "lowest chance of a visible compression artefact on demanding shots (at DCI bit "
+			  "rates the margin over HT is small and mostly sub-perceptual). The trade-off is "
+			  "speed - about 3x slower than HT on the GPU. Choose it for anything going to a "
+			  "cinema, a festival or a QC house.")
 			);
 
-		if (current_coder == "mq") {
-			_mq->SetValue(true);
-		} else {
+		/* Only an explicit "ht" pre-selects HT.  An empty or unrecognised value
+		 * lands on MQ -- the deliverable coder -- rather than on the one that
+		 * produces a DCP no cinema can play. */
+		if (current_coder == "ht") {
 			_ht->SetValue(true);
+		} else {
+			_mq->SetValue(true);
 		}
 
 		if (audio_will_be_analysed) {

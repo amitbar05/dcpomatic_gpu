@@ -814,6 +814,16 @@ Config::write_config() const
 		/* [XML] DefaultAudioLanguage Default audio language to use for new films */
 		cxml::add_text_child(root, "DefaultAudioLanguage", _default_audio_language->as_string());
 	}
+	/* [XML] DefaultMetadata Default metadata value for new films; "key" attribute
+	 * is one of "chain", "distributor", "facility", "studio". The read side of
+	 * this (a loop over <DefaultMetadata key="..."> children) already existed,
+	 * but nothing ever wrote it back out -- a value set here was silently
+	 * dropped on the very next config save. */
+	for (auto const& i: _default_metadata) {
+		auto e = cxml::add_child(root, "DefaultMetadata");
+		e->set_attribute("key", i.first);
+		e->add_child_text(i.second);
+	}
 	if (_default_kdm_directory) {
 		/* [XML:opt] DefaultKDMDirectory Default directory to write KDMs to. */
 		cxml::add_text_child(root, "DefaultKDMDirectory", _default_kdm_directory->string());
@@ -1804,7 +1814,7 @@ Config::Slang::Slang() = default;
 
 Config::Slang::Slang(cxml::ConstNodePtr node)
 	: enable(node->optional_bool_child("Enable").get_value_or(false))
-	, coder(node->optional_string_child("Coder").get_value_or("ht"))
+	, coder(node->optional_string_child("Coder").get_value_or("mq"))
 	, socket(node->optional_string_child("Socket").get_value_or("/tmp/j2k_frames.sock"))
 	, auto_gain(node->optional_bool_child("AutoGain").get_value_or(true))
 	, smart_center(node->optional_bool_child("SmartCentre").get_value_or(true))
@@ -1812,7 +1822,10 @@ Config::Slang::Slang(cxml::ConstNodePtr node)
 	, simple_ui(node->optional_bool_child("SimpleUI").get_value_or(false))
 {
 	if (coder != "ht" && coder != "mq") {
-		coder = "ht";
+		/* An unreadable value falls back to the coder a DCP is specified to
+		 * carry, not the fast one: a corrupt/hand-edited config must not be
+		 * able to silently produce Part-15 essence.  See Config::Slang::coder. */
+		coder = "mq";
 	}
 }
 

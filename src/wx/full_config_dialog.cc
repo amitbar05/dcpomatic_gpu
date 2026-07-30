@@ -282,6 +282,18 @@ private:
 		_audio_language = new LanguageTagWidget(_panel, _("Default audio language to use for new DCPs"), Config::instance()->default_audio_language(), char_to_wx("cmnr-Hant-"));
 		table->Add(_audio_language->sizer());
 
+		_enable_default_studio = new CheckBox(_panel, _("Default studio"));
+		table->Add(_enable_default_studio, 1, wxEXPAND | wxALIGN_CENTRE_VERTICAL);
+		_default_studio = new wxTextCtrl(_panel, wxID_ANY);
+		_default_studio->SetToolTip(_("Registered ISDCF studio code to use for new films' ISDCF names, e.g. 'ABC'."));
+		table->Add(_default_studio, 1, wxEXPAND);
+
+		_enable_default_facility = new CheckBox(_panel, _("Default facility"));
+		table->Add(_enable_default_facility, 1, wxEXPAND | wxALIGN_CENTRE_VERTICAL);
+		_default_facility = new wxTextCtrl(_panel, wxID_ANY);
+		_default_facility->SetToolTip(_("Registered ISDCF facility code to use for new films' ISDCF names, e.g. 'ABC'."));
+		table->Add(_default_facility, 1, wxEXPAND);
+
 		add_label_to_sizer(table, _panel, _("Default KDM directory"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
 #ifdef DCPOMATIC_USE_OWN_PICKER
 		_kdm_directory = new DirPickerCtrl(_panel);
@@ -325,6 +337,12 @@ private:
 
 		_enable_audio_language->bind(&DefaultsPage::enable_audio_language_toggled, this);
 		_audio_language->Changed.connect(boost::bind(&DefaultsPage::audio_language_changed, this));
+
+		_enable_default_studio->bind(&DefaultsPage::enable_default_studio_toggled, this);
+		_default_studio->Bind(wxEVT_TEXT, boost::bind(&DefaultsPage::default_studio_changed, this));
+
+		_enable_default_facility->bind(&DefaultsPage::enable_default_facility_toggled, this);
+		_default_facility->Bind(wxEVT_TEXT, boost::bind(&DefaultsPage::default_facility_changed, this));
 	}
 
 	void config_changed() override
@@ -339,6 +357,14 @@ private:
 		auto dal = config->default_audio_language();
 		checked_set(_enable_audio_language, static_cast<bool>(dal));
 		checked_set(_audio_language, dal ? dal : boost::none);
+
+		auto ds = config->default_studio();
+		checked_set(_enable_default_studio, static_cast<bool>(ds));
+		checked_set(_default_studio, ds.get_value_or(""));
+
+		auto df = config->default_facility();
+		checked_set(_enable_default_facility, static_cast<bool>(df));
+		checked_set(_default_facility, df.get_value_or(""));
 
 		checked_set(_kdm_duration, config->default_kdm_duration().duration);
 		switch (config->default_kdm_duration().unit) {
@@ -430,9 +456,48 @@ private:
 		}
 	}
 
+	void enable_default_studio_toggled()
+	{
+		setup_sensitivity();
+		default_studio_changed();
+	}
+
+	void default_studio_changed()
+	{
+		/* An enabled checkbox with nothing typed yet is not a configured value --
+		 * storing "" would make default_studio() return Some("") rather than
+		 * boost::none, silently defeating Film::Film()'s value_or("NULL") fallback. */
+		auto value = wx_to_std(_default_studio->GetValue());
+		if (_enable_default_studio->get() && !value.empty()) {
+			Config::instance()->set_default_studio(value);
+		} else {
+			Config::instance()->unset_default_studio();
+		}
+	}
+
+	void enable_default_facility_toggled()
+	{
+		setup_sensitivity();
+		default_facility_changed();
+	}
+
+	void default_facility_changed()
+	{
+		/* Same reasoning as default_studio_changed(): don't store "" as if it
+		 * were a real configured value. */
+		auto value = wx_to_std(_default_facility->GetValue());
+		if (_enable_default_facility->get() && !value.empty()) {
+			Config::instance()->set_default_facility(value);
+		} else {
+			Config::instance()->unset_default_facility();
+		}
+	}
+
 	void setup_sensitivity()
 	{
 		_audio_language->enable(_enable_audio_language->get());
+		_default_studio->Enable(_enable_default_studio->get());
+		_default_facility->Enable(_enable_default_facility->get());
 	}
 
 	wxSpinCtrl* _audio_delay;
@@ -450,6 +515,10 @@ private:
 	CheckBox* _use_isdcf_name_by_default;
 	CheckBox* _enable_audio_language;
 	LanguageTagWidget* _audio_language;
+	CheckBox* _enable_default_studio;
+	wxTextCtrl* _default_studio;
+	CheckBox* _enable_default_facility;
+	wxTextCtrl* _default_facility;
 };
 
 

@@ -57,10 +57,13 @@ goes, see what is about to happen to the sound, press one button.
 - **GPU encode path** — a `SlangJ2KEncoderThread` runs beside the existing CPU
   (OpenJPEG) and Grok threads. Each frame's pixels go to the frame server; the
   `.j2c` codestream comes back for libdcp's MXF writer. DCI-conformant output.
-- **Two Tier-1 coders** — **HT** (HTJ2K / JPEG 2000 Part 15, the fast default,
-  ~3× on the GPU, fills the DCI budget) and **MQ** (highest PSNR, widest decoder
-  compatibility). Chosen in Preferences, the export-time coder-picker dialog, or
-  per-connection on the wire (`J2KO`).
+- **Two Tier-1 coders** — **MQ** (the default: highest PSNR, widest decoder
+  compatibility, and the only one a cinema will play) and **HT** (HTJ2K, ~3× on
+  the GPU and fills the DCI budget, but it is JPEG 2000 **Part 15** — SMPTE
+  ST 429-4 has no HTJ2K provision, deployed cinema servers do not decode it, and
+  a real export was rejected by a third-party verifier, so it is a
+  fast-preview/benchmark coder, not a delivery one). Chosen in Preferences, the
+  export-time coder-picker dialog, or per-connection on the wire (`J2KO`).
 - **Coder enforced & verified per frame** — the requested coder/bit-rate are
   re-sent on every reconnect, structural refusals fail the job, and every
   returned frame is ground-truth checked (Rsiz HT bit + byte cap) so a stale or

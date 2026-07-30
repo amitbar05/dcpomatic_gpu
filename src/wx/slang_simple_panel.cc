@@ -20,6 +20,7 @@
 
 #ifdef DCPOMATIC_SLANG
 
+#include "check_box.h"
 #include "dcpomatic_choice.h"
 #include "dir_dialog.h"
 #include "file_dialog.h"
@@ -50,6 +51,7 @@
 #include <dcp/scope_guard.h>
 #include <dcp/warnings.h>
 LIBDCP_DISABLE_WARNINGS
+#include <wx/clipbrd.h>
 #include <wx/dcbuffer.h>
 #include <wx/dnd.h>
 #include <wx/graphics.h>
@@ -69,6 +71,7 @@ using std::string;
 using std::vector;
 using std::weak_ptr;
 using boost::optional;
+using dcpomatic::DCPTime;
 #if BOOST_VERSION >= 106100
 using namespace boost::placeholders;
 #endif
@@ -415,6 +418,170 @@ SlangSimplePanel::build_video_card(wxWindow* parent, wxSizer* sizer)
 	type_row->Add(_content_type, 0, wxALIGN_CENTRE_VERTICAL);
 
 	_video_card->body()->Add(type_row, 0, wxEXPAND | wxTOP, FromDIP(10));
+
+	/* End credits.  A feature CPL that carries no FFEC and no FFMC marker is
+	 * two SMPTE Bv2.1 errors, and this screen had no way to set them at all --
+	 * so every feature made here failed verification, which is exactly what
+	 * happened to a real export.  The full interface has a Markers dialog; this
+	 * is the one question a feature actually has to answer, asked here.
+	 *
+	 * Only shown for a feature: no other content kind is required to carry
+	 * them, and offering the control everywhere would invite marking credits on
+	 * a trailer. */
+	_credits_row = new wxPanel(_video_card, wxID_ANY);
+	_credits_row->SetBackgroundColour(p.card);
+	auto credits = new wxBoxSizer(wxVERTICAL);
+
+	auto credits_line = new wxBoxSizer(wxHORIZONTAL);
+	_credits_set = new CheckBox(_credits_row, _("End credits start at"));
+	_credits_set->SetForegroundColour(p.muted);
+	_credits_set->SetFont(slang_ui::font(_credits_row, -1));
+	_credits_set->bind(&SlangSimplePanel::credits_changed, this);
+	credits_line->Add(_credits_set, 0, wxALIGN_CENTRE_VERTICAL | wxRIGHT, FromDIP(8));
+
+	/* set_button false: the "set from the current position" button belongs to
+	 * the full interface's viewer, which this screen does not have. */
+	_credits_at = new Timecode<DCPTime>(_credits_row, false);
+	_credits_at->Changed.connect(boost::bind(&SlangSimplePanel::credits_changed, this));
+	credits_line->Add(_credits_at, 0, wxALIGN_CENTRE_VERTICAL | wxRIGHT, FromDIP(8));
+
+	_credits_end = new SlangFlatButton(_credits_row, _("At end of film"), SlangFlatButton::Kind::GHOST);
+	_credits_end->on_click([this]() { credits_at_end(); });
+	credits_line->Add(_credits_end, 0, wxALIGN_CENTRE_VERTICAL);
+
+	credits->Add(credits_line, 0, wxEXPAND);
+
+	_credits_hint = new wxStaticText(_credits_row, wxID_ANY, wxString{});
+	_credits_hint->SetFont(slang_ui::font(_credits_row, -2));
+	_credits_hint->SetForegroundColour(p.muted);
+	credits->Add(_credits_hint, 0, wxEXPAND | wxTOP, FromDIP(4));
+
+	_credits_row->SetSizer(credits);
+	_video_card->body()->Add(_credits_row, 0, wxEXPAND | wxTOP, FromDIP(10));
+	_credits_row->Hide();
+}
+
+
+bool
+SlangSimplePanel::needs_credit_markers() const
+{
+	if (!_film) {
+		return false;
+	}
+	auto const type = _film->dcp_content_type();
+	return type && type->libdcp_kind() == dcp::ContentKind::FEATURE;
+}
+
+
+DCPTime
+SlangSimplePanel::last_frame_time() const
+{
+	if (!_film) {
+		return {};
+	}
+	auto const length = _film->length();
+	auto const frame = DCPTime::from_frames(1, _film->video_frame_rate());
+	return length > frame ? length - frame : DCPTime();
+}
+
+
+void
+SlangSimplePanel::credits_at_end()
+{
+	if (!_film || !_credits_at || !_credits_set) {
+		return;
+	}
+	_credits_at->set(last_frame_time(), _film->video_frame_rate());
+	/* Filling in the time is only half an answer -- the markers are not written
+	 * unless the box is ticked, and a user who pressed this button plainly
+	 * wants them.  Tick it for them rather than leaving a filled-in time that
+	 * does nothing. */
+	checked_set(_credits_set, true);
+	credits_changed();
+}
+
+
+void
+SlangSimplePanel::credits_changed()
+{
+	if (!_film || !_credits_set || !_credits_at) {
+		return;
+	}
+
+	if (!_credits_set->GetValue()) {
+		_film->unset_marker(dcp::Marker::FFEC);
+		_film->unset_marker(dcp::Marker::FFMC);
+	} else {
+		auto const vfr = _film->video_frame_rate();
+		auto time = _credits_at->get(vfr);
+		/* Clamp exactly as the full interface's Markers dialog does: a marker
+		 * at or past the end is not a position in this film. */
+		auto const last = last_frame_time();
+		if (time > last) {
+			time = last;
+			_credits_at->set(time, vfr);
+		}
+		/* BOTH markers, from the one answer.  FFEC is the first frame of the
+		 * end credits and FFMC the first frame of the MOVING (scrolling) part;
+		 * they are separable, and the full interface's Markers dialog does
+		 * separate them, but a simplified screen asking two nearly identical
+		 * questions would get two nearly identical answers.  Setting them
+		 * together is the common real-world case and satisfies Bv2.1; anyone
+		 * who needs them apart has Advanced. */
+		_film->set_marker(dcp::Marker::FFEC, time);
+		_film->set_marker(dcp::Marker::FFMC, time);
+	}
+
+	update_credits();
+	/* Same reason as content_type_changed(): no Save button, and no
+	 * ContentChange will come along to carry this into save(). */
+	save();
+}
+
+
+void
+SlangSimplePanel::update_credits()
+{
+	if (!_credits_row) {
+		return;
+	}
+
+	auto const show = needs_credit_markers();
+	if (_credits_row->IsShown() != show) {
+		_credits_row->Show(show);
+		if (_scroller) {
+			_scroller->Layout();
+			_scroller->FitInside();
+		}
+	}
+	if (!show || !_film) {
+		return;
+	}
+
+	auto const vfr = _film->video_frame_rate();
+	auto const ffec = _film->marker(dcp::Marker::FFEC);
+	checked_set(_credits_set, static_cast<bool>(ffec));
+	if (ffec) {
+		_credits_at->set(*ffec, vfr);
+	} else {
+		/* Show where "At end of film" would put it, without claiming it is
+		 * set: a hint is greyed out and is not read back by get() unless the
+		 * field is empty, which is exactly the "unset" state. */
+		_credits_at->set_hint(last_frame_time(), vfr);
+	}
+
+	auto const enabled = _sensitive && static_cast<bool>(_film);
+	_credits_set->Enable(enabled);
+	_credits_at->Enable(enabled && _credits_set->GetValue());
+	_credits_end->Enable(enabled);
+
+	_credits_hint->SetLabel(
+		ffec
+		? _("Both end-credit markers (FFEC and FFMC) will be written here.")
+		: _("A feature DCP is required to carry end-credit markers; without them it will "
+		    "fail verification. If there are no separate end credits, press \"At end of film\".")
+		);
+	_credits_hint->Wrap(_credits_row->GetSize().GetWidth() > 0 ? _credits_row->GetSize().GetWidth() : FromDIP(600));
 }
 
 
@@ -507,6 +674,11 @@ SlangSimplePanel::build_output_card(wxWindow* parent, wxSizer* sizer)
 	_output_change = new SlangFlatButton(_output_card, _("Change..."), SlangFlatButton::Kind::SECONDARY);
 	_output_change->on_click([this]() { change_output_folder(); });
 	row->Add(_output_change, 0, wxALIGN_CENTRE_VERTICAL | wxLEFT, FromDIP(12));
+
+	_output_copy_path = new SlangFlatButton(_output_card, _("Copy Path"), SlangFlatButton::Kind::GHOST);
+	_output_copy_path->SetToolTip(_("Copy the output folder's path to the clipboard."));
+	_output_copy_path->on_click([this]() { copy_output_path(); });
+	row->Add(_output_copy_path, 0, wxALIGN_CENTRE_VERTICAL | wxLEFT, FromDIP(8));
 
 	_output_card->body()->Add(row, 0, wxEXPAND);
 }
@@ -829,6 +1001,7 @@ SlangSimplePanel::set_general_sensitivity(bool sensitive)
 	}
 
 	update_output_change_enabled();
+	update_output_copy_path_enabled();
 	if (_new) {
 		/* Same class: starting a new project discards the current film, and
 		 * discarding the one an export is writing strands it.  Deliberately
@@ -863,6 +1036,9 @@ SlangSimplePanel::film_changed(ChangeType type, FilmProperty property)
 		break;
 	case FilmProperty::DCP_CONTENT_TYPE:
 		update_content_type();
+		/* The end-credits row exists only for a feature, so it appears and
+		 * disappears with this. */
+		update_credits();
 		/* Both of these are ingredients of the ISDCF name the output card
 		 * shows, so the card has to be re-read for the change to be visible
 		 * where the user is looking for its effect. */
@@ -873,10 +1049,15 @@ SlangSimplePanel::film_changed(ChangeType type, FilmProperty property)
 		update_output_card();
 		break;
 	case FilmProperty::VIDEO_BIT_RATE:
-	case FilmProperty::VIDEO_FRAME_RATE:
 	case FilmProperty::RESOLUTION:
 	case FilmProperty::CONTAINER:
 		update_video_card();
+		break;
+	case FilmProperty::VIDEO_FRAME_RATE:
+		update_video_card();
+		/* The credits timecode is displayed at the film's frame rate, and
+		 * "at end of film" is a frame position -- both move with it. */
+		update_credits();
 		break;
 	default:
 		break;
@@ -1727,10 +1908,54 @@ SlangSimplePanel::change_output_folder()
 
 
 void
+SlangSimplePanel::copy_output_path()
+{
+	/* update_output_card() keeps the button disabled whenever this is not
+	 * true, but a click already queued before that runs (or a caller that
+	 * bypasses the button) must not put an empty string on the clipboard. */
+	auto const directory = _film ? _film->directory() : optional<boost::filesystem::path>();
+	if (!directory) {
+		return;
+	}
+
+	if (!wxTheClipboard->Open()) {
+		return;
+	}
+
+	dcp::ScopeGuard sg = []() {
+		wxTheClipboard->Close();
+	};
+
+	wxTheClipboard->SetData(new wxTextDataObject(std_to_wx(directory->string())));
+}
+
+
+void
 SlangSimplePanel::create_dcp()
 {
 	if (!_film || _film->content().empty()) {
 		return;
+	}
+
+	/* A feature CPL with no end-credit markers is two SMPTE Bv2.1 errors, and
+	 * the DCP is otherwise perfectly good -- so warn rather than refuse, and
+	 * let the user go ahead knowingly.  This is the LAST point at which the
+	 * question can still be answered cheaply; after the export it costs another
+	 * transcode. */
+	if (needs_credit_markers() && !_film->marker(dcp::Marker::FFEC)) {
+		auto const proceed = confirm_dialog(
+			this,
+			_("This DCP is a feature, but you have not said where its end credits start.\n\n"
+			  "A feature DCP is required to carry end-credit markers (FFEC and FFMC); "
+			  "without them it will be reported as non-compliant by DCP verification tools "
+			  "and may be rejected by a cinema or QC house.\n\n"
+			  "If the film has no separate end credits, press \"At end of film\" next to "
+			  "\"End credits start at\" before making the DCP.\n\n"
+			  "Make the DCP anyway?")
+			);
+		if (!proceed) {
+			return;
+		}
 	}
 
 	MakeDCP();
@@ -1744,6 +1969,7 @@ SlangSimplePanel::update_all()
 	update_subtitle_card();
 	update_output_card();
 	update_content_type();
+	update_credits();
 	update_audio_language();
 	update_action_row();
 	if (_pipeline) {
@@ -1947,6 +2173,19 @@ SlangSimplePanel::update_output_change_enabled()
 
 
 void
+SlangSimplePanel::update_output_copy_path_enabled()
+{
+	if (_output_copy_path) {
+		/* Unlike _output_change (see update_output_change_enabled()'s comment),
+		 * there is nothing useful this button can do with no directory -- so,
+		 * unlike that one, its predicate DOES include the directory's presence. */
+		auto const directory = _film ? _film->directory() : optional<boost::filesystem::path>();
+		_output_copy_path->Enable(_sensitive && static_cast<bool>(directory));
+	}
+}
+
+
+void
 SlangSimplePanel::update_output_card()
 {
 	if (!_output_card) {
@@ -1957,6 +2196,7 @@ SlangSimplePanel::update_output_card()
 
 	_output_card->set_done(static_cast<bool>(directory));
 	update_output_change_enabled();
+	update_output_copy_path_enabled();
 
 	if (!directory) {
 		_output_path->SetLabel(_("Not chosen yet"));

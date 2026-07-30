@@ -33,8 +33,10 @@ class SlangJ2KEncoderThread : public J2KSyncEncoderThread
 public:
 	/** @param socket_path Unix-domain socket the frame server listens on.
 	 *  @param coder Tier-1 block coder to request from the server for this
-	 *  connection ("ht" — the fast default — or "mq"; the Preferences
-	 *  picker). Empty = leave the server's own default in charge. */
+	 *  connection ("mq" — the default, and the only coder a cinema server
+	 *  decodes — or "ht", which is faster but is JPEG 2000 Part 15; the
+	 *  Preferences picker). Empty = leave the server's own default in
+	 *  charge. */
 	SlangJ2KEncoderThread(J2KEncoder& encoder, std::string socket_path, std::string coder = "");
 	~SlangJ2KEncoderThread();
 

@@ -1180,9 +1180,10 @@ private:
 		bool const want_smart_center =
 			slang.smart_center && any_audio && max_channels <= 2 && !film->audio_processor();
 
-		/* Ask which Tier-1 coder to use (HT the fast default vs MQ the
-		 * highest-PSNR one), pre-selecting the configured one.  The simplified
-		 * interface skips this and takes the configured coder as-is.
+		/* Ask which Tier-1 coder to use (MQ the default -- highest PSNR, and
+		 * the only one a cinema server decodes -- vs HT the faster Part-15
+		 * one), pre-selecting the configured one.  The simplified interface
+		 * skips this and takes the configured coder as-is.
 		 *
 		 * ASK BEFORE MUTATING.  The dialog used to be shown after the film had
 		 * already been given the smart-centre processor, widened to 6 channels,

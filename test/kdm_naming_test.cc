@@ -78,6 +78,19 @@ struct Context
 
 BOOST_AUTO_TEST_CASE (single_kdm_naming_test)
 {
+	/* Directory-scoped, not the bare ConfigRestorer: new_test_film() below
+	 * reads/creates Config's cached "default.xml" template via a FRESH
+	 * State::read_path()/write_path() call every time, so if an earlier test
+	 * in this binary used ANY ConfigRestorer (even a bare one -- its
+	 * destructor resets State::override_path to boost::none, not back to the
+	 * test sandbox), that lookup would silently fall through to the real
+	 * machine's ~/.config/dcpomatic2 and this test's expected `ref` below
+	 * (which assumes the ISDCF Studio/Facility sentinels from a fresh
+	 * Config) would not match. Context's cinemas/screens are self-contained
+	 * (built fresh against whatever cinemas file this Config has), so a
+	 * redirected Config doesn't need any pre-existing data here. */
+	ConfigRestorer config_restorer(boost::filesystem::current_path() / "build/test/single_kdm_naming_test_config");
+
 	auto c = Config::instance();
 
 	Context context;
@@ -137,7 +150,11 @@ BOOST_AUTO_TEST_CASE (single_kdm_naming_test)
 	boost::algorithm::replace_all (until_time, ":", "-");
 
 	auto const dcp_date = boost::gregorian::to_iso_string(film->isdcf_date());
-	auto const ref = fmt::format("KDM_Cinema_A_-_Screen_1_-_MyGreatFilm_TST-1_F_XX-XX_MOS_2K_{}_SMPTE_OV_-_{}_{}_-_{}_{}.xml", dcp_date, from.date(), from_time, until.date(), until_time);
+	/* No Territory/Studio/Facility set on this film: Territory's live
+	 * fallback picks INT-TL (no subtitle content) and Studio/Facility get the
+	 * ISDCF "no registered code" sentinels NULL/NUL -- see the comment in
+	 * Film::isdcf_name(). */
+	auto const ref = fmt::format("KDM_Cinema_A_-_Screen_1_-_MyGreatFilm_TST-1_F_XX-XX_INT-TL_MOS_2K_NULL_{}_NUL_SMPTE_OV_-_{}_{}_-_{}_{}.xml", dcp_date, from.date(), from_time, until.date(), until_time);
 	BOOST_CHECK_MESSAGE (boost::filesystem::exists("build/test/single_kdm_naming_test/" + ref), "File " << ref << " not found");
 }
 
@@ -145,6 +162,10 @@ BOOST_AUTO_TEST_CASE (single_kdm_naming_test)
 BOOST_AUTO_TEST_CASE(directory_kdm_naming_test)
 {
 	using boost::filesystem::path;
+
+	/* See the comment in single_kdm_naming_test above for why this needs a
+	 * directory-scoped ConfigRestorer. */
+	ConfigRestorer config_restorer(boost::filesystem::current_path() / "build/test/directory_kdm_naming_test_config");
 
 	Context context;
 	CinemaList cinemas;
@@ -226,7 +247,11 @@ BOOST_AUTO_TEST_CASE(directory_kdm_naming_test)
 	boost::algorithm::replace_all (until_time, ":", "-");
 
 	auto const dcp_date = boost::gregorian::to_iso_string(film->isdcf_date());
-	auto const dcp_name = fmt::format("MyGreatFilm_TST-1_F_XX-XX_MOS_2K_{}_SMPTE_OV", dcp_date);
+	/* No Territory/Studio/Facility set on this film: Territory's live
+	 * fallback picks INT-TL (no subtitle content) and Studio/Facility get the
+	 * ISDCF "no registered code" sentinels NULL/NUL -- see the comment in
+	 * Film::isdcf_name(). */
+	auto const dcp_name = fmt::format("MyGreatFilm_TST-1_F_XX-XX_INT-TL_MOS_2K_NULL_{}_NUL_SMPTE_OV", dcp_date);
 	auto const common = fmt::format("{}_-_{}_{}_-_{}_{}", dcp_name, from.date(), from_time, until.date(), until_time);
 
 	path const base = "build/test/directory_kdm_naming_test";

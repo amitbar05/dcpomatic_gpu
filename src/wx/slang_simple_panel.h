@@ -31,7 +31,9 @@
 #ifdef DCPOMATIC_SLANG
 
 
+#include "timecode.h"
 #include "lib/change_signaller.h"
+#include "lib/dcpomatic_time.h"
 #include "lib/film_property.h"
 #include "lib/job.h"
 #include <dcp/warnings.h>
@@ -44,6 +46,7 @@ LIBDCP_ENABLE_WARNINGS
 #include <vector>
 
 
+class CheckBox;
 class Choice;
 class Content;
 class Film;
@@ -117,6 +120,21 @@ private:
 	void replace_video();
 	void choose_subtitles();
 	void content_type_changed();
+	/** Apply the end-credits row to the film's FFEC/FFMC markers. */
+	void credits_changed();
+	/** Put the credits timecode at the film's last frame -- the answer for a
+	 *  feature that simply has no separate end-credit sequence. */
+	void credits_at_end();
+	/** @return the film's last frame as a DCPTime, or DCPTime() if there is no
+	 *  film or no length yet. */
+	dcpomatic::DCPTime last_frame_time() const;
+	/** @return true if the film's content kind is one SMPTE Bv2.1 requires
+	 *  end-credit markers on -- i.e. a feature.  This is the whole reason the
+	 *  credits row exists: dcpverify reports a feature CPL with no FFEC and no
+	 *  FFMC as two Bv2.1 errors, and the simplified interface had no way at all
+	 *  to set them (the full interface's Markers dialog is not reachable from
+	 *  here), so every feature it made failed verification. */
+	bool needs_credit_markers() const;
 	/** Pick the language of the soundtrack, or clear it again.  Optional: the
 	 *  DCP name carries XX for "not specified", which is a legitimate answer
 	 *  and the one a film gets until someone says otherwise. */
@@ -125,6 +143,11 @@ private:
 	/** Pick the language of one subtitle file (its own, not the film's). */
 	void choose_subtitle_language(std::weak_ptr<Content> content);
 	void change_output_folder();
+	/** Put the current output folder's path on the system clipboard.  A no-op
+	 *  (never an empty-string copy) if there is no film or no directory yet --
+	 *  update_output_card() is what keeps the button reachable only when there
+	 *  is something real to copy. */
+	void copy_output_path();
 	void remove_video();
 	void remove_subtitle(std::weak_ptr<Content> content);
 	void create_dcp();
@@ -140,6 +163,12 @@ private:
 	/** The single owner of the output "Change..." button's enabled state; two
 	 *  copies of this predicate had already drifted apart. */
 	void update_output_change_enabled();
+	/** The single owner of the output "Copy Path" button's enabled state --
+	 *  same reason as update_output_change_enabled() above, except this
+	 *  predicate also needs the directory's presence, so it can't just reuse
+	 *  that function. Call from both set_general_sensitivity() and
+	 *  update_output_card(), never inline the predicate at either call site. */
+	void update_output_copy_path_enabled();
 	/** @return where the project should live if the user picked @p chosen as
 	 *  the output folder: @p chosen itself when it is new or empty, otherwise a
 	 *  subfolder of it named after the film (see the definition for why a
@@ -173,6 +202,7 @@ private:
 	void update_subtitle_card();
 	void update_output_card();
 	void update_content_type();
+	void update_credits();
 	void update_audio_language();
 	void update_action_row();
 	void update_all();
@@ -207,6 +237,17 @@ private:
 	 *  FTR/SHR/CLP part of its name and the CPL's ContentKind. */
 	Choice* _content_type = nullptr;
 
+	/* Where the end credits start.  Shown only for a feature, which is the one
+	 * content kind SMPTE Bv2.1 requires FFEC/FFMC markers on.  The state lives
+	 * entirely in the film's markers -- there is deliberately no separate
+	 * "no credits" flag to keep in step with them, because a second source of
+	 * truth would go stale the moment the film's length changed. */
+	wxPanel* _credits_row = nullptr;
+	CheckBox* _credits_set = nullptr;
+	Timecode<dcpomatic::DCPTime>* _credits_at = nullptr;
+	SlangFlatButton* _credits_end = nullptr;
+	wxStaticText* _credits_hint = nullptr;
+
 	SlangCard* _subtitle_card = nullptr;
 	SlangDropArea* _subtitle_drop = nullptr;
 	wxPanel* _subtitle_list = nullptr;
@@ -221,6 +262,10 @@ private:
 	wxStaticText* _output_path = nullptr;
 	wxStaticText* _output_dcp = nullptr;
 	SlangFlatButton* _output_change = nullptr;
+	/** Copies _output_path's text to the clipboard; enabled only once there is
+	 *  a real directory to copy (see update_output_card()), unlike
+	 *  _output_change which stays enabled with no film at all. */
+	SlangFlatButton* _output_copy_path = nullptr;
 
 	SlangCard* _audio_card = nullptr;
 	SlangAudioPipelineView* _pipeline = nullptr;

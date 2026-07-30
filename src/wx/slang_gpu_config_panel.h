@@ -20,8 +20,8 @@
 
 
 /** Preferences page for the Slang/Vulkan GPU J2K encoder (frame-server
- *  integration): enable the GPU export, pick the Tier-1 coder (HT default
- *  vs MQ), point at the frame server's socket, and control the audio
+ *  integration): enable the GPU export, pick the Tier-1 coder (MQ default
+ *  vs HT), point at the frame server's socket, and control the audio
  *  automation (GPU auto-gain to just under -3.5 dBFS; smart-centre upmix for
  *  mono/stereo sources).  Mirrors the Grok GPUPage next door. */
 
@@ -54,9 +54,26 @@ private:
 
 		add_label_to_sizer(table, _panel, _("J2K coder"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
 		_coder = new wxChoice(_panel, wxID_ANY);
-		_coder->Append(_("HT - HTJ2K, fastest (default)"));
-		_coder->Append(_("MQ - classic JPEG2000, highest quality"));
+		/* Index order is load-bearing: config_changed()/changed() below map
+		 * selection 1 <-> "mq" and everything else <-> "ht".  Keep HT at 0 and
+		 * MQ at 1 even though MQ is now the default -- the labels say which is
+		 * which, and reordering would silently repoint every existing config. */
+		_coder->Append(_("HT - HTJ2K (Part 15): fastest, but not accepted by most players and QC tools"));
+		_coder->Append(_("MQ - classic JPEG 2000 (Part 1): what a DCP is specified to carry (default)"));
 		table->Add(_coder, 1, wxEXPAND);
+
+		auto coder_note = new StaticText(
+			_panel,
+			_("HTJ2K encodes about 3x faster, but JPEG 2000 Part 15 is not part of the DCI "
+			  "specification for digital cinema: deployed cinema servers do not decode it and "
+			  "third-party verifiers reject it. Use it for fast local previews and speed tests; "
+			  "use MQ for anything you intend to hand to a cinema or a QC house.")
+			);
+		coder_note->Wrap(400);
+		auto note_font = coder_note->GetFont();
+		note_font.SetStyle(wxFONTSTYLE_ITALIC);
+		coder_note->SetFont(note_font);
+		_panel->GetSizer()->Add(coder_note, 0, wxALL, _border);
 
 		add_label_to_sizer(table, _panel, _("Frame server socket"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
 		_socket = new wxTextCtrl(_panel, wxID_ANY);

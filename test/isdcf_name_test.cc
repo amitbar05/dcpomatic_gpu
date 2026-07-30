@@ -27,6 +27,7 @@
 
 #include "lib/audio_content.h"
 #include "lib/audio_mapping.h"
+#include "lib/config.h"
 #include "lib/content_factory.h"
 #include "lib/dcp_content_type.h"
 #include "lib/ffmpeg_content.h"
@@ -36,6 +37,7 @@
 #include "lib/text_content.h"
 #include "lib/video_content.h"
 #include "test.h"
+#include <boost/filesystem.hpp>
 #include <boost/test/unit_test.hpp>
 
 
@@ -256,17 +258,38 @@ BOOST_AUTO_TEST_CASE (isdcf_name_test)
 
 BOOST_AUTO_TEST_CASE(isdcf_name_with_atmos)
 {
+	/* See the comment in isdcf_name_with_ccap below: no subtitles here either,
+	 * so Territory's live fallback picks INT-TL.  A *directory-scoped*
+	 * ConfigRestorer (not the bare no-argument one) is required here: this
+	 * test's new_test_film() -> use_template() reads/creates Config's cached
+	 * "default.xml" template via a FRESH State::read_path()/write_path() call
+	 * every time, so if an earlier test in this binary used ANY ConfigRestorer
+	 * (even a bare one -- its destructor resets State::override_path to
+	 * boost::none, not back to the test sandbox), that lookup would silently
+	 * fall through to the real machine's ~/.config/dcpomatic2, picking up
+	 * whatever unrelated Studio/Facility state happens to be cached there. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/isdcf_name_with_atmos_config");
+
 	auto content = content_factory(TestPaths::private_data() / "atmos_asset.mxf");
 	auto film = new_test_film("isdcf_name_with_atmos", content);
 	film->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
 	film->set_name("Hello");
 
-	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-XX_MOS-IAB_2K_20230118_SMPTE_OV");
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-XX_INT-TL_MOS-IAB_2K_NULL_20230118_NUL_SMPTE_OV");
 }
 
 
 BOOST_AUTO_TEST_CASE(isdcf_name_with_ccap)
 {
+	/* Neither Studio, Facility nor Territory is set on this film, so the ISDCF
+	 * name gets the ISDCF-documented "no registered value" sentinels for the
+	 * first two (NULL / NUL) and, for Territory, the TD/TL fallback computed
+	 * live from the film's own subtitle state (here: a closed caption is
+	 * present, so INT-TD) -- see the comment in Film::isdcf_name().  See the
+	 * comment in isdcf_name_with_atmos above for why this needs a
+	 * directory-scoped ConfigRestorer rather than the bare one. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/isdcf_name_with_ccap_config");
+
 	auto content = content_factory("test/data/short.srt")[0];
 	auto film = new_test_film("isdcf_name_with_ccap", { content });
 	content->text[0]->set_use(true);
@@ -275,12 +298,15 @@ BOOST_AUTO_TEST_CASE(isdcf_name_with_ccap)
 	film->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
 	film->set_name("Hello");
 
-	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-DE-CCAP_MOS_2K_20230118_SMPTE_OV");
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-DE-CCAP_INT-TD_MOS_2K_NULL_20230118_NUL_SMPTE_OV");
 }
 
 
 BOOST_AUTO_TEST_CASE(isdcf_name_with_closed_subtitles)
 {
+	/* See the comments in isdcf_name_with_atmos/isdcf_name_with_ccap above. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/isdcf_name_with_closed_subtitles_config");
+
 	auto content = content_factory("test/data/short.srt")[0];
 	auto film = new_test_film("isdcf_name_with_closed_subtitles", { content });
 	content->text[0]->set_use(true);
@@ -289,15 +315,61 @@ BOOST_AUTO_TEST_CASE(isdcf_name_with_closed_subtitles)
 	film->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
 	film->set_name("Hello");
 
-	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-DE_MOS_2K_20230118_SMPTE_OV");
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-DE_INT-TD_MOS_2K_NULL_20230118_NUL_SMPTE_OV");
 }
 
 
 BOOST_AUTO_TEST_CASE(isdcf_name_with_accent)
 {
+	/* No subtitle content at all here, so Territory's live fallback picks
+	 * INT-TL rather than isdcf_name_with_ccap/closed_subtitles' INT-TD; see
+	 * the comment there, and see isdcf_name_with_atmos above for why this
+	 * needs a directory-scoped ConfigRestorer. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/isdcf_name_with_accent_config");
+
 	auto film = new_test_film("isdcf_name_test_with_accent");
 	film->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
 	film->set_name("BezüglichMeineKatze");
-	BOOST_CHECK_EQUAL(film->isdcf_name(false), "BezuglichMeine_TST-1_F_XX-XX_MOS_2K_20230118_SMPTE_OV");
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "BezuglichMeine_TST-1_F_XX-XX_INT-TL_MOS_2K_NULL_20230118_NUL_SMPTE_OV");
+}
+
+
+/** A completely bare film (no Territory, Studio or Facility set, and no
+ *  subtitle content) must still get a full, standard-correct 12-part ISDCF
+ *  name: Territory falls back to INT-TL (no subtitle language), and Studio
+ *  /Facility get the ISDCF-documented "no registered code" sentinels NULL
+ *  and NUL (registry-page.isdcf.com), rather than the pre-fix 9-part name
+ *  that silently omitted all three. */
+BOOST_AUTO_TEST_CASE(isdcf_name_full_twelve_parts_no_subtitles)
+{
+	/* See isdcf_name_with_atmos above for why this needs a directory-scoped
+	 * ConfigRestorer rather than the bare one. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/isdcf_name_full_twelve_parts_no_subtitles_config");
+
+	auto film = new_test_film("isdcf_name_full_twelve_parts_no_subtitles");
+	film->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
+	film->set_name("Hello");
+
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-XX_INT-TL_MOS_2K_NULL_20230118_NUL_SMPTE_OV");
+}
+
+
+/** As isdcf_name_full_twelve_parts_no_subtitles, but with a subtitle language
+ *  present: Territory's live fallback must pick INT-TD instead. */
+BOOST_AUTO_TEST_CASE(isdcf_name_full_twelve_parts_with_subtitles)
+{
+	/* See isdcf_name_with_atmos above for why this needs a directory-scoped
+	 * ConfigRestorer rather than the bare one. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/isdcf_name_full_twelve_parts_with_subtitles_config");
+
+	auto content = content_factory("test/data/short.srt")[0];
+	auto film = new_test_film("isdcf_name_full_twelve_parts_with_subtitles", { content });
+	content->text[0]->set_use(true);
+	content->text[0]->set_type(TextType::CLOSED_SUBTITLE);
+	content->text[0]->set_dcp_track(DCPTextTrack("Foo", dcp::LanguageTag("de-DE")));
+	film->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
+	film->set_name("Hello");
+
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-DE_INT-TD_MOS_2K_NULL_20230118_NUL_SMPTE_OV");
 }
 

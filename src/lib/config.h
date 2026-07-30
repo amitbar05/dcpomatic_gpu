@@ -265,6 +265,27 @@ public:
 		return _default_metadata;
 	}
 
+	/* Registered ISDCF Studio/Facility codes to seed new films with (Film::Film());
+	 * boost::none if the user has never set one.  Backed by the same
+	 * _default_metadata map that default_metadata() exposes (keys "studio" /
+	 * "facility"), so an organisation with a real registered code only ever
+	 * has to type it once. */
+	boost::optional<std::string> default_studio() const {
+		auto i = _default_metadata.find("studio");
+		if (i == _default_metadata.end()) {
+			return boost::optional<std::string>();
+		}
+		return i->second;
+	}
+
+	boost::optional<std::string> default_facility() const {
+		auto i = _default_metadata.find("facility");
+		if (i == _default_metadata.end()) {
+			return boost::optional<std::string>();
+		}
+		return i->second;
+	}
+
 	bool upload_after_make_dcp() {
 		return _upload_after_make_dcp;
 	}
@@ -684,8 +705,20 @@ public:
 
 		/** encode J2K frames on the GPU via the Slang frame server */
 		bool enable = false;
-		/** Tier-1 block coder: "ht" (HTJ2K, the fast default) or "mq" */
-		std::string coder = "ht";
+		/** Tier-1 block coder: "mq" (classic JPEG 2000 Part 1, the default)
+		 *  or "ht" (HTJ2K, Part 15 -- much faster, but see below).
+		 *
+		 *  The default was "ht" from 2026-07-16 until 2026-07-30.  It is "mq"
+		 *  again because Part 15 is not what a DCI DCP is specified to carry:
+		 *  SMPTE ST 429-4 has no HTJ2K provision (its maintenance revision is
+		 *  approved but unpublished), HTJ2K's standardised SMPTE home is IMF
+		 *  (ST 2067-21 App 2E), and no DCI addendum admitting it into a DCP
+		 *  could be found.  In practice a third-party verifier rejected a real
+		 *  HT export from this stack, deployed cinema servers do not decode
+		 *  Part 15, and asdcplib labels the essence as Part-1 2K/4K whatever it
+		 *  actually is (see REVIEW_FOLLOWUP.md's A22).  HT remains one setting
+		 *  away for speed work; the picker says plainly what it costs. */
+		std::string coder = "mq";
 		/** Unix socket of the frame server (frame_server.py) */
 		std::string socket = "/tmp/j2k_frames.sock";
 		/** analyse the mix on the GPU before encoding and normalize gain
@@ -869,6 +902,45 @@ public:
 
 	void unset_default_audio_language() {
 		maybe_set(_default_audio_language, boost::optional<dcp::LanguageTag>());
+	}
+
+	void set_default_studio(std::string s) {
+		/* Look up with find() rather than operator[]: operator[] would insert
+		 * an empty "studio" entry as a side effect of just reading it for the
+		 * comparison below, which would make default_studio() start returning
+		 * "" instead of boost::none even on a no-op call. */
+		auto i = _default_metadata.find("studio");
+		if (i != _default_metadata.end() && i->second == s) {
+			return;
+		}
+		_default_metadata["studio"] = s;
+		changed();
+	}
+
+	void unset_default_studio() {
+		if (_default_metadata.find("studio") == _default_metadata.end()) {
+			return;
+		}
+		_default_metadata.erase("studio");
+		changed();
+	}
+
+	void set_default_facility(std::string s) {
+		/* See the note in set_default_studio() above. */
+		auto i = _default_metadata.find("facility");
+		if (i != _default_metadata.end() && i->second == s) {
+			return;
+		}
+		_default_metadata["facility"] = s;
+		changed();
+	}
+
+	void unset_default_facility() {
+		if (_default_metadata.find("facility") == _default_metadata.end()) {
+			return;
+		}
+		_default_metadata.erase("facility");
+		changed();
 	}
 
 	void set_upload_after_make_dcp(bool u) {

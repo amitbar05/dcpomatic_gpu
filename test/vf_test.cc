@@ -25,6 +25,7 @@
  */
 
 
+#include "lib/config.h"
 #include "lib/content_factory.h"
 #include "lib/dcp_content.h"
 #include "lib/dcp_content_type.h"
@@ -48,6 +49,7 @@
 #include <dcp/reel_smpte_text_asset.h>
 #include <dcp/smpte_text_asset.h>
 #include <dcp/text_string.h>
+#include <boost/filesystem.hpp>
 #include <boost/test/unit_test.hpp>
 #include <iostream>
 
@@ -521,6 +523,17 @@ BOOST_AUTO_TEST_CASE(test_referencing_ov_with_missing_subtitle_in_some_reels)
 /* Test bug #2703: a VF that refers to some OV subs does not get the correct subtitle language in the ISDCF name */
 BOOST_AUTO_TEST_CASE(ov_subs_in_vf_name)
 {
+	/* Directory-scoped, not the bare ConfigRestorer: new_test_film() below
+	 * reads/creates Config's cached "default.xml" template via a FRESH
+	 * State::read_path()/write_path() call every time, so if an earlier test
+	 * in this binary used ANY ConfigRestorer (even a bare one -- its
+	 * destructor resets State::override_path to boost::none, not back to the
+	 * test sandbox), that lookup would silently fall through to the real
+	 * machine's ~/.config/dcpomatic2 and the expected isdcf_name below (which
+	 * assumes the ISDCF Studio/Facility sentinels from a fresh Config) would
+	 * not match. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/ov_subs_in_vf_name_config");
+
 	auto subs = content_factory("test/data/short.srt")[0];
 	auto ov = new_test_film("ov_subs_in_vf_name_ov", { subs });
 	ov->set_audio_channels(8);
@@ -539,7 +552,11 @@ BOOST_AUTO_TEST_CASE(ov_subs_in_vf_name)
 	ov_dcp->set_reference_text(TextType::OPEN_SUBTITLE, true);
 	vf->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
 
-	BOOST_CHECK_EQUAL(vf->isdcf_name(false), "Foo_TST-1_F_XX-DE_51-HI-VI_2K_20230118_SMPTE_VF");
+	/* No Territory/Studio/Facility set on this film: Territory's live fallback
+	 * picks INT-TD (a subtitle language, DE, is present via the referenced OV
+	 * text) and Studio/Facility get the ISDCF "no registered code" sentinels
+	 * NULL/NUL -- see the comment in Film::isdcf_name(). */
+	BOOST_CHECK_EQUAL(vf->isdcf_name(false), "Foo_TST-1_F_XX-DE_INT-TD_51-HI-VI_2K_NULL_20230118_NUL_SMPTE_VF");
 }
 
 

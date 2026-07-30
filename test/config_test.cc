@@ -579,4 +579,48 @@ BOOST_AUTO_TEST_CASE(use_sqlite_if_present)
 }
 
 
+/** DefaultMetadata (which backs default_studio()/default_facility()) had a
+ *  read side (a loop over <DefaultMetadata key="..."> children) but nothing
+ *  ever wrote it back out, so a value set here was silently dropped on the
+ *  very next config save -- the same class of bug already found for
+ *  DefaultTerritory.  Prove the round trip actually survives a real
+ *  save-then-reload, not just by reading the code.
+ */
+BOOST_AUTO_TEST_CASE(default_studio_and_facility_config_round_trip_test)
+{
+	auto const dir = boost::filesystem::current_path() / "build/test/default_studio_and_facility_config_round_trip_test";
+	ConfigRestorer cr(dir);
+	boost::filesystem::remove_all(dir);
+	boost::filesystem::create_directories(dir);
+
+	BOOST_CHECK(!Config::instance()->default_studio());
+	BOOST_CHECK(!Config::instance()->default_facility());
+
+	Config::instance()->set_default_studio("ABCD");
+	Config::instance()->set_default_facility("XYZ");
+	Config::instance()->write();
+
+	/* Force a real reload from disk, rather than just reading back the
+	 * in-memory value we just set. */
+	Config::drop();
+
+	BOOST_REQUIRE(Config::instance()->default_studio());
+	BOOST_CHECK_EQUAL(*Config::instance()->default_studio(), "ABCD");
+	BOOST_REQUIRE(Config::instance()->default_facility());
+	BOOST_CHECK_EQUAL(*Config::instance()->default_facility(), "XYZ");
+
+	/* And that unsetting one leaves the other alone, and that the unset also
+	 * survives a round trip. */
+	Config::instance()->unset_default_studio();
+	Config::instance()->write();
+	Config::drop();
+
+	BOOST_CHECK(!Config::instance()->default_studio());
+	BOOST_REQUIRE(Config::instance()->default_facility());
+	BOOST_CHECK_EQUAL(*Config::instance()->default_facility(), "XYZ");
+
+	Config::instance()->unset_default_facility();
+}
+
+
 

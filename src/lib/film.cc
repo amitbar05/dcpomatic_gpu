@@ -212,12 +212,18 @@ Film::Film(optional<boost::filesystem::path> dir)
 	if (metadata.find("distributor") != metadata.end()) {
 		_distributor = metadata["distributor"];
 	}
-	if (metadata.find("facility") != metadata.end()) {
-		_facility = metadata["facility"];
-	}
-	if (metadata.find("studio") != metadata.end()) {
-		_studio = metadata["studio"];
-	}
+	/* Studio and Facility have no derivable ground truth (unlike e.g. Territory,
+	 * which isdcf_name() computes live from the film's own subtitle state) -- a
+	 * brand-new film always gets a value for them, from Config if the user has
+	 * set one, or the ISDCF-documented "no registered code" sentinel otherwise
+	 * (registry-page.isdcf.com: Studio -> "NULL", Facility -> "NUL"), so the
+	 * ISDCF name is never missing these two parts.  A film loaded from an
+	 * existing metadata.xml has this default overwritten by read_metadata()
+	 * (even to boost::none, if the tag is absent there) -- see the comment
+	 * there -- so this default only ever shows through for a film that was
+	 * never loaded from disk. */
+	_facility = Config::instance()->default_facility().value_or(string("NUL"));
+	_studio = Config::instance()->default_studio().value_or(string("NULL"));
 
 	_video_bit_rate[VideoEncoding::JPEG2000] = std::min(static_cast<int64_t>(150000000), Config::instance()->maximum_video_bit_rate(VideoEncoding::JPEG2000));
 	_video_bit_rate[VideoEncoding::MPEG2] = std::min(static_cast<int64_t>(5000000), Config::instance()->maximum_video_bit_rate(VideoEncoding::MPEG2));
@@ -801,6 +807,11 @@ Film::read_metadata(optional<boost::filesystem::path> path)
 
 	_chain = f.optional_string_child("Chain");
 	_distributor = f.optional_string_child("Distributor");
+	/* Unconditional, and to boost::none (via optional_string_child) when the tag
+	 * is absent: this must NOT leave the constructor's NULL/NUL default (see
+	 * Film::Film()) standing for a film loaded from an existing metadata.xml
+	 * that predates it, or an old project would retroactively gain those
+	 * sentinels in its ISDCF name the next time it's opened. */
 	_facility = f.optional_string_child("Facility");
 	_studio = f.optional_string_child("Studio");
 	_temp_version = f.optional_bool_child("TempVersion").get_value_or(false);
@@ -1174,6 +1185,12 @@ Film::isdcf_name(bool if_created_now) const
 	bool closed_caption = false;
 	auto const closed_langs = closed_text_languages(&closed_caption);
 
+	/* Also used below, for the Territory/Rating part's TD/TL fallback: true iff
+	 * the film currently carries a subtitle (open or closed) language, i.e. iff
+	 * the block above is about to add anything other than the plain "-XX" of
+	 * "no subtitles". */
+	bool has_text_language = false;
+
 	if (open_langs.first && open_langs.first->language()) {
 		auto lang = entry_for_language(*open_langs.first);
 		if (burnt_in) {
@@ -1186,11 +1203,13 @@ Film::isdcf_name(bool if_created_now) const
 		if (open_caption) {
 			isdcf_name += "-OCAP";
 		}
+		has_text_language = true;
 	} else if (!closed_langs.empty()) {
 		isdcf_name += "-" + to_upper(entry_for_language(closed_langs[0]));
 		if (closed_caption) {
 			isdcf_name += "-CCAP";
 		}
+		has_text_language = true;
 	} else {
 		/* No subtitles */
 		isdcf_name += "-XX";
@@ -1209,6 +1228,17 @@ Film::isdcf_name(bool if_created_now) const
 			boost::erase_all(label, "-");
 			isdcf_name += "-" + label;
 		}
+	} else {
+		/* Neither an explicit territory type (International Texted/Textless)
+		 * nor a specific release territory has been set -- the state every new
+		 * Film starts in.  The ISDCF name must not simply omit this part (see
+		 * registry-page.isdcf.com): fall back to the TD/TL sentinel that
+		 * matches the film's own current subtitle state, computed live from
+		 * the SAME check the Language part above just made (rather than a
+		 * stored/cached flag) so this can never go stale as text content is
+		 * added or removed later.  Any EXPLICIT choice above (a real region,
+		 * or an explicit Texted/Textless pick) is untouched by this branch. */
+		isdcf_name += has_text_language ? "_INT-TD" : "_INT-TL";
 	}
 
 	/* Count mapped audio channels */
@@ -2744,8 +2774,13 @@ Film::use_template(optional<string> name)
 	_reel_length = _template_film->_reel_length;
 	_chain = _template_film->_chain;
 	_distributor = _template_film->_distributor;
-	_facility = _template_film->_facility;
-	_studio = _template_film->_studio;
+	/* _facility and _studio are deliberately NOT copied from the template, for
+	 * the same reason _audio_language never has been: they are seeded fresh
+	 * from Config in the constructor (Config::default_facility()/default_studio()),
+	 * and the "no template chosen" case reads a cached default.xml that was
+	 * snapshotted once, the first time any film was ever made in this config
+	 * profile -- overwriting the constructor's live Config read with it would
+	 * silently freeze out any later change to the Preferences default. */
 	_territory_type = _template_film->_territory_type;
 	_release_territory = _template_film->_release_territory;
 }

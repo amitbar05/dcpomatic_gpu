@@ -26,6 +26,7 @@
 
 
 #include "lib/check_content_job.h"
+#include "lib/config.h"
 #include "lib/content.h"
 #include "lib/content_factory.h"
 #include "lib/dcp_content.h"
@@ -41,6 +42,7 @@
 #include <boost/date_time.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/test/unit_test.hpp>
+#include <fstream>
 
 
 using std::string;
@@ -66,6 +68,12 @@ BOOST_AUTO_TEST_CASE (film_metadata_test)
 	film->set_chain (string(""));
 	film->set_distributor (string(""));
 	film->set_facility (string(""));
+	/* This test is about general metadata round-tripping, not about the
+	 * Config-derived Studio default a new Film now gets (see
+	 * film_default_studio_and_facility_test) -- force it back to unset so the
+	 * golden file below (which predates that feature and has no <Studio> tag
+	 * at all) still matches. */
+	film->set_studio(boost::none);
 	film->set_release_territory (dcp::LanguageTag::RegionSubtag("US"));
 	film->set_audio_channels(6);
 	film->write_metadata ();
@@ -168,6 +176,92 @@ BOOST_AUTO_TEST_CASE (metadata_loads_from_2_14_x_3)
 	BOOST_REQUIRE_EQUAL (film->two_d_version_of_three_d(), true);
 	BOOST_REQUIRE_EQUAL (film->chain().get_value_or(""), "214chain");
 	BOOST_REQUIRE (film->luminance() == dcp::Luminance(14, dcp::Luminance::Unit::FOOT_LAMBERT));
+}
+
+
+/** Film::Film() seeds a brand-new film's Studio/Facility with a Config-derived
+ *  default (see film_default_studio_and_facility_test in film_test.cc).  A
+ *  project saved by an older DCP-o-matic, whose metadata.xml simply never
+ *  mentions <Studio>, <Facility>, <TerritoryType> or <ReleaseTerritory> at
+ *  all, must NOT retroactively pick up that new default (or the live
+ *  Territory fallback's sentinel-shaped cousin) just because it's opened
+ *  again: read_metadata() must overwrite the constructor's default
+ *  unconditionally, all the way to boost::none, when a tag is absent.
+ *
+ *  This is a hand-constructed fixture, not one of the real 2.14.x captures
+ *  above: those all happen to carry an (empty-but-present) <ISDCFMetadata>
+ *  block with <Studio>/<Facility> tags in it, which isn't the case this test
+ *  needs to cover -- a file with no trace of those tags anywhere.
+ */
+BOOST_AUTO_TEST_CASE(old_project_without_studio_facility_tags_keeps_old_isdcf_name)
+{
+	ConfigRestorer cr;
+	/* A registered default would make this Film's own construction pick up a
+	 * non-NULL/NUL value too, which would defeat the point of this test --
+	 * make sure there isn't one, regardless of what earlier tests in this
+	 * binary might have left behind in the process-wide Config singleton. */
+	Config::instance()->unset_default_studio();
+	Config::instance()->unset_default_facility();
+
+	namespace fs = boost::filesystem;
+	auto dir = fs::path("build/test/old_project_without_studio_facility_tags");
+	fs::remove_all(dir);
+	fs::create_directories(dir);
+
+	{
+		std::ofstream f((dir / "metadata.xml").string().c_str());
+		f <<
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+			"<Metadata>\n"
+			"  <Version>39</Version>\n"
+			"  <Name>OldProject</Name>\n"
+			"  <UseISDCFName>1</UseISDCFName>\n"
+			"  <ISDCFDate>20200101</ISDCFDate>\n"
+			"  <DCPContentType>TST</DCPContentType>\n"
+			"  <Container>185</Container>\n"
+			"  <Resolution>2K</Resolution>\n"
+			"  <J2KBandwidth>150000000</J2KBandwidth>\n"
+			"  <VideoFrameRate>24</VideoFrameRate>\n"
+			"  <AudioChannels>6</AudioChannels>\n"
+			"  <ThreeD>0</ThreeD>\n"
+			"  <Sequence>1</Sequence>\n"
+			"  <Interop>0</Interop>\n"
+			"  <Encrypted>0</Encrypted>\n"
+			"  <Key>8ef1bd64de5306314046118b277fd07a</Key>\n"
+			"  <ReelType>0</ReelType>\n"
+			"  <ReelLength>2000000000</ReelLength>\n"
+			"  <ReencodeJ2K>0</ReencodeJ2K>\n"
+			"  <UserExplicitVideoFrameRate>0</UserExplicitVideoFrameRate>\n"
+			"  <Playlist>\n"
+			"  </Playlist>\n"
+			"</Metadata>\n";
+	}
+
+	/* This Film's constructor runs first -- seeding _studio/_facility with the
+	 * Config-derived NULL/NUL sentinel, exactly like film_default_studio_and_facility_test
+	 * proves for a genuinely new film -- and THEN read_metadata() must overwrite
+	 * that back to boost::none, since the file has no <Studio>/<Facility> tags. */
+	auto film = make_shared<Film>(dir);
+	film->read_metadata();
+
+	BOOST_CHECK(!film->studio());
+	BOOST_CHECK(!film->facility());
+
+	/* Territory has no stored Film member at all (by design -- see
+	 * Film::isdcf_name()): it's computed live from the film's own content on
+	 * every call, with no notion of "new" vs "old" project.  An old project
+	 * with no <TerritoryType>/<ReleaseTerritory> tags lands in exactly the
+	 * same "SPECIFIC, no release territory" state a brand new film starts in,
+	 * so it correctly gets the SAME live TD/TL fallback a new film would --
+	 * that is the intended, universally-applied part of this fix (Territory
+	 * has a derivable ground truth; Studio/Facility do not).  This fixture has
+	 * no subtitle content, so it resolves to INT-TL.  The result is therefore
+	 * a 10-part name: the pre-fix 9 parts, PLUS the now-always-present
+	 * Territory segment, with Studio and Facility still correctly omitted. */
+	BOOST_CHECK_EQUAL(
+		film->isdcf_name(false),
+		"OldProject_TST-1_F_XX-XX_INT-TL_MOS_2K_20200101_SMPTE_OV"
+		);
 }
 
 

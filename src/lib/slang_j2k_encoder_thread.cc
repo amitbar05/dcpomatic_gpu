@@ -328,6 +328,18 @@ SlangJ2KEncoderThread::encode_locked(DCPVideo const& frame)
 					if (rc == 0) {
 						verify_encode_contract(data, frame);
 						_backoff = 0;
+						/* A frame came back, so the socket is alive: clear the
+						 * consecutive-transport-failure count exactly as the
+						 * classic path below does.  Without this the counter is
+						 * only ever reset by a frame that took the CLASSIC
+						 * path, while this RGB48/shm path is the normal one for
+						 * a real export -- so transport blips accumulated
+						 * across the whole run and a long export could abort
+						 * with "could not reach the GPU frame server for 30
+						 * frames in a row" after 30 non-consecutive failures.
+						 * The member's own doc comment already promised "reset
+						 * only by a frame that actually came back". */
+						_consecutive_transport_failures = 0;
 						return make_shared<dcp::ArrayData>(data.data(), static_cast<int>(data.size()));
 					}
 					if (rc > 0) {
