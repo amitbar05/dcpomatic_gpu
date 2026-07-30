@@ -262,34 +262,16 @@ J2KEncoder::end()
 
 	LOG_GENERAL(N_("Mopping up {}"), _queue.size());
 
-#ifdef DCPOMATIC_SLANG
-	/* A8: the mop-up loop below encodes any leftover frames locally with
-	 * OpenJPEG (Part-1/MQ).  When the Slang GPU path is active with the HT
-	 * coder, that would inject Part-1 essence into an HTJ2K reel MXF and
-	 * corrupt the track.  The Slang encoder thread has already been terminated
-	 * above, so we can no longer re-dispatch these frames to it; fail loudly
-	 * rather than ship a mixed-essence MXF.  (If HETERO forced the coder to MQ
-	 * (A9), local encoding is correct and the mop-up proceeds normally.  If
-	 * Grok is handling the queue, the loop routes frames to it, not to local
-	 * encoding, so this does not apply.) */
-	{
-		bool grok_handling = false;
-#ifdef DCPOMATIC_GROK
-		grok_handling = Config::instance()->grok().enable;
-#endif
-		if (!_queue.empty() && !grok_handling && slang_path_enabled() && slang_effective_coder() == "ht") {
-			try {
-				throw EncodeError(fmt::format(
-					N_("GPU (Slang) HT encode left {} frame(s) un-encoded at the end of the run; refusing to encode them with OpenJPEG (Part-1) as that would corrupt the HTJ2K reel."),
-					_queue.size()
-					));
-			} catch (...) {
-				store_encode_thread_exception();
-				throw;
-			}
-		}
-	}
-#endif
+	/* An "A8" guard used to sit here: while the Slang GPU path could run the HT
+	   (JPEG 2000 Part 15) block coder, the mop-up loop below -- which encodes
+	   whatever is left in the queue locally with OpenJPEG, i.e. Part 1 -- would
+	   have spliced Part-1 frames into an HTJ2K reel MXF, so it refused to run
+	   and failed the export instead.  The HT coder was removed from this
+	   integration on 2026-07-31 (Part 15 is not what a DCI DCP carries) and MQ
+	   (Part 1) is now the only coder, so the local mop-up produces the same
+	   codestream family the GPU threads do and there is nothing left to
+	   protect.  Anything that ever reintroduces a second coder has to
+	   reintroduce this guard with it. */
 
 	/* The following sequence of events can occur in the above code:
 	     1. a remote worker takes the last image off the queue
@@ -536,16 +518,14 @@ J2KEncoder::remake_threads(int cpu, int gpu, list<EncodeServerDescription> serve
 		if (pos < s.size()) sockets.push_back(s.substr(pos));
 		if (sockets.empty()) sockets.push_back("/tmp/j2k_frames.sock");
 	}
-	/* A9: heterogeneous CPU+GPU encoding (DCPOMATIC_SLANG_HETERO) shares one
-	 * reel MXF between the OpenJPEG (Part-1/MQ) CPU threads and the Slang GPU
-	 * thread(s).  slang_effective_coder() forces MQ in that case so the whole
-	 * track is consistent Part-1 essence rather than a mix of HT + Part-1. */
-	auto const slang_coder = slang_effective_coder();
-	if (slang_coder != slang_config.coder) {
-		LOG_WARNING(N_("DCPOMATIC_SLANG_HETERO is set: forcing the Slang coder from '{}' to '{}' so CPU (OpenJPEG/Part-1) and GPU threads produce consistent essence in the shared reel MXF."), slang_config.coder, slang_coder);
-	}
+	/* An "A9" hunk used to sit here forcing the block coder to MQ under
+	 * DCPOMATIC_SLANG_HETERO, because that mode shares one reel MXF between the
+	 * OpenJPEG (Part-1) CPU threads and the Slang GPU thread(s) and an HT
+	 * (Part-15) GPU thread would have made the track a mix of two codestream
+	 * families.  The HT coder was removed on 2026-07-31, so every producer of
+	 * that shared MXF is Part 1 unconditionally and there is nothing to force. */
 	for (auto i = current_slang_threads; i < gpu; ++i) {
-		auto thread = make_shared<SlangJ2KEncoderThread>(*this, sockets[i % sockets.size()], slang_coder);
+		auto thread = make_shared<SlangJ2KEncoderThread>(*this, sockets[i % sockets.size()]);
 		thread->start();
 		_threads.push_back(thread);
 	}

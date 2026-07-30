@@ -261,22 +261,26 @@ public:
 		return shm_request("J2KH", H, W, index, out);
 	}
 
-	/** Per-connection options ("J2KO", 2026-07-16): select the Tier-1 block
-	 *  coder ("ht" — the server default — or "mq") and/or override the
-	 *  server's startup bitrate/fps with the film's real values. Empty
-	 *  coder / non-positive numbers are omitted. Re-send after any
-	 *  reconnect (per-connection state, like the colour tables).
+	/** Per-connection options ("J2KO", 2026-07-16): override the server's
+	 *  startup bitrate/fps with the film's real values. Non-positive numbers
+	 *  are omitted. Re-send after any reconnect (per-connection state, like
+	 *  the colour tables).
+	 *
+	 *  It used to carry a "coder=ht|mq" key as well. The HT (JPEG 2000
+	 *  Part 15) coder was removed on 2026-07-31 — a DCP may not carry Part 15
+	 *  — so MQ is the only coder and the key is simply not sent. The server
+	 *  still ACCEPTS "coder=mq" as a deprecated no-op, so an older client
+	 *  binary keeps working against a current server; a current client against
+	 *  an older server just leaves that server on its own default coder, which
+	 *  slang_j2k_encoder_thread.cc's per-frame Rsiz check then arbitrates on
+	 *  the output bytes.
+	 *
 	 *  Same return convention as encode(); a pre-2026-07-16 server drops
 	 *  the connection on the unknown magic (-1), a refusing server answers
-	 *  a structured error (>0) and keeps its defaults — treat both as
-	 *  non-fatal (log + continue with server defaults). */
-	int set_options(std::string const& coder, double bitrate_mbps, int fps,
-			std::vector<uint8_t>& out)
+	 *  a structured error (>0) and keeps its defaults. */
+	int set_options(double bitrate_mbps, int fps, std::vector<uint8_t>& out)
 	{
 		std::string p;
-		if (!coder.empty()) {
-			p += "coder=" + coder + "\n";
-		}
 		if (bitrate_mbps > 0) {
 			char b[64];
 			snprintf(b, sizeof(b), "bitrate_mbps=%.6g\n", bitrate_mbps);

@@ -2040,14 +2040,14 @@ SlangSimplePanel::update_video_card()
 	}
 	_video_summary->SetLabel(summary);
 
-	auto const slang = Config::instance()->slang();
+	/* JPEG 2000 Part 1 unconditionally: this used to name the configured
+	 * MQ/HT coder, and the HT (Part 15) one was removed on 2026-07-31. */
 	auto const rate_mbps = _film->video_bit_rate(VideoEncoding::JPEG2000) / 1000000;
 	_video_encoding->SetLabel(
 		wxString::Format(
-			_("DCP: %d x %d, %d Mb/s, GPU %s coder"),
+			_("DCP: %d x %d, %d Mb/s, JPEG 2000 on the GPU"),
 			_film->frame_size().width, _film->frame_size().height,
-			static_cast<int>(rate_mbps),
-			slang.coder == "mq" ? char_to_wx("MQ") : char_to_wx("HT")
+			static_cast<int>(rate_mbps)
 			)
 		);
 

@@ -31,13 +31,8 @@ class SlangFrameClient;
 class SlangJ2KEncoderThread : public J2KSyncEncoderThread
 {
 public:
-	/** @param socket_path Unix-domain socket the frame server listens on.
-	 *  @param coder Tier-1 block coder to request from the server for this
-	 *  connection ("mq" — the default, and the only coder a cinema server
-	 *  decodes — or "ht", which is faster but is JPEG 2000 Part 15; the
-	 *  Preferences picker). Empty = leave the server's own default in
-	 *  charge. */
-	SlangJ2KEncoderThread(J2KEncoder& encoder, std::string socket_path, std::string coder = "");
+	/** @param socket_path Unix-domain socket the frame server listens on. */
+	SlangJ2KEncoderThread(J2KEncoder& encoder, std::string socket_path);
 	~SlangJ2KEncoderThread();
 
 	void log_thread_start() const override;
@@ -67,11 +62,11 @@ private:
 	 * generation they were installed (reconnect ⇒ the server forgot them). */
 	std::string _tables_id;
 	uint64_t _tables_generation = 0;
-	/* J2KO per-connection options (coder + the film's bitrate/fps): resent
-	 * once per connection generation, like the colour tables. Sticky off
-	 * after a transport failure (a pre-J2KO server drops the connection on
-	 * the unknown magic — everything still works on its defaults). */
-	std::string _coder;
+	/* J2KO per-connection options (the film's bitrate/fps): resent once per
+	 * connection generation, like the colour tables. Sticky off after a
+	 * transport failure (a pre-J2KO server drops the connection on the unknown
+	 * magic — everything still works on its startup defaults, which the
+	 * per-frame size check in verify_encode_contract then arbitrates). */
 	uint64_t _options_generation = 0;
 	bool _options_disabled = false;
 	/** consecutive J2KO transport failures; sticky-disable only after 2 so a

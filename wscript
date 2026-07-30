@@ -754,8 +754,8 @@ def build(bld):
     # Same story for the Slang GPU integration's header-only preferences page.
     bld.add_manual_dependency(bld.path.find_node('src/wx/full_config_dialog.cc'), bld.path.find_node('src/wx/slang_gpu_config_panel.h'))
 
-    # ...and its header-only coder-picker dialog, included by the main tool.
-    bld.add_manual_dependency(bld.path.find_node('src/tools/dcpomatic.cc'), bld.path.find_node('src/wx/slang_coder_dialog.h'))
+    # ...and its header-only GPU-export confirmation dialog, included by the main tool.
+    bld.add_manual_dependency(bld.path.find_node('src/tools/dcpomatic.cc'), bld.path.find_node('src/wx/slang_gpu_export_dialog.h'))
 
     # ...and the header-only look-and-feel toolkit the simplified interface is
     # drawn with, which has no .cc of its own to hang the dependency off.

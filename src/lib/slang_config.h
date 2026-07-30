@@ -24,38 +24,33 @@
 
 #ifdef DCPOMATIC_SLANG
 
-#include <string>
-
 
 /** @file src/lib/slang_config.h
- *  @brief The two questions "is the Slang GPU encoder on?" and "which block
- *  coder will it use?", answered in ONE place.
+ *  @brief The question "is the Slang GPU encoder on?", answered in ONE place.
  *
- *  These used to be answered twice with different expressions. J2KEncoder tested
- *  `getenv("DCPOMATIC_SLANG") != nullptr || config->slang().enable` and applied
- *  DCPOMATIC_SLANG_HETERO's forced "mq", while Film::video_identifier() and
- *  Writer::can_fake_write() tested only `config->slang().enable`. Running with
- *  the documented env switch and the config flag off therefore encoded HTJ2K
- *  (Part 15) frames under an identifier that did not mention Slang at all, so a
- *  killed export resumed on the plain CPU path matched the same identifier,
- *  adopted the half-written MXF and appended Part-1 frames to Part-15 ones --
- *  one picture asset, one descriptor, two codestream families, and
- *  verify_encode_contract blind to it because it only sees frames it encodes.
+ *  It used to be answered twice with different expressions. J2KEncoder tested
+ *  `getenv("DCPOMATIC_SLANG") != nullptr || config->slang().enable`, while
+ *  Film::video_identifier() and Writer::can_fake_write() tested only
+ *  `config->slang().enable`. Running with the documented env switch and the
+ *  config flag off therefore encoded GPU frames under an identifier that did not
+ *  mention Slang at all, so a killed export resumed on the plain CPU path
+ *  matched the same identifier, adopted the half-written MXF and appended
+ *  locally-encoded frames to GPU-encoded ones -- one picture asset, one
+ *  descriptor, two producers, and verify_encode_contract blind to it because it
+ *  only sees frames it encodes.
  *
- *  Any second copy of either test will drift the same way; call these instead.
+ *  Any second copy of the test will drift the same way; call this instead.
+ *
+ *  There used to be a second function here, slang_effective_coder(), returning
+ *  "ht" or "mq".  The HTJ2K (JPEG 2000 Part 15) coder was removed from this
+ *  integration on 2026-07-31: Part 15 is not what a DCI DCP is specified to
+ *  carry, so MQ (Part 1) is now the only coder and there is nothing to select.
  */
 
 /** @return true if the Slang GPU encode path will be used, from either switch
  *  (Preferences -> GPU (Slang), or the DCPOMATIC_SLANG env var).
  */
 bool slang_path_enabled();
-
-/** @return the block coder the Slang path will ACTUALLY use ("ht" or "mq"),
- *  i.e. the configured one unless DCPOMATIC_SLANG_HETERO forces "mq" (the
- *  heterogeneous CPU+GPU mode mixes in CPU-encoded Part-1 frames, so the whole
- *  reel has to be Part-1). Never persisted back to Config.
- */
-std::string slang_effective_coder();
 
 #endif
 

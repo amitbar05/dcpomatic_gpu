@@ -1814,19 +1814,18 @@ Config::Slang::Slang() = default;
 
 Config::Slang::Slang(cxml::ConstNodePtr node)
 	: enable(node->optional_bool_child("Enable").get_value_or(false))
-	, coder(node->optional_string_child("Coder").get_value_or("mq"))
 	, socket(node->optional_string_child("Socket").get_value_or("/tmp/j2k_frames.sock"))
 	, auto_gain(node->optional_bool_child("AutoGain").get_value_or(true))
 	, smart_center(node->optional_bool_child("SmartCentre").get_value_or(true))
 	, match_source_bitrate(node->optional_bool_child("MatchSourceBitrate").get_value_or(true))
 	, simple_ui(node->optional_bool_child("SimpleUI").get_value_or(false))
 {
-	if (coder != "ht" && coder != "mq") {
-		/* An unreadable value falls back to the coder a DCP is specified to
-		 * carry, not the fast one: a corrupt/hand-edited config must not be
-		 * able to silently produce Part-15 essence.  See Config::Slang::coder. */
-		coder = "mq";
-	}
+	/* A config written before 2026-07-31 carries <Coder>mq</Coder> or
+	 * <Coder>ht</Coder>.  It is deliberately NOT read: HTJ2K (Part 15) is gone
+	 * from this integration and MQ is the only coder, so there is nothing the
+	 * old value could select.  Nothing calls cxml's done() on this node, so an
+	 * unrecognised child is ignored rather than an error -- a legacy config
+	 * loads silently and as_xml() below drops the element on the next save. */
 }
 
 
@@ -1834,7 +1833,6 @@ void
 Config::Slang::as_xml(xmlpp::Element* node) const
 {
 	cxml::add_text_child(node, "Enable", enable ? "1" : "0");
-	cxml::add_text_child(node, "Coder", coder);
 	cxml::add_text_child(node, "Socket", socket);
 	cxml::add_text_child(node, "AutoGain", auto_gain ? "1" : "0");
 	cxml::add_text_child(node, "SmartCentre", smart_center ? "1" : "0");

@@ -705,20 +705,19 @@ public:
 
 		/** encode J2K frames on the GPU via the Slang frame server */
 		bool enable = false;
-		/** Tier-1 block coder: "mq" (classic JPEG 2000 Part 1, the default)
-		 *  or "ht" (HTJ2K, Part 15 -- much faster, but see below).
-		 *
-		 *  The default was "ht" from 2026-07-16 until 2026-07-30.  It is "mq"
-		 *  again because Part 15 is not what a DCI DCP is specified to carry:
-		 *  SMPTE ST 429-4 has no HTJ2K provision (its maintenance revision is
-		 *  approved but unpublished), HTJ2K's standardised SMPTE home is IMF
-		 *  (ST 2067-21 App 2E), and no DCI addendum admitting it into a DCP
-		 *  could be found.  In practice a third-party verifier rejected a real
-		 *  HT export from this stack, deployed cinema servers do not decode
-		 *  Part 15, and asdcplib labels the essence as Part-1 2K/4K whatever it
-		 *  actually is (see REVIEW_FOLLOWUP.md's A22).  HT remains one setting
-		 *  away for speed work; the picker says plainly what it costs. */
-		std::string coder = "mq";
+		/* There used to be a `coder` member here ("mq" or "ht"), with a
+		 * Preferences picker and an export-time dialog to set it.  The HTJ2K
+		 * (JPEG 2000 Part 15) coder was removed from this integration on
+		 * 2026-07-31: Part 15 is not what a DCI DCP is specified to carry.
+		 * SMPTE ST 429-4 has no HTJ2K provision (its maintenance revision is
+		 * approved but unpublished), HTJ2K's standardised SMPTE home is IMF
+		 * (ST 2067-21 App 2E), no DCI addendum admitting it into a DCP could be
+		 * found, a third-party verifier rejected a real HT export from this
+		 * stack, deployed cinema servers do not decode Part 15, and asdcplib
+		 * labels the essence as Part-1 2K/4K whatever it actually is.  MQ
+		 * (Part 1) is now the only coder, so there is nothing to configure.
+		 * A <Coder> element in an existing config file is simply not read --
+		 * see Config::Slang::Slang(cxml::ConstNodePtr). */
 		/** Unix socket of the frame server (frame_server.py) */
 		std::string socket = "/tmp/j2k_frames.sock";
 		/** analyse the mix on the GPU before encoding and normalize gain

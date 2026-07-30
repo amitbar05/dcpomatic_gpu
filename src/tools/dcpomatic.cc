@@ -62,7 +62,7 @@
 #include "lib/audio_content.h"
 #include "lib/audio_processor.h"
 #ifdef DCPOMATIC_SLANG
-#include "wx/slang_coder_dialog.h"
+#include "wx/slang_gpu_export_dialog.h"
 #include "wx/slang_simple_panel.h"
 #include "lib/slang_audio_analyse_job.h"
 #include "lib/slang_bitrate_probe_job.h"
@@ -1012,12 +1012,13 @@ private:
 		jobs_make_dcp_gpu_with_options(true);
 	}
 
-	/** @param ask_coder true to ask which Tier-1 coder to use (the Jobs menu
-	 *  item), false to just use the configured one.  The simplified interface
-	 *  passes false: it deliberately asks the user nothing that Preferences
-	 *  already answers.
+	/** @param confirm true to show the GPU-export confirmation dialog, which
+	 *  discloses what the export is about to change about the project (the Jobs
+	 *  menu item), false to go straight ahead.  The simplified interface passes
+	 *  false: its Create DCP button is itself the deliberate gesture, and the
+	 *  screen already shows the bit rate and the sound mix it will use.
 	 */
-	void jobs_make_dcp_gpu_with_options(bool ask_coder)
+	void jobs_make_dcp_gpu_with_options(bool confirm)
 	{
 		if (!_film) {
 			/* The menu items are gated on NEEDS_FILM, but the simplified
@@ -1034,12 +1035,12 @@ private:
 			return;
 		}
 
-		_slang_ask_coder = ask_coder;
+		_slang_confirm_export = confirm;
 		slang_export_begin();
 
 		/* The "export using GPU" button: switch the Slang GPU encode path
-		 * on (its HT/MQ coder, frame-server socket and audio automation
-		 * live in Preferences → GPU (Slang)), give mono/stereo sources the
+		 * on (its frame-server socket and audio automation live in
+		 * Preferences → GPU (Slang)), give mono/stereo sources the
 		 * smart-centre L/C/R mix, run the GPU audio analysis + auto-gain
 		 * pre-pass (mix peak → just under -3.5 dBFS), then make the DCP as
 		 * usual.  A plain "Make DCP" also uses the GPU once the config
@@ -1074,11 +1075,11 @@ private:
 	}
 
 	/** Release the "an export is coming" gate.  Every exit from the chain goes
-	 *  through here -- a cancelled probe, a cancelled coder dialog, the
-	 *  Interop+HT refusal, a failed analysis, a film that changed underneath it,
-	 *  and the successful hand-off to jobs_make_dcp() (from there on the real
-	 *  DCPTranscodeJob is what set_menu_sensitivity() sees).  Missing one leaves
-	 *  the application's menus disabled with nothing running. */
+	 *  through here -- a cancelled probe, a cancelled confirmation dialog, a
+	 *  failed analysis, a film that changed underneath it, and the successful
+	 *  hand-off to jobs_make_dcp() (from there on the real DCPTranscodeJob is
+	 *  what set_menu_sensitivity() sees).  Missing one leaves the application's
+	 *  menus disabled with nothing running. */
 	void slang_export_end()
 	{
 		_slang_export_pending = false;
@@ -1118,20 +1119,20 @@ private:
 
 		if (result == Job::Result::RESULT_CANCELLED) {
 			/* The user cancelled the probe; leave the DCP unmade, same as
-			 * cancelling the coder dialog below. */
+			 * cancelling the confirmation dialog below. */
 			slang_export_end();
 			return;
 		}
 
-		/* Reported to the coder dialog so the UI can tell the user the DCP
-		 * bandwidth WILL be set for them.  0 = no automatic adjustment (also
+		/* Reported to the confirmation dialog so the UI can tell the user the
+		 * DCP bandwidth WILL be set for them.  0 = no automatic adjustment (also
 		 * the fallback if the probe errored -- a failed probe shouldn't
 		 * block the export, it just leaves the film's configured rate
 		 * alone, exactly as when no FFmpeg content could be probed).
 		 *
 		 * Computed but NOT applied here: everything this chain changes about the
-		 * film is applied together, after the user has confirmed the coder
-		 * dialog, so that cancelling leaves the film exactly as it was found.
+		 * film is applied together, after the user has confirmed the export, so
+		 * that cancelling leaves the film exactly as it was found.
 		 */
 		int adjusted_bit_rate_mbps = 0;
 		bool bit_rate_changed = false;
@@ -1150,9 +1151,9 @@ private:
 		jobs_make_dcp_gpu_continue(adjusted_bit_rate_mbps, bit_rate_changed, new_bit_rate);
 	}
 
-	/** The rest of the GPU export flow (smart-centre mapping, the GPU audio
-	 *  analysis pre-pass, and the HT/MQ coder dialog), continued once the
-	 *  bit-rate probe above has resolved. */
+	/** The rest of the GPU export flow (the confirmation dialog, the
+	 *  smart-centre mapping and the GPU audio analysis pre-pass), continued once
+	 *  the bit-rate probe above has resolved. */
 	void jobs_make_dcp_gpu_continue(int adjusted_bit_rate_mbps, bool bit_rate_changed, optional<int64_t> new_bit_rate)
 	{
 		auto film = slang_chain_film();
@@ -1163,8 +1164,8 @@ private:
 
 		auto config = Config::instance();
 		auto slang = config->slang();
-		/* enable + the chosen coder are persisted together once the user
-		 * confirms the coder dialog below (so cancelling leaves config as-is). */
+		/* The enable flag is persisted only once the user confirms the dialog
+		 * below (so cancelling leaves config as-is). */
 
 		bool any_audio = false;
 		int max_channels = 0;
@@ -1180,24 +1181,30 @@ private:
 		bool const want_smart_center =
 			slang.smart_center && any_audio && max_channels <= 2 && !film->audio_processor();
 
-		/* Ask which Tier-1 coder to use (MQ the default -- highest PSNR, and
-		 * the only one a cinema server decodes -- vs HT the faster Part-15
-		 * one), pre-selecting the configured one.  The simplified interface
-		 * skips this and takes the configured coder as-is.
+		/* Confirm the export, disclosing what it is about to change about the
+		 * project.  The simplified interface skips this: its Create DCP button
+		 * is itself the deliberate gesture, and that screen already shows the
+		 * bit rate and the sound mix the export will use.
 		 *
-		 * ASK BEFORE MUTATING.  The dialog used to be shown after the film had
+		 * ASK BEFORE MUTATING.  This dialog used to be shown after the film had
 		 * already been given the smart-centre processor, widened to 6 channels,
 		 * had every content's AudioMapping reset by set_audio_processor(), had
-		 * its mono mapping migrated and its J2K bit rate rewritten -- and
-		 * neither Cancel nor the Interop refusal below undid any of it, so
-		 * "let's see what this offers" permanently rewrote the project's audio.
-		 * The cost is losing the overlap between the dialog and the analysis
-		 * job, which is seconds of a job that runs for minutes.
+		 * its mono mapping migrated and its J2K bit rate rewritten -- and Cancel
+		 * undid none of it, so "let's see what this offers" permanently rewrote
+		 * the project's audio.  The cost is losing the overlap between the
+		 * dialog and the analysis job, which is seconds of a job that runs for
+		 * minutes.
+		 *
+		 * It used to be a coder picker as well (MQ vs HT).  The HT (JPEG 2000
+		 * Part 15) coder was removed on 2026-07-31 -- a DCP may not carry
+		 * Part 15 -- and the dialog kept, because the confirmation above is a
+		 * separate job from the choice it also happened to offer.  With it the
+		 * Interop refusal went too: it existed only because Interop predates
+		 * Part 15, and MQ (Part 1) has always been fine in an Interop DCP.
 		 */
-		auto chosen_coder = slang.coder;
-		if (_slang_ask_coder) {
-			SlangCoderDialog dialog(
-				this, slang.coder, slang.auto_gain && any_audio,
+		if (_slang_confirm_export) {
+			SlangGPUExportDialog dialog(
+				this, slang.auto_gain && any_audio, want_smart_center,
 				adjusted_bit_rate_mbps, bit_rate_changed
 				);
 			if (dialog.ShowModal() != wxID_OK) {
@@ -1205,27 +1212,12 @@ private:
 				slang_export_end();
 				return;
 			}
-			chosen_coder = dialog.coder();
 		}
 
 		/* The modal above ran a nested event loop, so re-check: the film can
 		 * have been closed or replaced while it was open. */
 		film = slang_chain_film();
 		if (!film) {
-			slang_export_end();
-			return;
-		}
-
-		/* HTJ2K (JPEG 2000 Part 15) essence is not valid in an Interop DCP
-		 * (Interop predates Part 15).  Rather than silently changing the user's
-		 * container standard, refuse and tell them how to proceed.  MQ (Part 1)
-		 * is fine in Interop, so only block the HT coder. */
-		if (chosen_coder == "ht" && film->interop()) {
-			error_dialog(
-				this,
-				_("HTJ2K (JPEG 2000 Part 15) GPU encoding requires a SMPTE DCP; this film is set to Interop.  "
-				  "Switch the film to SMPTE (DCP -> Standard) or use the MQ coder.")
-				);
 			slang_export_end();
 			return;
 		}
@@ -1278,9 +1270,8 @@ private:
 			JobManager::instance()->add(gain_job);
 		}
 
-		slang.coder = chosen_coder;
-		/* Persist the enable flag + chosen coder (mirrors the coder control in
-		 * Preferences → GPU (Slang); remembered for next time). */
+		/* Persist the enable flag (mirrors the switch in Preferences → GPU
+		 * (Slang); remembered for next time). */
 		slang.enable = true;
 		config->set_slang(slang);
 
@@ -2235,13 +2226,13 @@ private:
 	boost::signals2::scoped_connection _config_changed_connection;
 	boost::signals2::scoped_connection _analytics_message_connection;
 #ifdef DCPOMATIC_SLANG
-	/* GPU export: the source bit-rate probe job chained before the coder
+	/* GPU export: the source bit-rate probe job chained before the confirmation
 	 * dialog, and the auto-gain analysis job chained before make-DCP. */
 	SlangSimplePanel* _simple_panel = nullptr;
 	wxMenuItem* _simple_mode_item = nullptr;
 	bool _simple_mode = false;
-	/** whether the GPU export currently in flight should show the coder dialog */
-	bool _slang_ask_coder = true;
+	/** whether the GPU export currently in flight should show the confirmation dialog */
+	bool _slang_confirm_export = true;
 	std::weak_ptr<SlangBitrateProbeJob> _slang_bitrate_job;
 	boost::signals2::scoped_connection _slang_bitrate_connection;
 	std::weak_ptr<SlangAudioAnalyseJob> _slang_gain_job;

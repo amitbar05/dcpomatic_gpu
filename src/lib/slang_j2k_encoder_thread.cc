@@ -62,10 +62,9 @@ static int constexpr HIGH_BITS = 12;
 static int constexpr OUT_SCALE = 4095;
 
 
-SlangJ2KEncoderThread::SlangJ2KEncoderThread(J2KEncoder& encoder, string socket_path, string coder)
+SlangJ2KEncoderThread::SlangJ2KEncoderThread(J2KEncoder& encoder, string socket_path)
 	: J2KSyncEncoderThread(encoder)
 	, _client(new SlangFrameClient(std::move(socket_path)))
-	, _coder(std::move(coder))
 {
 	_shm_disabled = getenv("DCPOMATIC_SLANG_NO_SHM") != nullptr;
 }
@@ -74,25 +73,32 @@ SlangJ2KEncoderThread::SlangJ2KEncoderThread(J2KEncoder& encoder, string socket_
 void
 SlangJ2KEncoderThread::maybe_send_options(DCPVideo const& frame)
 {
-	/* Per-connection options ("J2KO"): the configured coder (HT/MQ picker)
-	 * and the film's real bitrate/fps, so the server doesn't have to be
-	 * started with matching flags. Per-connection state like the colour
-	 * tables → resend after any reconnect. A server that structurally
-	 * REFUSES the options while a coder is configured cannot honour the
-	 * user's explicit HT/MQ choice — fail the job loudly rather than
-	 * silently exporting with whatever the server defaults to (a stale
-	 * server once acknowledged coder=mq and still produced HT: see
-	 * verify_encode_contract, the per-frame ground-truth check).
-	 * Transport failure (a pre-J2KO server drops the connection on the
-	 * unknown magic) stays non-fatal here: the server's default may still
-	 * match the request, and verify_encode_contract arbitrates on the
-	 * actual output bytes either way.  Called at the top of encode() AND
-	 * immediately before every encode request that may run on a fresh
-	 * connection (the in-frame shm/rgb48 fallbacks reconnect internally) —
-	 * a reconnect loses the server's per-connection options exactly like it
-	 * loses the colour tables, and a frame encoded options-less runs on the
-	 * server's DEFAULT coder/bitrate.  Cheap when nothing changed (the
-	 * generation check early-returns). */
+	/* Per-connection options ("J2KO"): the film's real bitrate and fps, so the
+	 * server doesn't have to be started with matching flags.  (It used to carry
+	 * the HT/MQ coder too; that picker is gone — MQ is the only coder — but the
+	 * request still matters, because the rate the DCP is encoded at is the one
+	 * this message delivers.)  Per-connection state like the colour tables →
+	 * resend after any reconnect.
+	 *
+	 * A structural REFUSAL stays FATAL — the decision, made explicit when the
+	 * coder was removed on 2026-07-31.  The alternative is exporting a whole DCP
+	 * at whatever bit rate the server happened to be started with, silently
+	 * ignoring the film's own setting and the source-bit-rate match computed for
+	 * it; and only half of that is caught downstream, since
+	 * verify_encode_contract can only reject frames that are too BIG.  A server
+	 * running UNDER the film's rate would produce a quietly lower-quality DCP
+	 * that nothing flags.  Failing here names the cause and the remedy instead.
+	 *
+	 * Transport failure (a pre-J2KO server drops the connection on the unknown
+	 * magic) stays non-fatal: such a server may well have been started with
+	 * flags that match the film, and refusing to talk to it gains nothing.
+	 *
+	 * Called at the top of encode() AND immediately before every encode request
+	 * that may run on a fresh connection (the in-frame shm/rgb48 fallbacks
+	 * reconnect internally) — a reconnect loses the server's per-connection
+	 * options exactly like it loses the colour tables, and a frame encoded
+	 * options-less runs at the server's DEFAULT bit rate.  Cheap when nothing
+	 * changed (the generation check early-returns). */
 	if (_options_disabled || !_client->connect()) {
 		return;
 	}
@@ -101,7 +107,7 @@ SlangJ2KEncoderThread::maybe_send_options(DCPVideo const& frame)
 	}
 	std::vector<uint8_t> err;
 	auto const rc = _client->set_options(
-		_coder, effective_bit_rate(frame) / 1e6, frame.frames_per_second(), err);
+		effective_bit_rate(frame) / 1e6, frame.frames_per_second(), err);
 	if (rc == 0) {
 		_options_generation = _client->generation();
 		_options_transport_failures = 0;
@@ -115,25 +121,16 @@ SlangJ2KEncoderThread::maybe_send_options(DCPVideo const& frame)
 			LOG_GENERAL_NC(N_("Slang encoder: options (J2KO) transport failure; will retry once on the next connection"));
 			return;
 		}
-		if (_coder.empty()) {
-			LOG_GENERAL_NC(N_("Slang encoder: server does not speak options (J2KO); using its defaults"));
-		} else {
-			LOG_ERROR(N_("Slang encoder: server does not speak options (J2KO); cannot request coder '{}' — the first frame will abort the export if the server's default does not match"), _coder);
-		}
+		LOG_ERROR(N_("Slang encoder: server does not speak options (J2KO); this DCP will be encoded at the server's own bit rate, not the film's"));
 		_options_disabled = true;
 	} else {
 		auto const message = string(reinterpret_cast<char const*>(err.data()), err.size());
-		if (_coder.empty()) {
-			LOG_GENERAL(N_("Slang encoder: server refused options ({}); using its defaults"), message);
-			_options_generation = _client->generation();
-		} else {
-			LOG_ERROR(N_("Slang encoder: server refused options ({}); cannot honour configured coder '{}'"), message, _coder);
-			throw std::runtime_error(fmt::format(
-				"The GPU frame server refused the '{}' coder request ({}).  "
-				"Restart frame_server.py without --workers/--encoder-factory, or start it with "
-				"J2K_SERVER_CODER={}, or change the coder in Preferences -> GPU (Slang).",
-				_coder, message, _coder));
-		}
+		LOG_ERROR(N_("Slang encoder: server refused options ({}); cannot set the film's bit rate and frame rate"), message);
+		throw std::runtime_error(fmt::format(
+			"The GPU frame server refused this film's bit rate and frame rate ({}).  "
+			"Restart frame_server.py without --workers/--encoder-factory, or start it with "
+			"--bitrate-mbps/--fps matching the film.",
+			message));
 	}
 }
 
@@ -163,8 +160,18 @@ SlangJ2KEncoderThread::verify_encode_contract(std::vector<uint8_t> const& j2c, D
 	 * once acked coder=mq without switching and produced a 22k-frame HT
 	 * DCP from an explicit MQ preference).
 	 *
-	 * (1) Coder: JPEG 2000 Part 15 (HTJ2K) sets bit 14 of Rsiz
+	 * (1) Codestream family: JPEG 2000 Part 15 (HTJ2K) sets bit 14 of Rsiz
 	 *     (SOC | SIZ | Lsiz | Rsiz -> the big-endian uint16 at bytes 6..7).
+	 *     A DCP may not carry Part 15 — SMPTE ST 429-4 defines Part 1 essence
+	 *     only, deployed cinema servers do not decode it, and third-party
+	 *     verifiers reject it — so this is now an UNCONDITIONAL refusal rather
+	 *     than a comparison against a configured coder.  That matters: the old
+	 *     form only ran when a coder was configured, which made it a check that
+	 *     could disarm ITSELF (an empty coder, an env-only run, a future caller
+	 *     that forgot to pass one) exactly when a wrongly-configured or stale
+	 *     server is the thing it exists to catch.  There is no longer any
+	 *     configuration under which an HT frame is acceptable, so there is no
+	 *     longer any condition on the check.
 	 * (2) Bit rate: a DCI frame can never exceed video_bit_rate/8/fps
 	 *     bytes; an oversized frame means the server ignored the J2KO
 	 *     bitrate (or was started with the wrong flags) and the DCP would
@@ -174,19 +181,16 @@ SlangJ2KEncoderThread::verify_encode_contract(std::vector<uint8_t> const& j2c, D
 		LOG_ERROR(N_("Slang encoder: frame {} is not a JPEG2000 codestream (no SOC/SIZ)"), frame_index);
 		throw std::runtime_error("The GPU frame server returned data that is not a JPEG2000 codestream.");
 	}
-	if (!_coder.empty()) {
-		auto const rsiz = static_cast<uint16_t>((j2c[6] << 8) | j2c[7]);
-		bool const got_ht = (rsiz & 0x4000) != 0;
-		bool const want_ht = _coder == "ht";
-		if (got_ht != want_ht) {
-			LOG_ERROR(N_("Slang encoder: frame {} Rsiz=0x{:04x} is {} but the configured coder is '{}'"),
-				  frame_index, rsiz, got_ht ? "HT" : "MQ", _coder);
-			throw std::runtime_error(fmt::format(
-				"The GPU frame server is encoding with the {} coder but '{}' is configured "
-				"in Preferences -> GPU (Slang).  The server is running with other settings or "
-				"stale code — restart frame_server.py, or change the configured coder to match.",
-				got_ht ? "HT" : "MQ", _coder));
-		}
+	auto const rsiz = static_cast<uint16_t>((j2c[6] << 8) | j2c[7]);
+	if ((rsiz & 0x4000) != 0) {
+		LOG_ERROR(N_("Slang encoder: frame {} Rsiz=0x{:04x} has the extended-capabilities bit set (JPEG 2000 Part 15 / HTJ2K)"),
+			  frame_index, rsiz);
+		throw std::runtime_error(fmt::format(
+			"The GPU frame server returned a JPEG 2000 Part 15 (HTJ2K) codestream for frame {}, "
+			"which a DCP may not carry (SMPTE ST 429-4 defines Part 1 essence only).  The server "
+			"is running stale code or a build with the HT coder — restart frame_server.py from "
+			"the current source.",
+			frame_index));
 	}
 	auto const fps = frame.frames_per_second();
 	auto const bit_rate = effective_bit_rate(frame);

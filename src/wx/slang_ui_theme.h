@@ -40,7 +40,7 @@
  *
  *  Everything is header-only and implicitly inline (member functions defined
  *  in-class), so it can be included by more than one translation unit.
- *  Header-only also mirrors slang_gpu_config_panel.h / slang_coder_dialog.h.
+ *  Header-only also mirrors slang_gpu_config_panel.h / slang_gpu_export_dialog.h.
  */
 
 

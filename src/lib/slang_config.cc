@@ -26,27 +26,12 @@
 #include <cstdlib>
 
 
-using std::string;
-
-
 bool
 slang_path_enabled()
 {
 	/* GUI/config switch (Preferences -> GPU (Slang)) or the original env flag --
 	 * either enables the GPU path. */
 	return getenv("DCPOMATIC_SLANG") != nullptr || Config::instance()->slang().enable;
-}
-
-
-string
-slang_effective_coder()
-{
-	auto const slang = Config::instance()->slang();
-	bool const hetero = slang_path_enabled() && getenv("DCPOMATIC_SLANG_HETERO");
-	if (hetero && slang.coder != "mq") {
-		return "mq";
-	}
-	return slang.coder;
 }
 
 #endif

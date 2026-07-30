@@ -20,14 +20,17 @@
 
 
 /** Preferences page for the Slang/Vulkan GPU J2K encoder (frame-server
- *  integration): enable the GPU export, pick the Tier-1 coder (MQ default
- *  vs HT), point at the frame server's socket, and control the audio
- *  automation (GPU auto-gain to just under -3.5 dBFS; smart-centre upmix for
- *  mono/stereo sources).  Mirrors the Grok GPUPage next door. */
+ *  integration): enable the GPU export, point at the frame server's socket,
+ *  and control the audio automation (GPU auto-gain to just under -3.5 dBFS;
+ *  smart-centre upmix for mono/stereo sources).  Mirrors the Grok GPUPage next
+ *  door.
+ *
+ *  This page used to carry a "J2K coder" choice (MQ vs HT).  The HT (HTJ2K,
+ *  JPEG 2000 Part 15) coder was removed from the integration on 2026-07-31 --
+ *  Part 15 is not what a DCI DCP is specified to carry -- so MQ is the only
+ *  coder and there is nothing left to pick. */
 
 #pragma once
-
-#include <wx/choice.h>
 
 
 class SlangGPUPage : public dcpomatic::preferences::Page
@@ -52,29 +55,6 @@ private:
 		table->AddGrowableCol(1, 1);
 		_panel->GetSizer()->Add(table, 1, wxALL | wxEXPAND, _border);
 
-		add_label_to_sizer(table, _panel, _("J2K coder"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
-		_coder = new wxChoice(_panel, wxID_ANY);
-		/* Index order is load-bearing: config_changed()/changed() below map
-		 * selection 1 <-> "mq" and everything else <-> "ht".  Keep HT at 0 and
-		 * MQ at 1 even though MQ is now the default -- the labels say which is
-		 * which, and reordering would silently repoint every existing config. */
-		_coder->Append(_("HT - HTJ2K (Part 15): fastest, but not accepted by most players and QC tools"));
-		_coder->Append(_("MQ - classic JPEG 2000 (Part 1): what a DCP is specified to carry (default)"));
-		table->Add(_coder, 1, wxEXPAND);
-
-		auto coder_note = new StaticText(
-			_panel,
-			_("HTJ2K encodes about 3x faster, but JPEG 2000 Part 15 is not part of the DCI "
-			  "specification for digital cinema: deployed cinema servers do not decode it and "
-			  "third-party verifiers reject it. Use it for fast local previews and speed tests; "
-			  "use MQ for anything you intend to hand to a cinema or a QC house.")
-			);
-		coder_note->Wrap(400);
-		auto note_font = coder_note->GetFont();
-		note_font.SetStyle(wxFONTSTYLE_ITALIC);
-		coder_note->SetFont(note_font);
-		_panel->GetSizer()->Add(coder_note, 0, wxALL, _border);
-
 		add_label_to_sizer(table, _panel, _("Frame server socket"), true, 0, wxLEFT | wxRIGHT | wxALIGN_CENTRE_VERTICAL);
 		_socket = new wxTextCtrl(_panel, wxID_ANY);
 		table->Add(_socket, 1, wxEXPAND | wxALL);
@@ -89,7 +69,6 @@ private:
 		_panel->GetSizer()->Add(_match_source_bitrate, 0, wxALL | wxEXPAND, _border);
 
 		_enable->bind(&SlangGPUPage::changed, this);
-		_coder->Bind(wxEVT_CHOICE, boost::bind(&SlangGPUPage::changed, this));
 		_socket->Bind(wxEVT_TEXT, boost::bind(&SlangGPUPage::changed, this));
 		_auto_gain->bind(&SlangGPUPage::changed, this);
 		_smart_center->bind(&SlangGPUPage::changed, this);
@@ -101,7 +80,6 @@ private:
 	void setup_sensitivity()
 	{
 		auto const slang = Config::instance()->slang();
-		_coder->Enable(slang.enable);
 		_socket->Enable(slang.enable);
 		_auto_gain->Enable(slang.enable);
 		_smart_center->Enable(slang.enable);
@@ -113,7 +91,6 @@ private:
 		auto const slang = Config::instance()->slang();
 
 		checked_set(_enable, slang.enable);
-		_coder->SetSelection(slang.coder == "mq" ? 1 : 0);
 		checked_set(_socket, slang.socket);
 		checked_set(_auto_gain, slang.auto_gain);
 		checked_set(_smart_center, slang.smart_center);
@@ -126,7 +103,6 @@ private:
 	{
 		auto slang = Config::instance()->slang();
 		slang.enable = _enable->GetValue();
-		slang.coder = _coder->GetSelection() == 1 ? "mq" : "ht";
 		slang.socket = wx_to_std(_socket->GetValue());
 		slang.auto_gain = _auto_gain->GetValue();
 		slang.smart_center = _smart_center->GetValue();
@@ -137,7 +113,6 @@ private:
 	}
 
 	CheckBox* _enable = nullptr;
-	wxChoice* _coder = nullptr;
 	wxTextCtrl* _socket = nullptr;
 	CheckBox* _auto_gain = nullptr;
 	CheckBox* _smart_center = nullptr;

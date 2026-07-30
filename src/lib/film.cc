@@ -296,20 +296,24 @@ Film::video_identifier() const
 	}
 
 #ifdef DCPOMATIC_SLANG
-	/* The Slang GPU J2K encoder, and its block coder (HTJ2K vs MQ), change the
-	   produced codestream, so they MUST be part of the video identity. Without
-	   this, a cancelled export resumed after toggling Slang on/off or switching
-	   the coder (HT<->MQ) reuses cached frames from the OTHER coder and splices
-	   Part-15 and Part-1 frames into one MXF whose descriptor claims a single
-	   coder (verify_encode_contract only checks frames it actually encodes, so
-	   it is blind to the fake-written resumed ones). */
-	/* slang_path_enabled()/slang_effective_coder(), NOT Config::slang() directly:
-	   the encoder is also switched on by the DCPOMATIC_SLANG env var and its
-	   coder is forced to "mq" by DCPOMATIC_SLANG_HETERO, so testing the config
-	   flags here would describe essence the encoder is not producing -- which is
-	   the very splice this block exists to prevent.  See slang_config.h. */
+	/* The Slang GPU J2K encoder produces a different codestream from OpenJPEG
+	   (its rate control and its R-D weighting are its own), so WHICH encoder
+	   made the frames MUST be part of the video identity.  Without this, a
+	   cancelled export resumed after toggling Slang on/off reuses cached frames
+	   from the OTHER encoder and splices two producers into one MXF
+	   (verify_encode_contract only checks frames it actually encodes, so it is
+	   blind to the fake-written resumed ones). */
+	/* slang_path_enabled(), NOT Config::slang().enable directly: the encoder is
+	   also switched on by the DCPOMATIC_SLANG env var, so testing the config
+	   flag alone here would describe essence the encoder is not producing --
+	   which is the very splice this block exists to prevent.  See
+	   slang_config.h. */
+	/* This used to append the block coder too ("_slang_mq" / "_slang_ht"); the
+	   HT coder is gone (2026-07-31) and the suffix is now a bare "_slang".  The
+	   change is safe in the direction that matters: a part-made DCP from before
+	   it no longer matches, so its frames are re-encoded rather than adopted. */
 	if (slang_path_enabled() && _video_encoding == VideoEncoding::JPEG2000) {
-		s += "_slang_" + slang_effective_coder();
+		s += "_slang";
 	}
 #endif
 
