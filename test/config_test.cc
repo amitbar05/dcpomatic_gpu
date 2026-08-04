@@ -23,6 +23,7 @@
 #include "lib/cinema_list.h"
 #include "lib/config.h"
 #include "lib/dkdm_recipient.h"
+#include "lib/film.h"
 #include "lib/dkdm_recipient_list.h"
 #include "lib/unzipper.h"
 #include "lib/zipper.h"
@@ -624,3 +625,45 @@ BOOST_AUTO_TEST_CASE(default_studio_and_facility_config_round_trip_test)
 
 
 
+
+
+/** DefaultTerritory was the other half of the same bug, and had it worse:
+ *  read_config() has always parsed <DefaultTerritory>, but there was no setter
+ *  anywhere in Config and write_config() never wrote the element back -- so the
+ *  value could only be put there by hand-editing config.xml, and the next save
+ *  deleted it again.  Film::Film() reads it into _release_territory, so the
+ *  effect was a documented per-user default that nothing could set and nothing
+ *  kept.
+ *
+ *  Same shape as default_studio_and_facility_config_round_trip_test above: a
+ *  real save-then-reload, because that is the step the missing write side broke
+ *  and an in-memory check would pass either way.
+ */
+BOOST_AUTO_TEST_CASE(default_territory_config_round_trip_test)
+{
+	auto const dir = boost::filesystem::current_path() / "build/test/default_territory_config_round_trip_test";
+	ConfigRestorer cr(dir);
+	boost::filesystem::remove_all(dir);
+	boost::filesystem::create_directories(dir);
+
+	BOOST_CHECK(!Config::instance()->default_territory());
+
+	Config::instance()->set_default_territory(dcp::LanguageTag::RegionSubtag("FR"));
+	Config::instance()->write();
+	Config::drop();
+
+	BOOST_REQUIRE(Config::instance()->default_territory());
+	BOOST_CHECK_EQUAL(Config::instance()->default_territory()->subtag(), "FR");
+
+	/* A new film must pick it up -- that is the only reason the setting
+	 * exists. */
+	auto film = new_test_film("default_territory_config_round_trip_test_film");
+	BOOST_REQUIRE(film->release_territory());
+	BOOST_CHECK_EQUAL(film->release_territory()->subtag(), "FR");
+
+	Config::instance()->unset_default_territory();
+	Config::instance()->write();
+	Config::drop();
+
+	BOOST_CHECK(!Config::instance()->default_territory());
+}

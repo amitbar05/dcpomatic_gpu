@@ -814,6 +814,13 @@ Config::write_config() const
 		/* [XML] DefaultAudioLanguage Default audio language to use for new films */
 		cxml::add_text_child(root, "DefaultAudioLanguage", _default_audio_language->as_string());
 	}
+	if (_default_territory) {
+		/* [XML] DefaultTerritory Default release territory to use for new films.
+		 * The read side of this has always existed; the write side had not, so
+		 * a value that reached _default_territory (only ever by hand-editing
+		 * this file) was dropped again by the next config save. */
+		cxml::add_text_child(root, "DefaultTerritory", _default_territory->subtag());
+	}
 	/* [XML] DefaultMetadata Default metadata value for new films; "key" attribute
 	 * is one of "chain", "distributor", "facility", "studio". The read side of
 	 * this (a loop over <DefaultMetadata key="..."> children) already existed,

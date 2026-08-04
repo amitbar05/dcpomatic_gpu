@@ -373,3 +373,36 @@ BOOST_AUTO_TEST_CASE(isdcf_name_full_twelve_parts_with_subtitles)
 	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-DE_INT-TD_MOS_2K_NULL_20230118_NUL_SMPTE_OV");
 }
 
+
+
+/** A registered TWO-character Facility code must appear in the name.
+ *
+ *  The DCNC Facility field is two OR three characters ([A-Z0-9]{2,3} -- the
+ *  same rule Clairmeta's check_dcnc_compliance applies), but isdcf_name() used
+ *  to require three and DROPPED anything shorter.  That does not leave a gap:
+ *  it shortens the name to 11 fields, so a QC tool splitting on "_" reads
+ *  Standard where it expects Facility and Package Type where it expects
+ *  Standard.  Studio's own minimum (2, for a {2,4} field) was always right,
+ *  and is checked here beside it so a future "tidy-up" cannot align the two on
+ *  the wrong number.
+ */
+BOOST_AUTO_TEST_CASE(isdcf_name_two_character_facility)
+{
+	/* See isdcf_name_with_atmos above for why this needs a directory-scoped
+	 * ConfigRestorer rather than the bare one. */
+	ConfigRestorer cr(boost::filesystem::current_path() / "build/test/isdcf_name_two_character_facility_config");
+
+	auto film = new_test_film("isdcf_name_two_character_facility");
+	film->set_isdcf_date(boost::gregorian::date(2023, boost::gregorian::Jan, 18));
+	film->set_name("Hello");
+	film->set_studio(string("AB"));
+	film->set_facility(string("QQ"));
+
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-XX_INT-TL_MOS_2K_AB_20230118_QQ_SMPTE_OV");
+
+	/* One character is NOT a code in either field, and must still be dropped
+	 * rather than written out as a one-character field. */
+	film->set_studio(string("A"));
+	film->set_facility(string("Q"));
+	BOOST_CHECK_EQUAL(film->isdcf_name(false), "Hello_TST-1_F_XX-XX_INT-TL_MOS_2K_20230118_SMPTE_OV");
+}

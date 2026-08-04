@@ -903,6 +903,23 @@ public:
 		maybe_set(_default_audio_language, boost::optional<dcp::LanguageTag>());
 	}
 
+	/* Default release territory for new films (Film::Film() reads it into
+	 * _release_territory, and it becomes the Territory part of the ISDCF name).
+	 *
+	 * These two are new: read_config() has always parsed <DefaultTerritory>, but
+	 * there was no setter anywhere and write_config() never wrote the element
+	 * back out -- so the value could only ever be put there by hand-editing
+	 * config.xml, and the next config save silently deleted it again.  A config
+	 * key that can be read but never set or kept is not a default, and the
+	 * simplified interface's Settings screen needs a real one. */
+	void set_default_territory(dcp::LanguageTag::RegionSubtag tag) {
+		maybe_set(_default_territory, tag);
+	}
+
+	void unset_default_territory() {
+		maybe_set(_default_territory, boost::optional<dcp::LanguageTag::RegionSubtag>());
+	}
+
 	void set_default_studio(std::string s) {
 		/* Look up with find() rather than operator[]: operator[] would insert
 		 * an empty "studio" entry as a side effect of just reading it for the

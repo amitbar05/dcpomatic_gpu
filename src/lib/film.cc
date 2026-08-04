@@ -1279,7 +1279,15 @@ Film::isdcf_name(bool if_created_now) const
 		isdcf_name += "_" + boost::gregorian::to_iso_string(_isdcf_date);
 	}
 
-	if (_facility && _facility->length() >= 3) {
+	/* >= 2, not >= 3.  The DCNC Facility field is TWO OR THREE characters
+	 * ([A-Z0-9]{2,3} -- the same rule Clairmeta's check_dcnc_compliance
+	 * applies), so a registered two-character facility code used to be dropped
+	 * from the name entirely.  That is worse than writing it: an omitted field
+	 * does not leave a gap, it shortens the name to 11 parts, and a QC tool
+	 * splitting on "_" then reads every field after it against the wrong
+	 * position.  (Studio, just above, has always used its own correct minimum
+	 * of 2 for a {2,4} field.) */
+	if (_facility && _facility->length() >= 2) {
 		isdcf_name += "_" + to_upper(_facility->substr(0, 3));
 	}
 
