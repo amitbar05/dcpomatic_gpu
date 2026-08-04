@@ -28,6 +28,7 @@
 #include "language_tag_dialog.h"
 #include "slang_audio_pipeline_view.h"
 #include "slang_simple_panel.h"
+#include "slang_simple_settings_dialog.h"
 #include "slang_ui_theme.h"
 #include "wx_util.h"
 #include "lib/audio_content.h"
@@ -173,6 +174,50 @@ static bool
 is_video_card_content(shared_ptr<const Content> content)
 {
 	return static_cast<bool>(content->video) || (content->audio && content->text.empty());
+}
+
+
+/** Let a text box have Ctrl+A / Ctrl+C / Ctrl+V / Ctrl+X back.
+ *
+ *  The frame's menu bar claims all but one of those: Ctrl+A is "Add file(s) to
+ *  the film", Ctrl+C is "Copy settings" and Ctrl+V is "Paste settings".  A menu
+ *  accelerator wins over the focused control, so pressing Ctrl+A in a text box
+ *  opens a file chooser instead of selecting the text -- and in THIS interface
+ *  the menu bar is hidden, so the user gets a dialog they did not ask for from a
+ *  menu they cannot see.  (Found exactly that way while driving the Title box.)
+ *
+ *  wxEVT_CHAR_HOOK reaches the focused window before accelerator processing, so
+ *  doing the edit here and NOT calling Skip() is what keeps the accelerator from
+ *  running.  Only the four editing chords are taken; every other key -- Ctrl+N,
+ *  Ctrl+O, Shift+Ctrl+S, which this screen relies on with no menu bar to show
+ *  them -- is passed straight through.
+ */
+static void
+allow_text_editing_shortcuts(wxTextCtrl* text)
+{
+	text->Bind(wxEVT_CHAR_HOOK, [text](wxKeyEvent& ev) {
+		if (!ev.ControlDown() || ev.ShiftDown() || ev.AltDown()) {
+			ev.Skip();
+			return;
+		}
+		switch (ev.GetKeyCode()) {
+		case 'A':
+			text->SelectAll();
+			break;
+		case 'C':
+			text->Copy();
+			break;
+		case 'V':
+			text->Paste();
+			break;
+		case 'X':
+			text->Cut();
+			break;
+		default:
+			ev.Skip();
+			break;
+		}
+	});
 }
 
 
@@ -324,6 +369,18 @@ SlangSimplePanel::build_header(wxWindow* parent)
 	 * who has finished one DCP has no way to start the next one.  It is the
 	 * host's own New Film flow, not a second implementation of it: the same
 	 * name/location dialog, the same offer to save the project that is open. */
+	/* Preferences went with the menu bar, and the things it holds are not
+	 * decoration: without this button the simplified interface can only make
+	 * DCPs carrying the ISDCF "no registered code" sentinels and DCP-o-matic's
+	 * own issuer string, and the GPU encoder's own settings are unreachable.
+	 * Not disabled during an export -- nothing in it touches the film's content
+	 * or the job in flight, and the two Film fields it can write are guarded in
+	 * open_settings(). */
+	_settings = new SlangFlatButton(header, _("Settings..."), SlangFlatButton::Kind::SECONDARY);
+	_settings->SetToolTip(_("Your studio and facility codes, and what new projects start with."));
+	_settings->on_click([this]() { open_settings(); });
+	sizer->Add(_settings, 0, wxALIGN_CENTRE_VERTICAL | wxLEFT, FromDIP(12));
+
 	_new = new SlangFlatButton(header, _("New..."), SlangFlatButton::Kind::SECONDARY);
 	_new->SetToolTip(_("Start a new project, saving this one first if you want."));
 	_new->on_click([this]() { NewProject(); });
@@ -653,8 +710,40 @@ SlangSimplePanel::build_output_card(wxWindow* parent, wxSizer* sizer)
 {
 	auto const p = slang_ui::palette();
 
-	_output_card = new SlangCard(parent, _("Output folder"), _("Where the finished DCP is written."), 3);
+	_output_card = new SlangCard(parent, _("Output"), _("What the DCP is called, and where it is written."), 3);
 	sizer->Add(_output_card, 0, wxEXPAND);
+
+	/* The title.  It is the FilmTitle part of the ISDCF name and the CPL's
+	 * annotation, and until now this screen had no way to set it: the film was
+	 * named after the video file and stayed that way, so a DCP made here was
+	 * called whatever the editor had exported ("prog_v3_h264_FINAL"), with no
+	 * way to fix it short of switching to the full interface. */
+	auto title_row = new wxBoxSizer(wxHORIZONTAL);
+	auto title_label = new wxStaticText(_output_card, wxID_ANY, _("Title"));
+	title_label->SetFont(slang_ui::font(_output_card, -1));
+	title_label->SetForegroundColour(p.muted);
+	title_row->Add(title_label, 0, wxALIGN_CENTRE_VERTICAL | wxRIGHT, FromDIP(8));
+
+	_title = new wxTextCtrl(_output_card, wxID_ANY);
+	_title->SetToolTip(_("The name of the film; it becomes the first part of the DCP's name."));
+	/* Two events, doing two different jobs.  Every keystroke goes into the film
+	 * so the DCP name under the box keeps up with the typing -- that preview is
+	 * the whole reason the control sits in this card.  The metadata.xml write is
+	 * deferred to the moment the box is left, because this screen has no Save
+	 * button and saving per keystroke would rewrite the file once per letter. */
+	_title->Bind(wxEVT_TEXT, boost::bind(&SlangSimplePanel::title_changed, this));
+	_title->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& ev) {
+		/* update_title() first: an emptied box is a half-finished edit that
+		 * title_changed() refused to commit, so put the film's real name back
+		 * rather than leaving the screen showing a name the film does not have. */
+		update_title();
+		save();
+		ev.Skip();
+	});
+	allow_text_editing_shortcuts(_title);
+	title_row->Add(_title, 1, wxALIGN_CENTRE_VERTICAL);
+
+	_output_card->body()->Add(title_row, 0, wxEXPAND | wxBOTTOM, FromDIP(10));
 
 	auto row = new wxBoxSizer(wxHORIZONTAL);
 
@@ -1002,6 +1091,9 @@ SlangSimplePanel::set_general_sensitivity(bool sensitive)
 
 	update_output_change_enabled();
 	update_output_copy_path_enabled();
+	/* Same class as the content-type Choice above: it edits the film, and the
+	 * DCP being written has already taken its name from it. */
+	update_title();
 	if (_new) {
 		/* Same class: starting a new project discards the current film, and
 		 * discarding the one an export is writing strands it.  Deliberately
@@ -1031,6 +1123,14 @@ SlangSimplePanel::film_changed(ChangeType type, FilmProperty property)
 		_pipeline->refresh_state();
 		break;
 	case FilmProperty::NAME:
+		/* The box is written from here too, not only from update_all(): the
+		 * name also changes from outside this screen (adding the first video
+		 * names the film after it), and a title box still showing the previous
+		 * name beside an output card showing the new one is the kind of
+		 * disagreement this panel is supposed to be incapable of. */
+		update_title();
+		update_output_card();
+		break;
 	case FilmProperty::USE_ISDCF_NAME:
 		update_output_card();
 		break;
@@ -1931,11 +2031,81 @@ SlangSimplePanel::copy_output_path()
 
 
 void
+SlangSimplePanel::open_settings()
+{
+	/* The film is handed over only when it is safe to write to it.  During an
+	 * export the DCP's name has already been computed and the writer is using
+	 * it, so changing the film's studio or facility code now would leave the
+	 * package and the project disagreeing about what it is called -- while the
+	 * config half of the dialog (the socket, the bit-rate ceiling, what the NEXT
+	 * project starts with) is perfectly safe to edit at any time.  So the dialog
+	 * still opens, with the film withheld. */
+	SlangSimpleSettingsDialog dialog(this, _sensitive ? _film : shared_ptr<Film>());
+	auto const result = dialog.ShowModal();
+	/* Same forced repaint as choose_audio_language(): the toolkit does not
+	 * reliably redraw the area a modal covered on this window manager. */
+	Refresh();
+	Update();
+
+	if (result == wxID_OK && dialog.film_changed()) {
+		/* Written into the film, so it has to reach metadata.xml: this screen's
+		 * auto-save only rides on CONTENT changes. */
+		save();
+		update_all();
+	}
+}
+
+
+void
+SlangSimplePanel::title_changed()
+{
+	if (!_film || !_title) {
+		return;
+	}
+
+	auto const name = wx_to_std(_title->GetValue());
+	if (name.empty() || name == _film->name()) {
+		/* An empty box is a half-finished edit, not an instruction to make a
+		 * nameless DCP -- Film::dcp_name() would fall over deriving an ISDCF
+		 * name from it.  update_title() puts the real name back when focus
+		 * leaves the box. */
+		return;
+	}
+
+	/* No save() here; the box's kill-focus handler does that.  See where the two
+	 * events are bound in build_output_card(). */
+	_film->set_name(name);
+}
+
+
+void
+SlangSimplePanel::update_title()
+{
+	if (!_title) {
+		return;
+	}
+
+	/* checked_set, not SetValue: an unconditional write moves the caret to the
+	 * end of the box, and this runs from the film's own Change signal -- i.e.
+	 * on every keystroke that title_changed() just committed. */
+	checked_set(_title, _film ? _film->name() : string());
+	_title->Enable(_sensitive && static_cast<bool>(_film));
+}
+
+
+void
 SlangSimplePanel::create_dcp()
 {
 	if (!_film || _film->content().empty()) {
 		return;
 	}
+
+	/* A title typed and then followed straight by this click may not have been
+	 * written yet -- the box saves on kill-focus, and whether clicking a
+	 * SlangFlatButton moves keyboard focus off a wxTextCtrl is a toolkit detail
+	 * this must not depend on.  The export names the DCP from the film, so make
+	 * sure the film on disk is the film on screen first. */
+	save();
 
 	/* A feature CPL with no end-credit markers is two SMPTE Bv2.1 errors, and
 	 * the DCP is otherwise perfectly good -- so warn rather than refuse, and
@@ -1967,6 +2137,7 @@ SlangSimplePanel::update_all()
 {
 	update_video_card();
 	update_subtitle_card();
+	update_title();
 	update_output_card();
 	update_content_type();
 	update_credits();

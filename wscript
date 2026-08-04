@@ -761,6 +761,7 @@ def build(bld):
     # drawn with, which has no .cc of its own to hang the dependency off.
     for dep in (
             'src/wx/slang_simple_panel.cc',
+            'src/wx/slang_simple_settings_dialog.cc',
             'src/wx/slang_audio_pipeline_view.cc',
     ):
         bld.add_manual_dependency(bld.path.find_node(dep), bld.path.find_node('src/wx/slang_ui_theme.h'))

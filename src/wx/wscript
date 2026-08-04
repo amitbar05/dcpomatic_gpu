@@ -166,6 +166,7 @@ sources = """
           simple_video_view.cc
           slang_audio_pipeline_view.cc
           slang_simple_panel.cc
+          slang_simple_settings_dialog.cc
           smpte_metadata_dialog.cc
           sound_preferences_page.cc
           spl_entry_dialog.cc

@@ -142,7 +142,20 @@ private:
 	void clear_audio_language();
 	/** Pick the language of one subtitle file (its own, not the film's). */
 	void choose_subtitle_language(std::weak_ptr<Content> content);
+	/** Open the Settings screen: the answers that are the same for every DCP
+	 *  (ISDCF studio and facility codes, issuer/creator, the defaults new
+	 *  projects start with, the bit-rate ceiling, and the GPU encoder).
+	 *
+	 *  This mode has no menu bar, so Preferences is unreachable from it -- which
+	 *  meant the simplified interface could only ever make packages carrying the
+	 *  "no registered code" sentinels and DCP-o-matic's own issuer string. */
+	void open_settings();
 	void change_output_folder();
+	/** Rename the film, which is what the DCP will be called.  It is named
+	 *  after the video file until someone says otherwise, and until this
+	 *  existed there was no "otherwise" in this interface. */
+	void title_changed();
+	void update_title();
 	/** Put the current output folder's path on the system clipboard.  A no-op
 	 *  (never an empty-string copy) if there is no film or no directory yet --
 	 *  update_output_card() is what keeps the button reachable only when there
@@ -259,6 +272,11 @@ private:
 	std::vector<SlangFlatButton*> _subtitle_row_buttons;
 
 	SlangCard* _output_card = nullptr;
+	/** What the DCP is called.  Not a mirror of the film's name kept in step by
+	 *  hand: update_title() writes the film's current name into it, and
+	 *  title_changed() writes the box back, so the film stays the one source of
+	 *  truth. */
+	wxTextCtrl* _title = nullptr;
 	wxStaticText* _output_path = nullptr;
 	wxStaticText* _output_dcp = nullptr;
 	SlangFlatButton* _output_change = nullptr;
@@ -275,6 +293,7 @@ private:
 	 *  anyway, since libdcp has no "unspecified" to write there. */
 	wxStaticText* _audio_language_note = nullptr;
 
+	SlangFlatButton* _settings = nullptr;
 	SlangFlatButton* _new = nullptr;
 
 	SlangFlatButton* _create = nullptr;
